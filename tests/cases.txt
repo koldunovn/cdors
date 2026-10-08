@@ -5,3 +5,28 @@
 text     | showname {in}                               | r36x18_std hpz2_noleap unst_360
 text     | griddes {in}                                | r36x18_std hpz2_noleap unst_360
 json     | --json sinfo {in}                           | r36x18_std hpz2_noleap unst_360
+#
+# Task 5: selections, arithmetic, copy, setgrid
+exact    | -selname,tas {in}                           | r36x18_std hpz2_noleap unst_360
+exact    | -sellevel,85000 {in}                        | r36x18_2lev
+exact    | -seltimestep,1/10,20,-1 {in}                | r36x18_std hpz2_noleap unst_360
+exact    | -seldate,2001-02-27,2001-03-02T12:00:00 {in} | r36x18_std hpz2_noleap unst_360
+exact    | -selyear,2001 {in}                          | r36x18_std hpz2_noleap unst_360
+exact    | -selmon,2/3 {in}                            | r36x18_std hpz2_noleap unst_360
+exact    | -selseason,DJF {in}                         | r36x18_std hpz2_noleap unst_360
+exact    | -sellonlatbox,-30,90,0,60 {in}              | r36x18_std hpz2_noleap unst_360
+exact    | -sellonlatbox,300,60,-45,10 {in}            | r36x18_std hpz2_noleap unst_360
+exact    | -add {in} {in2}                             | r36x18_std hpz2_noleap unst_360
+exact    | -sub {in} -seltimestep,1 {in2}              | r36x18_std hpz2_noleap unst_360
+exact    | -mul -selname,tas {in} -selname,pr {in2}    | r36x18_std hpz2_noleap unst_360
+exact    | -div {in} -selname,pr {in2}                 | r36x18_std hpz2_noleap unst_360
+exact    | -addc,2.5 {in}                              | r36x18_std hpz2_noleap unst_360
+exact    | -subc,273.15 {in}                           | r36x18_std hpz2_noleap unst_360
+exact    | -mulc,0 -mulc,1.7 {in}                      | r36x18_std hpz2_noleap unst_360
+exact    | -divc,3 {in}                                | r36x18_std hpz2_noleap unst_360
+exact    | -ifthen -selname,pr {in} {in2}              | r36x18_std hpz2_noleap unst_360
+exact    | -copy {in}                                  | r36x18_std hpz2_noleap unst_360
+exact    | -setgrid,{in2} {in}                         | r36x18_std hpz2_noleap unst_360
+exact    | -selname,tas -seltimestep,5/40 -sellonlatbox,0,120,-20,50 -mulc,2 {in} | r36x18_std hpz2_noleap unst_360
+err:unknown_operator | -yearmeans {in}                 | r36x18_std
+err:output_exists    | -addc,1 {in} {in} {noout}       | r36x18_std

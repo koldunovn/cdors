@@ -17,9 +17,14 @@
 #   CDORS_FIXTURES    fixtures               (default: $CDORS_TARGET/fixtures; made by tests/make_fixtures.sh)
 #   CDORS_REF         cached cdo outputs     (default: $CDORS_TARGET/cdo-ref)
 #   CDORS_JOBS        parallel rows          (default: 8, capped at 16: shared login node)
-#   CDORS_ZARR=1      also run rows on hpz2_noleap on its Zarr v2/v3 copies (vs the cdo reference)
-#   CDORS_PLANNER=1   also run rows on hpz2_noleap on the tiny-chunk Zarr copy; must equal the
-#                     first cdors output exactly. CDORS_PLANNER_MEM=1M adds "--mem 1M" to that run.
+#   CDORS_ZARR=1      (default) also run rows on hpz2_noleap on its Zarr v2/v3 copies (vs the cdo
+#                     reference); 0 switches the variant off
+#   CDORS_PLANNER=1   (default) also run rows on hpz2_noleap on the tiny-chunk Zarr copy; must equal
+#                     the first cdors output exactly. CDORS_PLANNER_MEM=1M adds "--mem 1M" to that run.
+#
+# err rows: the output "$dir/out.nc" is appended unless the arguments contain {noout} (removed).
+# text rows of showname compare the names order-insensitively on the Zarr and tiny variants
+# (Zarr stores have no variable order); values of these variants are compared variable by variable.
 #
 # Every run writes into a fresh directory $CDORS_TARGET/runs/<timestamp>-<pid>; nothing is deleted.
 set -uo pipefail
@@ -31,7 +36,7 @@ export CDORS_TARGET=${CDORS_TARGET:-${CARGO_TARGET_DIR:-/work/ab0995/a270088/cdo
 export CDORS_FIXTURES=${CDORS_FIXTURES:-$CDORS_TARGET/fixtures}
 export CDORS=${CDORS:-$CDORS_TARGET/release/cdors}
 export CDORS_REF=${CDORS_REF:-$CDORS_TARGET/cdo-ref}
-export CDORS_ZARR=${CDORS_ZARR:-0} CDORS_PLANNER=${CDORS_PLANNER:-0} CDORS_PLANNER_MEM=${CDORS_PLANNER_MEM:-}
+export CDORS_ZARR=${CDORS_ZARR:-1} CDORS_PLANNER=${CDORS_PLANNER:-1} CDORS_PLANNER_MEM=${CDORS_PLANNER_MEM:-}
 VARIANT_FIXTURE=hpz2_noleap
 
 # ---------------------------------------------------------------- one row x fixture
@@ -65,8 +70,11 @@ run_job() {
 
   case $tag in
   err:*)
-    local code=${tag#err:}
-    "$CDORS" --json "${A[@]}" "$dir/out.nc" > "$dir/out.json" 2> "$dir/err.json"
+    local code=${tag#err:} noout=0 a
+    local -a O=()
+    for a in "${A[@]}"; do [[ $a == '{noout}' ]] && noout=1 || O+=("$a"); done
+    ((noout)) || O+=("$dir/out.nc")
+    "$CDORS" --json "${O[@]}" > "$dir/out.json" 2> "$dir/err.json"
     local rc=$?
     { echo "exit $rc"; cat "$dir/out.json" "$dir/err.json"; } >> "$log"
     ((rc != 0)) || fail "cdors succeeded, expected error $code"
@@ -142,7 +150,11 @@ run_job() {
       local out=$dir/out_$name.txt
       "$CDORS" "${X[@]}" "${A[@]}" > "$out" 2>> "$log" || fail "cdors failed ($name)"
       local want=$ref; [[ $name == tiny ]] && want=$base_out
-      diff -u "$want" "$out" >> "$log" || fail "text differs ($name)"
+      if [[ $name != base && ${A[0]} == showname ]]; then
+        diff -u <(tr -s ' \n' '\n\n' < "$want" | sort) <(tr -s ' \n' '\n\n' < "$out" | sort) >> "$log" || fail "names differ ($name)"
+      else
+        diff -u "$want" "$out" >> "$log" || fail "text differs ($name)"
+      fi
     else
       local out=$dir/out_$name.nc
       "$CDORS" --no_history "${X[@]}" "${A[@]}" "$out" >> "$log" 2>&1 || fail "cdors failed ($name)"
@@ -150,7 +162,17 @@ run_job() {
       if [[ $name == tiny ]]; then
         want=$base_out lim=0 wantts=$dir/ts_base
       fi
-      "$CDO" --pedantic diffn,abslim="$lim" "$want" "$out" >> "$log" 2>&1 || fail "values differ ($name, abslim=$lim)"
+      if [[ $name == base ]]; then
+        "$CDO" --pedantic diffn,abslim="$lim" "$want" "$out" >> "$log" 2>&1 || fail "values differ ($name, abslim=$lim)"
+      else  # Zarr inputs have no variable order: same names, then each variable by name
+        local wn on v
+        wn=$("$CDO" -s showname "$want" 2>> "$log" | tr -s ' ' '\n' | sed '/^$/d' | sort)
+        on=$("$CDO" -s showname "$out" 2>> "$log" | tr -s ' ' '\n' | sed '/^$/d' | sort)
+        [[ $wn == "$on" ]] || { echo "names: want [$wn] got [$on]" >> "$log"; fail "variables differ ($name)"; }
+        for v in $wn; do
+          "$CDO" --pedantic diffn,abslim="$lim" -selname,"$v" "$want" -selname,"$v" "$out" >> "$log" 2>&1 || fail "values differ ($name, $v, abslim=$lim)"
+        done
+      fi
       "$CDO" -s showtimestamp "$out" > "$dir/ts_$name" 2>> "$log"
       diff "$wantts" "$dir/ts_$name" >> "$log" || fail "timestamps differ ($name)"
     fi

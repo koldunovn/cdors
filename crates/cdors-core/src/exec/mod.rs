@@ -1,0 +1,615 @@
+//! Executor: runs a plan and writes the output.
+//!
+//! [`run`] plans the command, refuses an existing output without `-O`, creates the writer on a
+//! temporary name in the output's directory, streams the stage through [`pipeline::run`] and
+//! renames the result into place on success. On failure it removes its own temporary output.
+
+pub mod pipeline;
+
+use crate::chain::{Command, Precision};
+use crate::error::{Error, ErrorCode, Result};
+use crate::io::Values;
+use crate::model::{AttrValue, Attrs, DType, DimRole};
+use crate::plan::{self, OutKind, Plan, VarDesc};
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+/// Layout of one written data variable.
+#[derive(Debug, Clone)]
+pub struct OutVar {
+    pub name: String,
+    pub dims: Vec<String>,
+    pub shape: Vec<usize>,
+    /// Output chunk shape (also the unit the pipeline hands to the writer).
+    pub chunks: Vec<usize>,
+    /// Written type.
+    pub dtype: DType,
+    pub missval: f64,
+}
+
+impl OutVar {
+    pub fn chunk_counts(&self) -> Vec<usize> {
+        self.shape
+            .iter()
+            .zip(&self.chunks)
+            .map(|(&n, &c)| n.div_ceil(c.max(1)))
+            .collect()
+    }
+}
+
+/// An output file being written. `write` gets complete output chunks (trimmed at the array
+/// edge, NaN for missing values).
+pub trait Writer: Send + Sync {
+    /// Whether chunks must be written one at a time in canonical order (NetCDF); otherwise
+    /// `write` may be called from several threads at once (Zarr).
+    fn ordered(&self) -> bool;
+    fn write(&self, var: usize, origin: &[usize], shape: &[usize], data: Values) -> Result<()>;
+    fn finish(&self) -> Result<()>;
+}
+
+/// Compute threads: `-P`, else all cores of the allocation, capped at 16 outside Slurm jobs
+/// (shared login nodes).
+pub fn default_threads(cmd: &Command) -> usize {
+    let avail = std::thread::available_parallelism().map_or(4, |n| n.get());
+    let n = cmd.options.threads.unwrap_or(avail);
+    if std::env::var_os("SLURM_JOB_ID").is_none() {
+        n.min(16)
+    } else {
+        n
+    }
+}
+
+/// Blocking reads in flight: `--io-threads`, else 64 in Slurm jobs and 32 on login nodes.
+pub fn default_io_threads(cmd: &Command) -> usize {
+    cmd.options.io_threads.unwrap_or({
+        if std::env::var_os("SLURM_JOB_ID").is_some() {
+            64
+        } else {
+            32
+        }
+    })
+}
+
+/// Output chunks: `--chunks dim=n` where given; otherwise one timestep per chunk, and for Zarr
+/// about 4 MiB per chunk filled from the last dimension, for NetCDF one field (all horizontal
+/// points of one level), as cdo writes.
+pub fn out_chunks(
+    v: &VarDesc,
+    kind: OutKind,
+    size: usize,
+    spec: Option<&[(String, usize)]>,
+) -> Vec<usize> {
+    let mut c = vec![1usize; v.dims.len()];
+    match kind {
+        OutKind::Zarr2 | OutKind::Zarr3 => {
+            let mut room = (4 << 20) / size.max(1);
+            for d in (0..v.dims.len()).rev() {
+                if v.dims[d].role == DimRole::Time {
+                    continue;
+                }
+                let n = v.dims[d].size.max(1);
+                c[d] = n.min(room.max(1));
+                room /= c[d];
+            }
+        }
+        OutKind::Nc4 | OutKind::NcClassic => {
+            for (cd, d) in c.iter_mut().zip(&v.dims) {
+                if d.role == DimRole::Horizontal {
+                    *cd = d.size.max(1);
+                }
+            }
+        }
+    }
+    if let Some(spec) = spec {
+        for (name, n) in spec {
+            if let Some(d) = v.dims.iter().position(|d| &d.name == name) {
+                c[d] = (*n).min(v.dims[d].size).max(1);
+            }
+        }
+    }
+    c
+}
+
+/// Data-variable layouts of a plan's output.
+pub fn layout(plan: &Plan, cmd: &Command) -> Vec<OutVar> {
+    plan.desc
+        .vars
+        .iter()
+        .map(|v| {
+            let dtype = match cmd.options.precision {
+                Some(Precision::F32) => DType::F32,
+                Some(Precision::F64) => DType::F64,
+                None if v.dtype == DType::F32 => DType::F32,
+                None => DType::F64,
+            };
+            OutVar {
+                name: v.name.clone(),
+                dims: v.dims.iter().map(|d| d.name.clone()).collect(),
+                shape: v.shape(),
+                chunks: out_chunks(
+                    v,
+                    plan.out_kind,
+                    dtype.size(),
+                    cmd.options.chunks.as_deref(),
+                ),
+                dtype,
+                missval: v.missval,
+            }
+        })
+        .collect()
+}
+
+/// The `history` line: date, program and command line.
+fn history_line() -> String {
+    let args: Vec<String> = std::env::args().collect();
+    let now = std::process::Command::new("date")
+        .arg("+%a %b %d %H:%M:%S %Y")
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_owned())
+        .unwrap_or_default();
+    let prog = Path::new(args.first().map_or("cdors", String::as_str))
+        .file_name()
+        .map_or_else(|| "cdors".into(), |s| s.to_string_lossy().into_owned());
+    format!(
+        "{now}: {prog} {} (cdors {})",
+        args[1..].join(" "),
+        crate::VERSION
+    )
+}
+
+fn temp_path(out: &Path) -> PathBuf {
+    let dir = out
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    let name = out
+        .file_name()
+        .map_or_else(|| "out".into(), |s| s.to_string_lossy().into_owned());
+    dir.join(format!(".{name}.cdors-tmp-{}", std::process::id()))
+}
+
+/// Removes this run's own temporary output (part of the design: a failed run leaves nothing).
+fn remove_own_temp(tmp: &Path) {
+    if tmp.is_dir() {
+        let _ = std::fs::remove_dir_all(tmp);
+    } else {
+        let _ = std::fs::remove_file(tmp);
+    }
+}
+
+/// Plans and runs a command that writes one output.
+pub fn run(cmd: &Command) -> Result<String> {
+    let plan = plan::build(cmd)?;
+    let threads = default_threads(cmd);
+    let io_threads = default_io_threads(cmd).max(1);
+    if cmd.options.plan {
+        return Ok(format!("{}\n", plan.to_json(threads, io_threads)));
+    }
+    let out = PathBuf::from(&plan.output);
+    if out.exists() {
+        if !cmd.options.overwrite {
+            return Err(Error::new(
+                ErrorCode::OutputExists,
+                format!("output '{}' exists", plan.output),
+            )
+            .with("path", plan.output.clone())
+            .with_hint("add -O to overwrite it, or choose another output name"));
+        }
+        if out.is_dir() {
+            return Err(Error::new(
+                ErrorCode::OutputExists,
+                format!("output '{}' is an existing directory", plan.output),
+            )
+            .with("path", plan.output.clone())
+            .with_hint(
+                "-O replaces files only; remove the existing store first or choose another name",
+            ));
+        }
+    }
+    if let Some(dir) = out.parent().filter(|p| !p.as_os_str().is_empty())
+        && !dir.is_dir()
+    {
+        return Err(Error::bad_arguments(format!(
+            "the directory of output '{}' does not exist",
+            plan.output
+        ))
+        .with("path", plan.output.clone()));
+    }
+    let lay = layout(&plan, cmd);
+    let history = (!cmd.options.no_history).then(history_line);
+    let tmp = temp_path(&out);
+    let result = (|| -> Result<()> {
+        let writer: Arc<dyn Writer> = match plan.out_kind {
+            OutKind::Nc4 | OutKind::NcClassic => {
+                Arc::new(crate::io::write_netcdf::NcWriter::create(
+                    &tmp,
+                    &plan,
+                    &lay,
+                    plan.out_kind == OutKind::NcClassic,
+                    history.as_deref(),
+                )?)
+            }
+            OutKind::Zarr3 | OutKind::Zarr2 => Arc::new(crate::io::write_zarr::ZarrWriter::create(
+                &tmp,
+                &plan,
+                &lay,
+                plan.out_kind == OutKind::Zarr2,
+                history.as_deref(),
+            )?),
+        };
+        // tiles in flight: enough to keep every read slot and compute thread busy, bounded by
+        // the memory budget (default 2 GB)
+        let max_tile = plan
+            .stages
+            .iter()
+            .flat_map(|s| s.vars.iter())
+            .map(|v| {
+                (0..v.tiling.segments.len())
+                    .map(|d| {
+                        v.tiling.segments[d]
+                            .iter()
+                            .map(|r| r.len())
+                            .max()
+                            .unwrap_or(1)
+                    })
+                    .product::<usize>()
+            })
+            .max()
+            .unwrap_or(1)
+            * 8;
+        let budget = cmd.options.mem.unwrap_or(2_000_000_000) as usize;
+        let window = (io_threads + 2 * threads)
+            .min(budget / max_tile.max(1))
+            .max(2);
+        let settings = pipeline::Settings {
+            threads,
+            io_threads,
+            window,
+        };
+        for stage in &plan.stages {
+            pipeline::run(stage, &lay, writer.clone(), settings)?;
+        }
+        writer.finish()
+    })();
+    match result {
+        Ok(()) => {
+            std::fs::rename(&tmp, &out).map_err(|e| {
+                remove_own_temp(&tmp);
+                Error::io(format!("renaming the output into place: {e}"))
+            })?;
+            Ok(String::new())
+        }
+        Err(e) => {
+            remove_own_temp(&tmp);
+            Err(e)
+        }
+    }
+}
+
+/// A coordinate (or bounds, or grid-mapping) variable to write, with its values.
+#[derive(Debug, Clone)]
+pub struct OutCoord {
+    pub name: String,
+    pub dims: Vec<String>,
+    pub shape: Vec<usize>,
+    /// F32, F64 or I32 (grid mapping).
+    pub dtype: DType,
+    pub values: Vec<f64>,
+    pub attrs: Attrs,
+}
+
+/// Everything a writer needs besides the data: dimensions, coordinates and attributes.
+#[derive(Debug, Clone)]
+pub struct OutMeta {
+    /// (name, size, unlimited) in definition order.
+    pub dims: Vec<(String, usize, bool)>,
+    pub coords: Vec<OutCoord>,
+    /// Attributes of each data variable (same order as the layout).
+    pub var_attrs: Vec<Attrs>,
+    pub global: Attrs,
+}
+
+fn copy_attrs(a: &Attrs, drop: &[&str]) -> Attrs {
+    Attrs(
+        a.iter()
+            .filter(|(k, _)| {
+                !drop.contains(&k.as_str())
+                    && !matches!(
+                        k.as_str(),
+                        "_FillValue"
+                            | "missing_value"
+                            | "_ARRAY_DIMENSIONS"
+                            | "_Netcdf4Dimid"
+                            | "_Netcdf4Coordinates"
+                    )
+            })
+            .cloned()
+            .collect(),
+    )
+}
+
+fn set_attr(a: &mut Attrs, k: &str, v: AttrValue) {
+    match a.0.iter_mut().find(|(n, _)| n == k) {
+        Some(e) => e.1 = v,
+        None => a.0.push((k.to_owned(), v)),
+    }
+}
+
+fn text(s: &str) -> AttrValue {
+    AttrValue::Text(s.to_owned())
+}
+
+/// Builds dimensions, coordinate variables and attributes of the output.
+pub fn out_meta(plan: &Plan, lay: &[OutVar], history: Option<&str>) -> Result<OutMeta> {
+    let desc = &plan.desc;
+    let mut dims: Vec<(String, usize, bool)> = Vec::new();
+    let add_dim =
+        |dims: &mut Vec<(String, usize, bool)>, name: &str, n: usize, unl: bool| -> Result<()> {
+            match dims.iter().find(|d| d.0 == name) {
+                Some(d) if d.1 != n => Err(Error::new(
+                    ErrorCode::UnsupportedDimension,
+                    format!(
+                        "dimension '{name}' would have two sizes ({} and {n}) in the output",
+                        d.1
+                    ),
+                )),
+                Some(_) => Ok(()),
+                None => {
+                    dims.push((name.to_owned(), n, unl));
+                    Ok(())
+                }
+            }
+        };
+    for v in &desc.vars {
+        for d in &v.dims {
+            add_dim(&mut dims, &d.name, d.size, d.role == DimRole::Time)?;
+        }
+    }
+    let mut coords: Vec<OutCoord> = Vec::new();
+    let push = |coords: &mut Vec<OutCoord>, c: OutCoord| {
+        if !coords.iter().any(|x| x.name == c.name) {
+            coords.push(c);
+        }
+    };
+    // time
+    if let Some(t) = &desc.time
+        && desc.vars.iter().any(|v| v.dim_of(DimRole::Time).is_some())
+    {
+        let tdim = t.axis.dim.clone();
+        let mut attrs = copy_attrs(&t.attrs, &["bounds"]);
+        if let Some(b) = &t.raw_bounds {
+            add_dim(&mut dims, "bnds", 2, false)?;
+            let bname = t
+                .axis
+                .bounds_var
+                .clone()
+                .unwrap_or_else(|| format!("{}_bnds", t.axis.var));
+            set_attr(&mut attrs, "bounds", text(&bname));
+            push(
+                &mut coords,
+                OutCoord {
+                    name: bname,
+                    dims: vec![tdim.clone(), "bnds".into()],
+                    shape: vec![b.len(), 2],
+                    dtype: DType::F64,
+                    values: b.iter().flat_map(|p| [p[0], p[1]]).collect(),
+                    attrs: Attrs::default(),
+                },
+            );
+        }
+        coords.insert(
+            0,
+            OutCoord {
+                name: t.axis.var.clone(),
+                dims: vec![tdim],
+                shape: vec![t.len()],
+                dtype: DType::F64,
+                values: t.raw.clone(),
+                attrs,
+            },
+        );
+    }
+    // vertical axes
+    for (zi, z) in desc.zaxes.iter().enumerate() {
+        if !desc.vars.iter().any(|v| v.zaxis == Some(zi)) {
+            continue;
+        }
+        let mut attrs = copy_attrs(&z.attrs, &["bounds"]);
+        if let Some(b) = &z.axis.bounds {
+            add_dim(&mut dims, "bnds", 2, false)?;
+            let bname = z
+                .bounds_var
+                .clone()
+                .unwrap_or_else(|| format!("{}_bnds", z.axis.var));
+            set_attr(&mut attrs, "bounds", text(&bname));
+            push(
+                &mut coords,
+                OutCoord {
+                    name: bname,
+                    dims: vec![z.axis.dim.clone(), "bnds".into()],
+                    shape: vec![b.len(), 2],
+                    dtype: DType::F64,
+                    values: b.iter().flat_map(|p| [p[0], p[1]]).collect(),
+                    attrs: Attrs::default(),
+                },
+            );
+        }
+        push(
+            &mut coords,
+            OutCoord {
+                name: z.axis.var.clone(),
+                dims: vec![z.axis.dim.clone()],
+                shape: vec![z.axis.len()],
+                dtype: DType::F64,
+                values: z.axis.values.clone(),
+                attrs,
+            },
+        );
+    }
+    // grids
+    let mut var_attrs: Vec<Attrs> = desc.vars.iter().map(|v| v.attrs.clone()).collect();
+    for (gi, g) in desc.grids.iter().enumerate() {
+        let users: Vec<usize> = (0..desc.vars.len())
+            .filter(|&i| desc.vars[i].grid == Some(gi))
+            .collect();
+        let Some(&first) = users.first() else {
+            continue;
+        };
+        let v = &desc.vars[first];
+        let hd: Vec<String> = v.hdims().iter().map(|&i| v.dims[i].name.clone()).collect();
+        let sattrs = |name: &str| {
+            g.src
+                .dataset()
+                .var(name)
+                .map(|v| copy_attrs(&v.attrs, &["bounds"]))
+                .unwrap_or_default()
+        };
+        let mut extra: Vec<(String, AttrValue)> = Vec::new();
+        if g.is_healpix() {
+            if let Some(m) = &g.base.mapping {
+                push(
+                    &mut coords,
+                    OutCoord {
+                        name: m.var.clone(),
+                        dims: vec![],
+                        shape: vec![],
+                        dtype: DType::I32,
+                        values: vec![0.0],
+                        attrs: copy_attrs(&m.attrs, &[]),
+                    },
+                );
+                extra.push(("grid_mapping".into(), text(&m.var)));
+            }
+        } else if let Some(c) = g.coords()? {
+            let (xname, yname, xa, ya, f32c) = if g.base.kind == crate::model::GridKind::Healpix {
+                let mut xa = Attrs::default();
+                set_attr(&mut xa, "standard_name", text("longitude"));
+                set_attr(&mut xa, "long_name", text("longitude"));
+                set_attr(&mut xa, "units", text(&c.xunits));
+                let mut ya = Attrs::default();
+                set_attr(&mut ya, "standard_name", text("latitude"));
+                set_attr(&mut ya, "long_name", text("latitude"));
+                set_attr(&mut ya, "units", text(&c.yunits));
+                ("lon".to_owned(), "lat".to_owned(), xa, ya, true)
+            } else {
+                let (x, y) = (
+                    g.base.x.as_ref().expect("x axis"),
+                    g.base.y.as_ref().expect("y axis"),
+                );
+                (
+                    x.var.clone(),
+                    y.var.clone(),
+                    sattrs(&x.var),
+                    sattrs(&y.var),
+                    x.is_f32,
+                )
+            };
+            let dt = if f32c { DType::F32 } else { DType::F64 };
+            let (xd, yd, xs, ys): (Vec<String>, Vec<String>, Vec<usize>, Vec<usize>) = match g.kind
+            {
+                crate::model::GridKind::Regular | crate::model::GridKind::Gaussian => (
+                    vec![hd[1].clone()],
+                    vec![hd[0].clone()],
+                    vec![c.xvals.len()],
+                    vec![c.yvals.len()],
+                ),
+                _ => {
+                    let shape: Vec<usize> = hd
+                        .iter()
+                        .map(|n| v.dims.iter().find(|d| &d.name == n).map_or(0, |d| d.size))
+                        .collect();
+                    (hd.clone(), hd.clone(), shape.clone(), shape)
+                }
+            };
+            let (mut xa, mut ya) = (xa, ya);
+            if let (Some(xb), Some(yb)) = (&c.xbounds, &c.ybounds) {
+                let vdim = if c.nv == 2
+                    && matches!(
+                        g.kind,
+                        crate::model::GridKind::Regular | crate::model::GridKind::Gaussian
+                    ) {
+                    "bnds".to_owned()
+                } else {
+                    g.base.vdim.clone().unwrap_or_else(|| "nv".into())
+                };
+                add_dim(&mut dims, &vdim, c.nv, false)?;
+                for (cn, a, b, d, s) in [
+                    (&xname, &mut xa, xb, &xd, &xs),
+                    (&yname, &mut ya, yb, &yd, &ys),
+                ] {
+                    let bname = format!("{cn}_bnds");
+                    set_attr(a, "bounds", text(&bname));
+                    let mut bd = d.clone();
+                    bd.push(vdim.clone());
+                    let mut bs = s.clone();
+                    bs.push(c.nv);
+                    push(
+                        &mut coords,
+                        OutCoord {
+                            name: bname,
+                            dims: bd,
+                            shape: bs,
+                            dtype: dt,
+                            values: b.clone(),
+                            attrs: Attrs::default(),
+                        },
+                    );
+                }
+            }
+            push(
+                &mut coords,
+                OutCoord {
+                    name: xname.clone(),
+                    dims: xd,
+                    shape: xs,
+                    dtype: dt,
+                    values: c.xvals,
+                    attrs: xa,
+                },
+            );
+            push(
+                &mut coords,
+                OutCoord {
+                    name: yname.clone(),
+                    dims: yd,
+                    shape: ys,
+                    dtype: dt,
+                    values: c.yvals,
+                    attrs: ya,
+                },
+            );
+            if !matches!(
+                g.kind,
+                crate::model::GridKind::Regular | crate::model::GridKind::Gaussian
+            ) {
+                extra.push(("coordinates".into(), text(&format!("{yname} {xname}"))));
+            }
+            if g.kind == crate::model::GridKind::Unstructured {
+                extra.push(("CDI_grid_type".into(), text("unstructured")));
+            }
+        }
+        for &u in &users {
+            for (k, a) in &extra {
+                set_attr(&mut var_attrs[u], k, a.clone());
+            }
+        }
+    }
+    // dimensions first used by coordinates only keep their order after the data dimensions
+    let _ = lay;
+    let mut global = desc.attrs.clone();
+    if let Some(h) = history {
+        let line = match global.get_str("history") {
+            Some(old) if !old.is_empty() => format!("{h}\n{old}"),
+            _ => h.to_owned(),
+        };
+        set_attr(&mut global, "history", text(&line));
+    }
+    Ok(OutMeta {
+        dims,
+        coords,
+        var_attrs,
+        global,
+    })
+}

@@ -12,7 +12,8 @@ const USAGE: &str =
 
 options:
   -O                  overwrite existing outputs
-  -P <n>              number of threads
+  -P <n>              number of compute threads (default: all cores, at most 16 outside Slurm)
+  --io-threads <n>    blocking reads in flight (default: 64 in Slurm jobs, 32 otherwise)
   -f <fmt>            output format: nc4, nc4c, nc, zarr, zarr2
   -b <F32|F64>        output precision
   -s                  silent
@@ -26,7 +27,10 @@ options:
   --no_history        do not write the history attribute
   --progress json     progress on stderr
 
-information operators: sinfo, showname, showtimestamp, griddes";
+information operators: sinfo, showname, showtimestamp, griddes
+selections: selname, sellevel, seltimestep, seldate, selyear, selmon, selseason, sellonlatbox
+arithmetic: add, sub, mul, div, addc, subc, mulc, divc, ifthen
+other: copy, setgrid";
 
 fn write_stdout(s: &str) -> Result<()> {
     let mut out = std::io::stdout().lock();
@@ -38,11 +42,6 @@ fn write_stdout(s: &str) -> Result<()> {
 }
 
 fn run(cmd: &Command) -> Result<()> {
-    if cmd.options.plan {
-        // The planner comes later; for now --plan shows the parsed operator tree.
-        let v = serde_json::json!({"plan": null, "note": "planner not implemented yet", "command": cmd});
-        return write_stdout(&format!("{v}\n"));
-    }
     let spec = ops::lookup(&cmd.root.name).expect("parsed operator exists");
     if spec.class == AccessClass::Info {
         let path = match &cmd.root.inputs[0] {
@@ -63,7 +62,8 @@ fn run(cmd: &Command) -> Result<()> {
         return write_stdout(&text);
     }
     ops::require_implemented(&cmd.root)?;
-    Err(Error::internal("no executor yet"))
+    let text = cdors_core::exec::run(cmd)?;
+    write_stdout(&text)
 }
 
 fn main() {

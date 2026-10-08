@@ -12,6 +12,7 @@ zarrs_object_store.workspace = true
 object_store.workspace = true
 tokio.workspace = true
 rayon.workspace = true
+crossbeam-channel.workspace = true
 netcdf.workspace = true
 hdf5-metno.workspace = true
 cdshealpix.workspace = true

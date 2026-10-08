@@ -74,6 +74,8 @@ pub struct Options {
     pub overwrite: bool,
     /// `-P <n>`: thread cap.
     pub threads: Option<usize>,
+    /// `--io-threads <n>`: blocking reads in flight (separate from `-P`).
+    pub io_threads: Option<usize>,
     /// `-f <fmt>`.
     pub format: Option<OutFormat>,
     /// `-b <F32|F64>`.

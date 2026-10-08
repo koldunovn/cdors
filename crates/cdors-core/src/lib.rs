@@ -5,12 +5,16 @@
 //! - [`io`]: the chunk-source interface and the Zarr and NetCDF readers
 //! - [`chain`]: the parsed command (options and operator tree)
 //! - [`ops`]: the operator registry and the operators
+//! - [`plan`]: operator descriptions, stages and tiles
+//! - [`exec`]: the streaming executor and output layout
 
 pub mod chain;
 pub mod error;
+pub mod exec;
 pub mod io;
 pub mod model;
 pub mod ops;
+pub mod plan;
 
 pub mod remap;
 

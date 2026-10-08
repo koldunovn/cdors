@@ -33,6 +33,7 @@ const OPTIONS: &[&str] = &[
     "--percentile",
     "--no_history",
     "--progress",
+    "--io-threads",
 ];
 
 const PERCENTILE_METHODS: &[&str] = &[
@@ -206,6 +207,13 @@ fn parse_options(args: &[String]) -> Result<(Options, usize)> {
                     }
                 });
             }
+            "--io-threads" | "--io_threads" => {
+                let v = take(&mut i)?;
+                let n: usize = v.parse().ok().filter(|&n| n >= 1).ok_or_else(|| {
+                    Error::bad_arguments(format!("--io-threads needs a count >= 1, got '{v}'"))
+                })?;
+                o.io_threads = Some(n);
+            }
             "--mem" => o.mem = Some(parse_size(&take(&mut i)?)?),
             "--max-read" | "--max_read" => o.max_read = Some(parse_size(&take(&mut i)?)?),
             "--chunks" => o.chunks = Some(parse_chunks(&take(&mut i)?)?),
@@ -339,6 +347,8 @@ pub fn parse(args: &[String]) -> Result<Command> {
         "--timestat_date",
         "--percentile",
         "--progress",
+        "--io-threads",
+        "--io_threads",
     ];
     let mut long = Vec::new();
     let mut rest = Vec::new();

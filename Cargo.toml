@@ -20,6 +20,7 @@ object_store = { version = "0.14.2", default-features = false, features = ["http
 
 tokio = { version = "1.53", features = ["rt-multi-thread", "macros", "sync"] }
 rayon = "1.12"
+crossbeam-channel = "0.5"
 
 # NetCDF / HDF5 via the system (spack) netCDF-C and its HDF5; see env.sh.
 netcdf = "0.12.1"

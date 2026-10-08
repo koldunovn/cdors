@@ -14,6 +14,8 @@
 pub mod kerchunk;
 pub mod netcdf4_index;
 pub mod netcdf_fallback;
+pub mod write_netcdf;
+pub mod write_zarr;
 pub mod zarr;
 
 use crate::error::{Error, ErrorCode, Result};

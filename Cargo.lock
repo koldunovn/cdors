@@ -264,6 +264,7 @@ dependencies = [
  "base64 0.22.1",
  "blosc-src",
  "cdshealpix",
+ "crossbeam-channel",
  "flate2",
  "glob",
  "hdf5-metno",

@@ -12,10 +12,14 @@
 //! | whole_extent | tiles complete along one dimension (percentiles, running means, remapping) |
 //! | info | reads metadata (and possibly data) and prints to stdout; no output file |
 
+pub mod arith;
+pub mod files;
 pub mod info;
+pub mod select;
 
 use crate::chain::OpNode;
 use crate::error::{Error, ErrorCode, Result};
+use crate::plan::{Desc, Sources};
 use serde::Serialize;
 use std::sync::LazyLock;
 
@@ -188,6 +192,29 @@ fn op(
         implemented,
     }
 }
+
+/// Data operators implemented so far (information operators are marked in the table).
+const IMPLEMENTED: &[&str] = &[
+    "selname",
+    "sellevel",
+    "seltimestep",
+    "seldate",
+    "selyear",
+    "selmon",
+    "selseason",
+    "sellonlatbox",
+    "add",
+    "sub",
+    "mul",
+    "div",
+    "addc",
+    "subc",
+    "mulc",
+    "divc",
+    "ifthen",
+    "copy",
+    "setgrid",
+];
 
 fn build_registry() -> Vec<OpSpec> {
     use AccessClass::*;
@@ -545,6 +572,9 @@ fn build_registry() -> Vec<OpSpec> {
         }
     }
     for o in &mut r {
+        if IMPLEMENTED.contains(&o.name.as_str()) {
+            o.implemented = true;
+        }
         if o.name == "showname" {
             o.aliases.push("showvar");
         }
@@ -621,7 +651,35 @@ pub fn require_implemented(node: &OpNode) -> Result<&'static OpSpec> {
             format!("operator '{}' is not implemented yet", node.name),
         )
         .with("operator", node.name.clone())
-        .with_hint("implemented now: sinfo, showname, showtimestamp, griddes"));
+        .with_hint(format!(
+            "implemented now: {}",
+            REGISTRY
+                .iter()
+                .filter(|o| o.implemented)
+                .map(|o| o.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )));
     }
     Ok(spec)
+}
+
+/// Output description of a data operator from the descriptions of its inputs (no data read).
+pub fn describe(node: &OpNode, inputs: Vec<Desc>, srcs: &mut Sources) -> Result<Desc> {
+    let spec = require_implemented(node)?;
+    match spec.class {
+        AccessClass::Selection => select::describe(node, inputs),
+        AccessClass::Pointwise => match node.name.as_str() {
+            "copy" | "setgrid" => files::describe(node, inputs, srcs),
+            _ => arith::describe(node, inputs),
+        },
+        AccessClass::Info => Err(Error::bad_arguments(format!(
+            "'{}' prints information and cannot be the input of another operator",
+            node.name
+        ))),
+        AccessClass::Reduction | AccessClass::WholeExtent => Err(Error::new(
+            ErrorCode::NotImplemented,
+            format!("operator '{}' is not implemented yet", node.name),
+        )),
+    }
 }

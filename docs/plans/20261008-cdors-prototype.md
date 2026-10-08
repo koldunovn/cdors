@@ -293,23 +293,23 @@ cached. Rows needing `cdo` are skipped with a notice where it isn't available.
 - Create: `crates/cdors-core/src/ops/{select.rs,arith.rs,files.rs}`
 - Modify: `tests/run_cases.sh`, `tests/cases.txt`
 
-- [ ] operator interface: `describe` (input description to output description, no data touched) and an access class
+- [x] operator interface: `describe` (input description to output description, no data touched) and an access class
       (selection, pointwise, reduction, whole-extent); registry entries carry arguments, types, defaults
-- [ ] planner v0: chain to stages; selections become index sets per dimension and a list of chunks to read; pointwise
+- [x] planner v0: chain to stages; selections become index sets per dimension and a list of chunks to read; pointwise
       operators merged into the stage; tiles aligned to chunk boundaries; any running state is carried across chunk
       boundaries in a fixed order, never merged from per-chunk partials
-- [ ] executor: fetch, decode, compute, write as a pipeline with bounded queues; async I/O runtime plus a rayon pool;
+- [x] executor: fetch, decode, compute, write as a pipeline with bounded queues; async I/O runtime plus a rayon pool;
       `-P` caps threads; ➕ reads in flight are a separate knob (default 64; lower on login nodes), per the probe
-- [ ] writers: output format from the suffix (`.nc` NetCDF-4, `.zarr` Zarr v3) unless `-f` says otherwise (`nc4`,
+- [x] writers: output format from the suffix (`.nc` NetCDF-4, `.zarr` Zarr v3) unless `-f` says otherwise (`nc4`,
       `zarr`, `zarr2`); NetCDF-4 via `netcdf`; Zarr via `zarrs` (zstd, about 4 MB chunks with one timestep each,
       `--chunks`); write to a temporary name and rename on success; refuse an existing output without `-O`;
       `history` unless `--no_history`
-- [ ] operators: `selname`, `sellevel`, `seltimestep`, `seldate`, `selyear`, `selmon`, `selseason`, `sellonlatbox`
+- [x] operators: `selname`, `sellevel`, `seltimestep`, `seldate`, `selyear`, `selmon`, `selseason`, `sellonlatbox`
       (coordinates; HEALPix cells via `cdshealpix`), `add`/`sub`/`mul`/`div` (second input with one timestep is
       broadcast, as in CDO), `addc`/`subc`/`mulc`/`divc`, `ifthen`, `copy`, `setgrid`
-- [ ] switch on the Zarr-input variant and the planner check (tiny chunks only; `--mem` comes in Task 7)
-- [ ] rows for every operator above, plus `err:` rows for an unknown operator and an existing output without `-O`
-- [ ] run `tests/run_cases.sh` — must pass before Task 6
+- [x] switch on the Zarr-input variant and the planner check (tiny chunks only; `--mem` comes in Task 7)
+- [x] rows for every operator above, plus `err:` rows for an unknown operator and an existing output without `-O`
+- [x] run `tests/run_cases.sh` — must pass before Task 6
 
 ### Task 6: Time statistics by period and the first speed checkpoint
 
