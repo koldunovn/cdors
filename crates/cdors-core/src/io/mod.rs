@@ -29,6 +29,20 @@ use crate::model::{DType, Dataset, Encoding};
 use std::path::Path;
 use std::sync::Arc;
 
+/// The process-wide HDF5 lock. The spack HDF5 (1.14.3) is not thread-safe, and netCDF-C calls
+/// into it, so every call into the `netcdf` crate and into `hdf5-metno` runs under this lock.
+/// It is the reentrant lock both crates take around each of their own calls
+/// (`hdf5_metno_sys::LOCK`, re-exported by netcdf-sys as `libnetcdf_lock`); holding it across
+/// a whole sequence (open, read metadata, close) keeps other threads out between the calls.
+/// Being reentrant, nested use on one thread cannot deadlock. Rules that keep it deadlock-free
+/// across threads: take it *before* any other lock held during netCDF/HDF5 calls (the file
+/// mutexes of the netCDF reader and writer), and never wait for another thread while holding
+/// it. Chunk reads through the NetCDF-4 index (pread + own decoding) do not take it.
+#[must_use]
+pub fn hdf5_lock() -> impl Sized {
+    hdf5_metno_sys::LOCK.lock()
+}
+
 /// Decoded chunk values.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Values {

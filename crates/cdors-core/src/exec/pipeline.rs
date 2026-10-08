@@ -24,7 +24,7 @@ use crate::plan::tiling::{LeafRead, TileBox};
 use crossbeam_channel::{Receiver, Sender, unbounded};
 use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
 
 static T0: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
 
@@ -87,6 +87,11 @@ struct Shared {
     error: Mutex<Option<Error>>,
     cancel: AtomicBool,
     window: Semaphore,
+    /// Started after the threads that use them, before dispatch (see [`run`]). Without a
+    /// compute pool chunks are decoded on the I/O threads; without a write pool, Zarr chunks
+    /// are written by the writer thread.
+    compute: OnceLock<rayon::ThreadPool>,
+    write: OnceLock<rayon::ThreadPool>,
 }
 
 impl Shared {
@@ -222,12 +227,7 @@ fn lane_push(lane: &Lane, seq: usize, tile: Tile, tx: &Sender<Msg>, shared: &Sha
     }
 }
 
-fn fetch_loop(
-    rx: Receiver<Fetch>,
-    tx: Sender<Msg>,
-    pool: Arc<rayon::ThreadPool>,
-    shared: Arc<Shared>,
-) {
+fn fetch_loop(rx: Receiver<Fetch>, tx: Sender<Msg>, shared: Arc<Shared>) {
     while let Ok(f) = rx.recv() {
         let fail = |e: Error| {
             let mut g = f.tile.error.lock().expect("tile error");
@@ -247,9 +247,8 @@ fn fetch_loop(
                 chunk_done(&f.tile, &tx, &shared);
             }
             Ok(raw) => {
-                let tx = tx.clone();
-                let shared = shared.clone();
-                pool.spawn(move || {
+                let (tx, sh) = (tx.clone(), shared.clone());
+                let task = move || {
                     let r = match raw {
                         RawChunk::Decoded(d) => Ok(d),
                         RawChunk::Encoded(e) => e.decode(),
@@ -265,8 +264,12 @@ fn fetch_loop(
                             }
                         }
                     }
-                    chunk_done(&f.tile, &tx, &shared);
-                });
+                    chunk_done(&f.tile, &tx, &sh);
+                };
+                match shared.compute.get() {
+                    Some(pool) => pool.spawn(task),
+                    None => task(),
+                }
             }
         }
     }
@@ -413,63 +416,83 @@ impl Assembler {
     }
 }
 
+/// Chunk reads (at least one per tile) of a stage, counted up to `cap`: the number of tasks
+/// that can run at once, which bounds the useful size of the thread pools.
+pub fn count_reads(stage: &Stage, cap: usize) -> usize {
+    let mut n = 0usize;
+    for sv in &stage.vars {
+        for t in 0..sv.tiling.num_tiles() {
+            let bx = sv.tiling.tile(t);
+            let reads: usize = sv
+                .leaves
+                .iter()
+                .map(|l| LeafRead::new(l, &bx).num_chunks())
+                .sum();
+            n += reads.max(1);
+            if n >= cap {
+                return n;
+            }
+        }
+    }
+    n.max(1)
+}
+
 /// Runs one stage and writes its output through `writer`. Without a kernel, the stage's tiles
 /// are written; with a kernel, they are pushed lane by lane, in fold order, into the kernel's
 /// states, whose output tiles (described by `out`) are written.
 pub fn run(stage: &Stage, out: &[OutVar], writer: Arc<dyn Writer>, s: Settings) -> Result<()> {
     trace("pipeline start");
-    let pool = Arc::new(
-        rayon::ThreadPoolBuilder::new()
-            .num_threads(s.threads)
-            .thread_name(|i| format!("cdors-compute-{i}"))
-            .build()
-            .map_err(|e| Error::internal(format!("thread pool: {e}")))?,
-    );
     let shared = Arc::new(Shared {
         error: Mutex::new(None),
         cancel: AtomicBool::new(false),
         window: Semaphore::new(s.window),
+        compute: OnceLock::new(),
+        write: OnceLock::new(),
     });
     let (fetch_tx, fetch_rx) = unbounded::<Fetch>();
     let (msg_tx, msg_rx) = unbounded::<Msg>();
     let svs: Vec<Arc<StageVar>> = stage.vars.iter().cloned().map(Arc::new).collect();
 
-    std::thread::scope(|scope| {
-        for i in 0..s.io_threads {
-            let (rx, tx, pool, sh) = (
-                fetch_rx.clone(),
-                msg_tx.clone(),
-                pool.clone(),
-                shared.clone(),
-            );
-            std::thread::Builder::new()
-                .name(format!("cdors-io-{i}"))
-                .spawn_scoped(scope, move || fetch_loop(rx, tx, pool, sh))
-                .expect("spawn I/O thread");
-        }
-        drop(fetch_rx);
-
-        // writer thread
-        let wshared = shared.clone();
-        // Zarr chunks are encoded and stored (blocking file writes) on their own pool, so that
-        // slow storage does not stall decoding
-        let wpool = match rayon::ThreadPoolBuilder::new()
-            .num_threads(s.threads)
-            .thread_name(|i| format!("cdors-write-{i}"))
-            .build()
-        {
-            Ok(p) => Arc::new(p),
-            Err(e) => {
-                shared.fail(Error::internal(format!("thread pool: {e}")));
-                pool.clone()
-            }
+    std::thread::scope(|scope| -> Result<()> {
+        // Threads start in order of need, so that under a thread limit every role gets one
+        // before any gets more: the writer and one I/O thread (required), the compute pool and
+        // the Zarr write pool (halved while refused; without them their work runs on the I/O
+        // and writer threads), then the other I/O threads (as many as allowed).
+        let writer_handle = super::threads::spawn_scoped(scope, "cdors-writer".into(), || {
+            let (rx, w, sh) = (msg_rx.clone(), writer.clone(), shared.clone());
+            move || write_loop(rx, out, w, sh, s.threads)
+        })?;
+        drop(msg_rx);
+        let io = |_| {
+            let (rx, tx, sh) = (fetch_rx.clone(), msg_tx.clone(), shared.clone());
+            move || fetch_loop(rx, tx, sh)
         };
-        let writer_handle = std::thread::Builder::new()
-            .name("cdors-writer".into())
-            .spawn_scoped(scope, move || {
-                write_loop(msg_rx, out, writer, wshared, wpool, s.threads)
-            })
-            .expect("spawn writer thread");
+        if let Err(e) = super::threads::spawn_scoped(scope, "cdors-io-0".into(), || io(0)) {
+            // stop the writer and fail
+            let _ = msg_tx.send(Msg::Done(0));
+            drop(msg_tx);
+            let _ = writer_handle.join();
+            return Err(e);
+        }
+        let instead = "decoding on the I/O thread(s) instead";
+        if let Some(pool) = super::threads::build_optional_pool("compute", s.threads, instead) {
+            let _ = shared.compute.set(pool);
+        }
+        if !writer.ordered() {
+            // Zarr chunks are encoded and stored (blocking file writes) on their own pool, so
+            // that slow storage does not stall decoding
+            let nchunks: usize = out
+                .iter()
+                .map(|v| v.chunk_counts().iter().product::<usize>())
+                .sum();
+            let instead = "writing chunks one by one instead";
+            let n = s.threads.min(nchunks);
+            if let Some(pool) = super::threads::build_optional_pool("write", n, instead) {
+                let _ = shared.write.set(pool);
+            }
+        }
+        super::threads::spawn_more(scope, "io", 1, s.io_threads, io);
+        drop(fetch_rx);
 
         // dispatch
         let mut n = 0usize;
@@ -554,7 +577,8 @@ pub fn run(stage: &Stage, out: &[OutVar], writer: Arc<dyn Writer>, s: Settings) 
         if let Err(e) = r {
             shared.fail(e);
         }
-    });
+        Ok(())
+    })?;
     match shared.error.lock().expect("error lock").take() {
         Some(e) => Err(e),
         None => Ok(()),
@@ -566,14 +590,15 @@ fn write_loop(
     out: &[OutVar],
     writer: Arc<dyn Writer>,
     shared: Arc<Shared>,
-    pool: Arc<rayon::ThreadPool>,
     threads: usize,
 ) -> Result<()> {
     let mut asm = Assembler {
         vars: out.to_vec(),
         open: HashMap::new(),
     };
-    let ordered = writer.ordered();
+    // decided at the first chunk, when the pools are up: without a write pool, chunks are
+    // written in canonical order on this thread
+    let mut ordered: Option<bool> = None;
     // canonical order of chunks: (var, linear chunk index)
     let mut pending: BTreeMap<(usize, usize), ChunkBuf> = BTreeMap::new();
     let mut next = (0usize, 0usize);
@@ -622,7 +647,8 @@ fn write_loop(
         let done = asm.add(tile);
         release();
         for (var, lin, buf) in done {
-            if ordered {
+            let wpool = shared.write.get();
+            if *ordered.get_or_insert(writer.ordered() || wpool.is_none()) {
                 pending.insert((var, lin), buf);
                 while let Some(b) = pending.remove(&next) {
                     if !shared.cancel.load(Ordering::Relaxed)
@@ -635,7 +661,7 @@ fn write_loop(
                         next = (next.0 + 1, 0);
                     }
                 }
-            } else {
+            } else if let Some(pool) = wpool {
                 encode_slots.acquire();
                 let (w, sh, slots) = (writer.clone(), shared.clone(), encode_slots.clone());
                 pool.spawn(move || {

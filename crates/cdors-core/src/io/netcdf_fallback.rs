@@ -129,6 +129,7 @@ fn read_slab(
 impl NetcdfSource {
     /// Opens a NetCDF file (metadata only; coordinate variables are read to build grids and time).
     pub fn open(path: &str) -> Result<Self> {
+        let _hdf5 = super::hdf5_lock();
         let file = netcdf::open(path).map_err(|e| {
             Error::bad_data(format!("cannot open '{path}' as NetCDF: {e}"))
                 .with("path", path)
@@ -220,6 +221,7 @@ impl NetcdfSource {
 
     fn read(&self, var: &str, origin: &[usize], shape: &[usize]) -> Result<Values> {
         let (_, dtype, enc) = self.entry(var)?;
+        let _hdf5 = super::hdf5_lock();
         let file = self
             .file
             .lock()

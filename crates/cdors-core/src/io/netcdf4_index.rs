@@ -309,10 +309,11 @@ impl Nc4Index {
         Ok(index)
     }
 
-    /// Build the index through HDF5 (no cache). HDF5 calls are serialised by hdf5-metno's global
-    /// lock, which netCDF-C calls through the `netcdf` crate share.
+    /// Build the index through HDF5 (no cache), under [`super::hdf5_lock`] from opening the file
+    /// to dropping the last HDF5 handle.
     pub fn build(path: &Path) -> Result<Self, Nc4Error> {
         let (canon, file_size, mtime_ns) = file_identity(path)?;
+        let _hdf5 = super::hdf5_lock();
         let herr = |e: hdf5_metno::Error| Nc4Error::Hdf5 {
             path: canon.display().to_string(),
             msg: e.to_string(),

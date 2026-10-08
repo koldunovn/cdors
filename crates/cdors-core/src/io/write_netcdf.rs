@@ -67,6 +67,7 @@ impl NcWriter {
         history: Option<&str>,
     ) -> Result<Self> {
         let meta: OutMeta = out_meta(plan, lay, history)?;
+        let _hdf5 = super::hdf5_lock();
         let opts = if classic {
             netcdf::Options::NOCLOBBER
         } else {
@@ -149,6 +150,7 @@ impl Writer for NcWriter {
 
     fn write(&self, var: usize, origin: &[usize], shape: &[usize], data: Values) -> Result<()> {
         let ov = &self.vars[var];
+        let _hdf5 = super::hdf5_lock();
         let mut g = self
             .file
             .lock()
@@ -177,6 +179,7 @@ impl Writer for NcWriter {
     }
 
     fn finish(&self) -> Result<()> {
+        let _hdf5 = super::hdf5_lock();
         let f = self
             .file
             .lock()

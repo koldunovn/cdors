@@ -85,3 +85,11 @@ ulp      | -remap,r18x9,{fix}/weights_con_r36x18_r18x9.nc {in} | r36x18_std
 ulp      | -hpdegrade,nside=2 {in}                     | hpz2_noleap
 ulp      | -hpdegrade,nside=1,order=ring,stat=avg {in} | hpz2_noleap
 err:unsupported_grid | -remapbil,r18x9 {in}            | unst_360
+
+#
+# Task 10: mergetime and cat over the yearly pieces of r36x18_std ({fx}: fixture directory)
+exact    | -mergetime {fx}/r36x18_std_y2001.nc {fx}/r36x18_std_y2002.nc {fx}/r36x18_std_y2000.nc | r36x18_std
+exact    | -cat {fx}/r36x18_std_y2000.nc {fx}/r36x18_std_y2001.nc {fx}/r36x18_std_y2002.nc | r36x18_std
+ulp      | -yearmean -mergetime {fx}/r36x18_std_y*.nc | r36x18_std
+exact    | -selname,pr -seltimestep,300/500 -cat {fx}/r36x18_std_y*.nc | r36x18_std
+err:bad_data | -cat {fx}/r36x18_std_y2001.nc {fx}/r36x18_std_y2000.nc | r36x18_std

@@ -25,6 +25,7 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Versions of the native libraries this build is linked against (HDF5 and netCDF-C).
 pub fn native_library_versions() -> String {
+    let _hdf5 = io::hdf5_lock();
     let (major, minor, patch) = hdf5_metno::library_version();
     format!(
         "HDF5 {major}.{minor}.{patch}, netCDF-C {}",

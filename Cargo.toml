@@ -25,6 +25,8 @@ crossbeam-channel = "0.5"
 # NetCDF / HDF5 via the system (spack) netCDF-C and its HDF5; see env.sh.
 netcdf = "0.12.1"
 hdf5-metno = "0.15.0"
+# Only for its `LOCK`, the one HDF5 lock that hdf5-metno and netcdf-sys already share.
+hdf5-metno-sys = "0.12.4"
 
 cdshealpix = "0.9.1"
 serde = { version = "1.0", features = ["derive"] }

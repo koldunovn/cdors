@@ -5,6 +5,7 @@
 //! renames the result into place on success. On failure it removes its own temporary output.
 
 pub mod pipeline;
+pub mod threads;
 
 use crate::chain::{Command, Precision};
 use crate::error::{Error, ErrorCode, Result};
@@ -182,8 +183,15 @@ fn remove_own_temp(tmp: &Path) {
 /// Plans and runs a command that writes one output.
 pub fn run(cmd: &Command) -> Result<String> {
     let plan = plan::build(cmd)?;
-    let threads = default_threads(cmd);
-    let io_threads = default_io_threads(cmd).max(1);
+    // pools no larger than the work: one task per chunk read (at least one per tile)
+    let (threads, io_threads) = (default_threads(cmd).max(1), default_io_threads(cmd).max(1));
+    let tasks = plan
+        .stages
+        .iter()
+        .map(|s| pipeline::count_reads(s, threads.max(io_threads)))
+        .max()
+        .unwrap_or(1);
+    let (threads, io_threads) = (threads.min(tasks), io_threads.min(tasks));
     if cmd.options.plan {
         return Ok(format!("{}\n", plan.to_json(threads, io_threads)));
     }

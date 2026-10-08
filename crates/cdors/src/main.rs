@@ -30,7 +30,7 @@ options:
 information operators: sinfo, showname, showtimestamp, griddes
 selections: selname, sellevel, seltimestep, seldate, selyear, selmon, selseason, sellonlatbox
 arithmetic: add, sub, mul, div, addc, subc, mulc, divc, ifthen
-other: copy, setgrid";
+other: copy, setgrid, mergetime, cat";
 
 fn write_stdout(s: &str) -> Result<()> {
     let mut out = std::io::stdout().lock();
@@ -44,8 +44,12 @@ fn write_stdout(s: &str) -> Result<()> {
 fn run(cmd: &Command) -> Result<()> {
     let spec = ops::lookup(&cmd.root.name).expect("parsed operator exists");
     if spec.class == AccessClass::Info {
-        let path = match &cmd.root.inputs[0] {
-            Input::Path(p) => p,
+        let src = match &cmd.root.inputs[0] {
+            Input::Path(p) => cdors_core::io::open(p)?,
+            Input::Op(o) if ops::files::is_concat(&o.name) => {
+                ops::require_implemented(o)?;
+                ops::files::open_concat(o)?
+            }
             Input::Op(o) => {
                 return Err(Error::new(
                     cdors_core::error::ErrorCode::NotImplemented,
@@ -57,7 +61,6 @@ fn run(cmd: &Command) -> Result<()> {
                 .with_hint("run the information operator on a file or store"));
             }
         };
-        let src = cdors_core::io::open(path)?;
         let text = ops::info::run(&cmd.root.name, src.as_ref(), &cmd.options)?;
         return write_stdout(&text);
     }
@@ -86,7 +89,12 @@ fn main() {
     }
     // Errors raised while parsing need to know about --json too.
     let json = args.iter().any(|a| a == "--json");
-    let result = parse::parse(&args).and_then(|cmd| run(&cmd));
+    cdors_core::exec::threads::set_json(json);
+    let result = parse::parse(&args).and_then(|cmd| {
+        // a small global pool for library work outside cdors' own pools (see exec::threads)
+        cdors_core::exec::threads::init_global(cdors_core::exec::default_threads(&cmd).min(4))?;
+        run(&cmd)
+    });
     if let Err(e) = result {
         if json {
             eprintln!("{}", e.to_json());

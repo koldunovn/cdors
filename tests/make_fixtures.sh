@@ -6,6 +6,7 @@
 #   r36x18_2lev   same, tas on two pressure levels (1000 and 850 hPa)
 #   hpz2_noleap   HEALPix zoom 2 (nside 4, 192 cells), noleap (cdo writes "365_day") calendar, 1095 steps, with missing values
 #   unst_360      20x18 regular grid turned unstructured (360 cells), 360_day calendar, 1080 steps
+#   r36x18_std_y2000 / _y2001 / _y2002   the years of r36x18_std (cdo splityear), for mergetime / cat
 #   hpz2_noleap.zarr2 / .zarr3   xarray copies of hpz2_noleap (Zarr v2 / v3), time chunks of 73
 #   hpz2_noleap_tiny.zarr2       tiny chunks (10 steps x 16 cells) for the planner check
 #   weights_con_r36x18_r18x9.nc  SCRIP weights of cdo gencon,r18x9 for r36x18_std (remap,<grid>,<weights> rows)
@@ -59,6 +60,16 @@ nc() {   # nc NAME CHAIN...: write NAME.nc atomically unless it exists
 nc r36x18_std  $(chain r36x18 standard 1096 '' deg)
 nc hpz2_noleap $(chain hpz2   365_day  1095 '' rad 1)
 nc unst_360    $(chain r20x18 360_day  1080 -setgridtype,unstructured deg)
+
+# Yearly pieces of r36x18_std (split under a temporary prefix, then renamed one by one).
+if [[ -e r36x18_std_y2000.nc && -e r36x18_std_y2001.nc && -e r36x18_std_y2002.nc ]]; then
+  echo "exists: $FIX/r36x18_std_y{2000,2001,2002}.nc"
+else
+  "$CDO" -s --no_history -f nc4 -b F32 splityear r36x18_std.nc "r36x18_std_y.tmp$$."
+  for y in 2000 2001 2002; do
+    [[ -e r36x18_std_y$y.nc ]] || { mv "r36x18_std_y.tmp$$.$y.nc" "r36x18_std_y$y.nc"; echo "made:   $FIX/r36x18_std_y$y.nc"; }
+  done
+fi
 
 # Two pressure levels of tas: merge two single-level chains with different z-axes.
 printf 'zaxistype = pressure\nsize = 1\nlevels = 100000\n' > zaxis_p100000.txt

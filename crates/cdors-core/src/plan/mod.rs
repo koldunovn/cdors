@@ -732,6 +732,9 @@ pub struct Plan {
 
 /// Describes an operator tree recursively.
 pub fn describe_tree(node: &OpNode, srcs: &mut Sources) -> Result<Desc> {
+    if crate::ops::files::is_concat(&node.name) {
+        return crate::ops::files::describe_concat(node, srcs);
+    }
     let mut inputs = Vec::with_capacity(node.inputs.len());
     for i in &node.inputs {
         inputs.push(match i {

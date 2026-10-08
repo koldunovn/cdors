@@ -142,6 +142,7 @@ impl RemapWeights {
             path: path.to_owned(),
             msg,
         };
+        let _hdf5 = crate::io::hdf5_lock();
         let file = netcdf::open(path).map_err(nc_err)?;
 
         let text_att = |name: &str| -> Option<String> {

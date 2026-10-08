@@ -227,6 +227,8 @@ const IMPLEMENTED: &[&str] = &[
     "remapycon",
     "hpdegrade",
     "hpupgrade",
+    "mergetime",
+    "cat",
 ];
 
 fn build_registry() -> Vec<OpSpec> {

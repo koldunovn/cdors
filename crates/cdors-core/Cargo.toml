@@ -15,6 +15,7 @@ rayon.workspace = true
 crossbeam-channel.workspace = true
 netcdf.workspace = true
 hdf5-metno.workspace = true
+hdf5-metno-sys.workspace = true
 cdshealpix.workspace = true
 serde.workspace = true
 serde_json.workspace = true
