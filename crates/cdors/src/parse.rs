@@ -219,7 +219,7 @@ fn parse_options(args: &[String]) -> Result<(Options, usize)> {
             "--chunks" => o.chunks = Some(parse_chunks(&take(&mut i)?)?),
             "--timestat_date" => {
                 let v = take(&mut i)?;
-                o.timestat_date = match v.as_str() {
+                o.timestat_date = Some(match v.as_str() {
                     "first" => TimestatDate::First,
                     "middle" => TimestatDate::Middle,
                     "midhigh" => TimestatDate::Midhigh,
@@ -230,7 +230,7 @@ fn parse_options(args: &[String]) -> Result<(Options, usize)> {
                                 .with_hint("--timestat_date takes first, middle, midhigh or last"),
                         );
                     }
-                };
+                });
             }
             "--percentile" => {
                 let v = take(&mut i)?.to_ascii_lowercase();
