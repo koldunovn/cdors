@@ -399,7 +399,7 @@ cached. Rows needing `cdo` are skipped with a notice where it isn't available.
 
 - [x] read SCRIP weight files; apply them in parallel over target cells with double-precision sums and CDO's
       missing-value handling
-- [x] (core in `remap/gen.rs`; operator wiring pending) `remapnn`, `remapdis`, `remapbil`, `remapcon`: run `cdo gen<method>,<grid>` once per (source grid, target grid,
+- [x] `remapnn`, `remapdis`, `remapbil`, `remapcon`: run `cdo gen<method>,<grid>` once per (source grid, target grid,
       method), writing a small source-grid NetCDF first when the input is remote Zarr; cache weights in
       `$CDORS_CACHE/weights/` keyed by a hash; if `cdo` is missing, fail with a hint to use `remap,<grid>,<weights.nc>`
 - [x] `remap,<grid>,<weights.nc>` for any SCRIP file
