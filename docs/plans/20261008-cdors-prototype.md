@@ -332,6 +332,10 @@ cached. Rows needing `cdo` are skipped with a notice where it isn't available.
 - [ ] run `tests/run_cases.sh` — must pass
 - [ ] **checkpoint:** with Nikolay's go-ahead (about 0.5 node-hour), run W1 with cdors and cdo on one node; if cdors
       is not on track for 5×, investigate before Task 7
+- ⚠️ 2026-10-09: the grouping and output-time-axis rules exist in `model/timegroup.rs` (GroupTracker, ClimTracker)
+      and match cdo 2.6.0 in 990 checks (timestamps and `time_bnds`, all `--timestat_date` values, seasons with
+      `CDO_SEASON_START`, Feb 29 in `yday*`). Kernels and operator wiring still to do. CDI rewrites timestamps when
+      time units are months/years since (`taxis.c:1033`); writers must reproduce it if such units are written.
 
 ### Task 7: Whole-extent time operators, memory budget and multi-pass
 
