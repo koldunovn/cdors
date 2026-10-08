@@ -356,6 +356,11 @@ cached. Rows needing `cdo` are skipped with a notice where it isn't available.
 - [ ] switch on `--mem 1M` in the planner-check variant
 - [ ] rows: `monpctl` (`exact`), `timpctl` (`bin`), `runmean`, `ymonsub`
 - [ ] run `tests/run_cases.sh` — must pass
+- ⚠️ 2026-10-09: exact percentile kernel (`kernels/percentile.rs`, branch `worktree-agent-a1b8b4bdf4f834f6b`, merge
+      after Task 5) supports all 16 cdo methods; `monpctl` matches cdo to ≤ 1 ulp (99.9 % bit-identical), `timpctl` nrank
+      within 0.96 histogram bins. cdo bug to record in `docs/deviations.md`: for hazen, weibull, median_unbiased and
+      normal_unbiased near p = 100 cdo reads `x[n]` past its buffer (zeroed memory) and returns `(1−h)·x[n−1]`;
+      cdors returns `x[n−1]`.
 
 ### Task 8: Space statistics
 
