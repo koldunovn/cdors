@@ -1,7 +1,7 @@
 # Baseline: cdo 2.6.0 on W1–W4 and raw read throughput (Task 2)
 
-Status (2026-10-08): datasets chosen, short login-node indications taken, `bench/baseline.sbatch` written and
-**not submitted**. The section "Baseline results (compute node)" is filled in after Nikolay approves the job.
+Status (2026-10-09): datasets chosen, short login-node indications taken for cdo and for the read probe
+(`crates/cdors-core/examples/read_probe.rs`), `bench/baseline.sbatch` written and **not submitted**. The section "Baseline results (compute node)" is filled in after Nikolay approves the job.
 
 ## Datasets
 
@@ -72,29 +72,121 @@ What the numbers suggest for the gate (to be confirmed on a compute node):
 - W3's remap itself is cheap (about 4 ms per 1440 × 721 field to r360x180). Like W2, W3 is an I/O workload
   under cdo.
 
+## Preliminary probe (login node) — indications only
+
+`read_probe` (Task 2) opens one Zarr array with zarrs 0.23.14, enumerates its chunks, reads the **encoded**
+chunk bytes and decodes them in parallel on a rayon pool. It prints one JSON line per run.
+
+```
+read_probe <store path | https URL> <array> [--threads N] [--concurrency M] [--max-chunks K]
+           [--dim0-range a:b] [--order index|spread] [--http-sync] [--http2]
+```
+
+- Local stores, default "fused": each of the N threads reads a chunk file and decodes it at once, so N reads are
+  in flight. With `--concurrency M`, "pipelined": M reader threads feed the N decoders through a bounded queue.
+- HTTPS: M async fetches in flight (object_store HTTP client through `zarrs_object_store`, tokio), decoded on N
+  rayon threads. `--http-sync` instead has each rayon thread block on its own fetch; it was no faster (below), so
+  the async path is the default.
+- `--dim0-range a:b` selects chunk rows (first chunk index, not time steps); `--max-chunks K` keeps the first K
+  chunks; `--order spread` visits them in a fixed shuffled order. Missing chunks count as fill
+  (`missing_chunks`, `fill_bytes`), not as errors and not as decoded bytes. Every decoded chunk is read back (one
+  value per 4 KiB is summed into `checksum`), so no decode can be optimised away.
+- The time split: `fetch_thread_s` and `decode_thread_s` are summed over threads (or over requests);
+  `fetch_share` is their ratio. `fetch_inflight_mean` is the mean number of reads in flight and `decode_busy` the
+  fraction of the N decode threads in use.
+
+Shared login node (`levante`, 256 cores, load ~5), 2026-10-09, at most 16 decode threads and 64 reads in flight,
+each run under 6 s. GB = 10⁹ bytes. "Cold" = chunk rows that no earlier run had read; each cold run used its
+own rows. W1 = ngc4008 `tas` daily (`ngc4008_P1D_9.zarr`), 300 chunks = 2.36 GB decoded / 1.31 GB encoded,
+or 600 chunks = 4.72 / 2.62 GB; W4 = `ngc4008_PT3H_9.zarr` `tas`, 150 chunks = 2.44 / 1.38 GB; W2 = EERIE cloud
+`/kerchunk` `pr`, 200 chunks = 0.83 / 0.72 GB.
+
+| Store, rows | Mode | Threads / in flight | Chunks | Decoded GB/s | Encoded GB/s | Fetch share | Cache |
+|---|---|---|---|---|---|---|---|
+| W1 0:10 | fused | 16 / 16 | 300 | 3.66 | 2.04 | 93 % | first touch (partly cached?) |
+| W1 0:10 | fused | 4 / 4 | 300 | 9.73 | 5.41 | 45 % | warm |
+| W1 0:10 | fused | 8 / 8 | 300 | 17.6 | 9.77 | 50 % | warm |
+| W1 0:10 | fused | 16 / 16 | 300 | 22.9 | 12.7 | 41 % | warm |
+| W1 200:210 | fused | 16 / 16 | 300 | 2.82 | 1.57 | 95 % | cold |
+| W1 220:230 | fused | 8 / 8 | 300 | 1.51 | 0.84 | 96 % | cold |
+| W1 260:270 | fused, spread order | 16 / 16 | 300 | 2.92 | 1.62 | 95 % | cold |
+| W1 280:300 | pipelined | 16 / 32 | 600 | 5.85 | 3.25 | 94 % | cold |
+| W1 240:250 | pipelined | 16 / 64 | 300 | 7.73 | 4.30 | 91 % | cold |
+| W1 300:320 | pipelined | 16 / 64 | 600 | **9.67** | **5.37** | 94 % (decode busy 21 %) | cold |
+| W1 320:340 | pipelined | 8 / 64 | 600 | 9.54 | 5.30 | 95 % (decode busy 33 %) | cold |
+| W4 100:101 | fused | 16 / 16 | 150 | 3.79 | 2.14 | 92 % | cold |
+| W4 120:121 | pipelined | 16 / 64 | 150 | **8.90** | **5.05** | 87 % (decode busy 45 %) | cold |
+| W2 cloud | async | 4 / 4 | 100 | 0.083 | 0.073 | 99 % | – |
+| W2 cloud | async | 16 / 16 | 200 | 0.171 | 0.149 | > 99 % | – |
+| W2 cloud | async, HTTP/2 allowed | 16 / 16 | 200 | 0.212 | 0.184 | > 99 % | – |
+| W2 cloud | sync (`--http-sync`) | 16 / 16 | 200 | 0.179 | 0.155 | > 99 % | – |
+| W2 cloud | async | 16 / 64 | 200 | 0.212 | 0.185 | > 99 % | – |
+| W2 cloud | async, same rows again | 16 / 64 | 200 | 0.215 | 0.188 | > 99 % | – |
+
+What the probe shows:
+- **Decoding is cheap.** blosc-lz4 with shuffle decodes at about 4.4 GB/s of output per thread on W1 (2.36 GB in
+  0.53 thread-seconds) and about 2.7 GB/s per thread on W2's `pr`. Two or three threads could decode 10 GB/s.
+- **Cold Lustre reads are latency-bound, and the fix is reads in flight, not decode threads.** A 4.4 MB W1 chunk
+  file takes about 40–45 ms cold (≈ 100 MB/s per stream, the same rate cdo's serial reader sees). With 16 reads in
+  flight the probe reaches 2.8–2.9 GB/s decoded, with 32 it reaches 5.9 GB/s, and with 64 it reaches 9.5–9.7 GB/s
+  (5.3 GB/s from Lustre). Eight or sixteen decode threads make no difference at 64 reads in flight. Visiting the
+  chunks in a shuffled order does not help either. W4's 16 MB chunks behave the same way (3.8 → 8.9 GB/s).
+- **Warm (page cache) reads** reach 23 GB/s decoded with 16 threads.
+- **The EERIE cloud is limited on the server side at about 0.19 GB/s compressed** (0.21 GB/s decoded). The rate is
+  the same at 16 and 64 requests in flight, with HTTP/1.1 or HTTP/2, with the async or the sync client, and when
+  the same chunks are read again. Each request is then slow: at 64 in flight, one 3.6 MB chunk takes 1.1 s. This
+  is the rate that Python with 8 threads got (0.18 GB/s). Whether this is a per-client limit or the server's
+  total cannot be told from one host.
+
+What the EERIE `/kerchunk` endpoint serves (checked 2026-10-09): Zarr **v2** only — `.zmetadata`, `.zgroup`,
+`pr/.zarray` and `pr/.zattrs` answer 200, `zarr.json` answers 404. `pr/.zarray` is `shape [36890, 721, 1440]`,
+`chunks [1, 721, 1440]`, `<f4`, `fill_value null`, `order C`, **`compressor null`, `filters [{id: blosc, cname
+lz4, clevel 5, shuffle 1, blocksize 4152960}]`**. Chunks are served whole from nginx with `accept-ranges: bytes`
+and `cache-control: max-age=604800`; HTTP/2 is offered. **A chunk key outside the array answers 503, not 404**, so
+cdors cannot treat 404 as the only "missing chunk" answer from this server and must not retry 503 forever.
+⚠️ zarrs 0.23.14 refuses this array ("the blosc codec cannot be created from numcodecs.blosc metadata
+directly"): it only converts blosc to a v3 codec when blosc is the `compressor`, because it needs the element size.
+The probe falls back to moving a trailing bytes-to-bytes filter into the empty compressor slot, which is the same
+pipeline. cdors (Tasks 10 and 11) needs the same normalisation for every kerchunk store made from HDF5 filters.
+
+Preliminary gate reading (login node; the compute-node job decides):
+- On W1, cdo's effective throughput is about 0.95 GB/s decoded. The probe reads **cold** W1 chunks at
+  **9.5–9.7 GB/s decoded with 64 reads in flight, about 10× cdo**, and warm chunks at 23 GB/s with 16 threads
+  (about 24×). The 5× target (≥ 5 GB/s) is met on the login node, but only with more reads in flight than decode
+  threads: the fused mode with 16 threads reaches only 3×. The design consequence for cdors is a reader with a
+  separate, larger I/O concurrency (64 or more) feeding a smaller decode pool.
+- Caveats: runs read only 1.3–2.6 GB from Lustre and last 0.3–0.8 s, the login node and Lustre are shared, and
+  Lustre server caches may have held some rows. The compute-node job reads full decades (46 GB) with 128 threads
+  and up to 256 reads in flight.
+- On cold W4, the probe's 8.9 GB/s is about 50× cdo's 0.18 GB/s.
+- For the cloud (W2), cdo cannot read the store at all. The probe matches the server's limit, which is about the
+  rate cdo reaches on the raw files (0.22 GB/s). The proposed Task 13 mark "remote throughput at least half of
+  local" cannot be met against this endpoint as long as the server caps a client at about 0.2 GB/s.
+
 ## The compute-node job (`bench/baseline.sbatch`) and its cost
 
 One exclusive `compute` node, account `ab0995` (`sacctmgr` lists it, with the `normal` QOS), `--mem=0`,
 time limit 1:30 h. It sources `env.sh` and writes to `/scratch/a/a270088/cdors-bench/baseline-<jobid>/`
-(`summary.tsv` with wall, user, sys, max RSS and cdo's read/total timers; one `.log` and `.time` per run).
+(`summary.tsv` with wall, user, sys, max RSS and cdo's read/total timers; one `.log` and `.time` per run;
+`probe.jsonl` with the JSON line of every probe run).
 
 | Step | Runs | Expected wall (from the rates above) |
 |---|---|---|
-| W1 | cdo `-P 1 -T yearmean` decade 1 (cold); probe on decade 2 with 128 threads (cold); cdo `-P 16 yearmean` and `-P 1 -T fldmean` (warm); probe on decade 1 with 1/16/64/128 threads (warm) | ~8 min |
-| W4 (1 year) | cdo `-P 1 -T ydaymean` (cold); `-P 16 timpctl,95 in -timmin in -timmax in` (warm) | ~4–8 min |
-| W2 (decade) | cdo `-P 16 fldmean -sellonlatbox -select,name=pr` over 240 files; `-P 1 -T fldmean` on 4 other raw months; probe on the cloud `/kerchunk` store with 64 threads (whole `pr`, 133 GB compressed, capped at 30 min) | ~5–35 min |
+| W1 | cdo `-P 1 -T yearmean` decade 1 (cold); probe on decade 2 (chunk rows 122:244) with 128 threads and 256 reads in flight, and on decade 3 (rows 244:366) with 128 fused threads (both cold, 46 GB decoded each); cdo `-P 16 yearmean` and `-P 1 -T fldmean` (warm); probe on decade 1 (rows 0:122) with 1/16/64/128 fused threads and with 128 threads / 256 in flight (warm) | ~8 min |
+| W4 (1 year) | cdo `-P 1 -T ydaymean` (cold); `-P 16 timpctl,95 in -timmin in -timmax in` (warm); probe on 6 time blocks (1152 chunks, 18.7 GB decoded) cold (rows 12:18) and warm (rows 0:6), 128 threads / 256 in flight | ~4–8 min |
+| W2 (decade) | cdo `-P 16 fldmean -sellonlatbox -select,name=pr` over 240 files; `-P 1 -T fldmean` on 4 other raw months; probe on the cloud `/kerchunk` store, 2000 chunks each (7.2 GB compressed) with 64 and with 16 requests in flight | ~5–8 min |
 | W3 (5 years) | `genbil`; `-P 16 remapbil` and cached `remap` over 120 files; `-P 1 -T remapbil` on 3 other raw months | ~3 min |
 
-**Cost: expected 0.5–0.8 node-hours, at most 1.5 node-hours (the time limit),** within the 1–2 node-hours
-that the plan budgets for Task 2. Most of the uncertainty comes from the cloud probe. If the probe reads at
-≥ 0.5 GB/s, it finishes in under 5 min.
+**Cost: expected 0.4–0.6 node-hours, at most 1.5 node-hours (the time limit),** within the 1–2 node-hours
+that the plan budgets for Task 2. The cloud probe is now capped (2 × 2000 chunks, about 40 s each at the 0.19 GB/s
+seen from the login node); each probe run also has a 15-minute `timeout`.
 
 Before submitting:
-- the `read_probe` example must be built (`cargo build --release --example read_probe`). The job calls
-  `$CARGO_TARGET_DIR/release/examples/read_probe <zarr-path-or-url> <variable> <threads>`. Without the binary,
-  the probe rows fail (rc 127) and the cdo rows still run;
-- the probe reads **every** chunk of the variable. For the cloud, that is 36 890 chunks (133 GB). If that is too
-  much, give the probe an optional chunk or time limit and add it to the cloud call in the sbatch;
+- the `read_probe` example must be built on the login node (`source env.sh && cargo build --release --example
+  read_probe`, into `$CARGO_TARGET_DIR=/work/ab0995/a270088/cdors-target`). The job stops at once if
+  `$CARGO_TARGET_DIR/release/examples/read_probe` is missing, so no node time is spent without it;
+- the W1 and W4 probe runs read the source stores with `--dim0-range` (chunk rows), not the views; the rows
+  cover the same chunk files as the views (plus up to 8 days at the end of each decade);
 - the views under `/scratch/a/a270088/cdors-bench/views/` already exist; the job recreates any that are missing.
 
 ## Baseline results (compute node)

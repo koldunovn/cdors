@@ -1,13 +1,15 @@
 #!/bin/bash
 # cdors Task 2 baseline: cdo 2.6.0 on workloads W1-W4, cdo read-time shares (-P 1 -T), and the
-# zarrs read probe on W1 (Lustre) and W2 (EERIE cloud). Datasets: bench/datasets.md.
+# zarrs read probe on W1 and W4 (Lustre) and W2 (EERIE cloud). Datasets: bench/datasets.md.
 #
 # DO NOT SUBMIT without Nikolay's explicit go-ahead. Estimate: one exclusive node, expected
-# ~0.75 h, limit 1.5 h  =>  at most 1.5 node-hours (see docs/baseline.md).
+# ~0.5 h, limit 1.5 h  =>  at most 1.5 node-hours (see docs/baseline.md).
 #
+# Build the probe on the login node first (the job refuses to start without it):
+#   source env.sh && cargo build --release --example read_probe
 #   sbatch /home/a/a270088/cdo/bench/baseline.sbatch
 #
-# Outputs: /scratch/a/a270088/cdors-bench/baseline-<jobid>/ (summary.tsv, *.log, *.time, *.nc)
+# Outputs: /scratch/a/a270088/cdors-bench/baseline-<jobid>/ (summary.tsv, probe.jsonl, *.log, *.time, *.nc)
 #
 #SBATCH --job-name=cdors-baseline
 #SBATCH --partition=compute
@@ -28,6 +30,11 @@ ROOT=/scratch/a/a270088/cdors-bench
 VIEWS=$ROOT/views
 OUT=$ROOT/baseline-${SLURM_JOB_ID:-manual}
 PROBE=$CARGO_TARGET_DIR/release/examples/read_probe
+if [ ! -x "$PROBE" ]; then
+    echo "read_probe not found at $PROBE; build it on the login node first:" >&2
+    echo "  source /home/a/a270088/cdo/env.sh && cargo build --release --example read_probe" >&2
+    exit 1
+fi
 mkdir -p "$OUT" "$VIEWS"
 SUMMARY=$OUT/summary.tsv
 printf "name\trc\twall_s\tuser_s\tsys_s\tmaxrss_GB\tcdo_read_s\tcdo_total_s\n" > "$SUMMARY"
@@ -50,6 +57,17 @@ run() {
     tot=$(awk '$1=="total" && NF==6 {print $6}' "$OUT/$name.log" | tail -1)
     printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" "$name" "$rc" "$wall" "$user" "$sys" "$rss" "${rd:--}" "${tot:--}" >> "$SUMMARY"
     tail -n 1 "$SUMMARY"
+}
+
+# probe NAME ARGS... : run read_probe under run(), and collect its JSON line in probe.jsonl.
+# read_probe <store or URL> <array> [--threads N] [--concurrency M] [--max-chunks K]
+#            [--dim0-range a:b (chunk indices)] [--order index|spread]
+# Local stores: without --concurrency each of the N threads reads and decodes ("fused");
+# with --concurrency M, M reader threads feed N decoders ("pipelined").
+probe() {
+    local name=$1; shift
+    run "$name" timeout 15m "$PROBE" "$@"     # safety cap; every planned run takes < 2 min
+    grep -h '^{' "$OUT/$name.log" >> "$OUT/probe.jsonl"
 }
 
 # ---------------------------------------------------------------- environment record
@@ -81,25 +99,36 @@ W2URL=https://eerie.cloud.dkrz.de/datasets/icon-esm-er.eerie-control-1950.v20240
 BOX=-30,40,30,75
 
 # ---------------------------------------------------------------- W1: yearmean, HEALPix z9 Zarr (46 GB decoded per decade)
-# cold first: cdo on decade 1 (single operator, -P 1 -T), probe on decade 2; then warm repeats
-run w1_cdo_yearmean_P1_T_cold    "$CDO" -O -f nc4 -P 1 -T yearmean "$(zarr $W1D1)" "$OUT/w1_yearmean.nc"
-run w1_probe_D2_cold_t128        "$PROBE" "$W1D2" tas 128
-run w1_cdo_yearmean_P16_warm     "$CDO" -O -f nc4 -P 16 yearmean "$(zarr $W1D1)" "$OUT/w1_yearmean_P16.nc"
-run w1_cdo_fldmean_P1_T_warm     "$CDO" -O -f nc4 -P 1 -T fldmean "$(zarr $W1D1)" "$OUT/w1_fldmean.nc"
+# cold first: cdo on decade 1 (single operator, -P 1 -T), probe on decades 2 and 3; then warm repeats.
+# The probe reads the source store; time blocks of 30 days are chunk rows, so (views: bench/datasets.md)
+#   decade 1 = chunk rows 0:122   (steps 0..3659,    = view W1D1 plus 8 days; 5856 chunks, 46.1 GB decoded)
+#   decade 2 = chunk rows 122:244 (steps 3660..7319, = view W1D2 plus 8 days)
+#   decade 3 = chunk rows 244:366 (steps 7320..10957; not read by any cdo run)
+run   w1_cdo_yearmean_P1_T_cold  "$CDO" -O -f nc4 -P 1 -T yearmean "$(zarr $W1D1)" "$OUT/w1_yearmean.nc"
+probe w1_probe_D2_cold_t128_c256 "$SRC1" tas --threads 128 --concurrency 256 --dim0-range 122:244
+probe w1_probe_D3_cold_t128      "$SRC1" tas --threads 128 --dim0-range 244:366
+run   w1_cdo_yearmean_P16_warm   "$CDO" -O -f nc4 -P 16 yearmean "$(zarr $W1D1)" "$OUT/w1_yearmean_P16.nc"
+run   w1_cdo_fldmean_P1_T_warm   "$CDO" -O -f nc4 -P 1 -T fldmean "$(zarr $W1D1)" "$OUT/w1_fldmean.nc"
 for t in 1 16 64 128; do
-    run w1_probe_D1_warm_t$t     "$PROBE" "$W1D1" tas $t
+    probe w1_probe_D1_warm_t$t   "$SRC1" tas --threads $t --dim0-range 0:122
 done
+probe w1_probe_D1_warm_t128_c256 "$SRC1" tas --threads 128 --concurrency 256 --dim0-range 0:122
 
 # ---------------------------------------------------------------- W4 (reduced to 1 year of 3-hourly z9, 36.9 GB decoded)
 run w4_cdo_ydaymean_P1_T_cold    "$CDO" -O -f nc4 -P 1 -T ydaymean "$(zarr $W4V)" "$OUT/w4_ydaymean.nc"
 run w4_cdo_timpctl95_P16_warm    "$CDO" -O -f nc4 -P 16 timpctl,95 "$(zarr $W4V)" -timmin "$(zarr $W4V)" -timmax "$(zarr $W4V)" "$OUT/w4_timpctl95.nc"
+# probe, capped at 6 time blocks (1152 chunks, 18.7 GB decoded): cold on Jan-Jun 2021 (rows 12:18), warm on Jan-Jun 2020 (read by cdo)
+probe w4_probe_cold_t128_c256    "$SRC4" tas --threads 128 --concurrency 256 --dim0-range 12:18
+probe w4_probe_warm_t128_c256    "$SRC4" tas --threads 128 --concurrency 256 --dim0-range 0:6
 
 # ---------------------------------------------------------------- W2: fldmean of a box, raw NetCDF-4 (blosc) behind kerchunk, one decade
 run w2_cdo_fldmean_box_P16       "$CDO" -O -P 16 fldmean -sellonlatbox,$BOX -select,name=pr "${W2FILES[@]}" "$OUT/w2_fldmean_box.nc"
 for f in "${W2T[@]}"; do         # read share: single operator on whole raw files (all 2D variables)
     run w2_cdo_T_fldmean_$(basename "$f" .nc | grep -o '[0-9]\{8\}T') "$CDO" -O -P 1 -T fldmean "$f" "$OUT/w2_T_$(basename "$f")"
 done
-run w2_probe_cloud_t64           timeout 30m "$PROBE" "$W2URL" pr 64
+# cloud probe, capped at 2000 chunks each (~7.2 GB compressed; ~40 s at the 0.19 GB/s seen from the login node)
+probe w2_probe_cloud_c64         "$W2URL" pr --threads 16 --concurrency 64 --max-chunks 2000 --dim0-range 10000:
+probe w2_probe_cloud_c16         "$W2URL" pr --threads 16 --concurrency 16 --max-chunks 2000 --dim0-range 20000:
 
 # ---------------------------------------------------------------- W3: remapbil of daily SST (0.25 deg regular -> r360x180), 5 years
 run w3_cdo_genbil                "$CDO" -O -P 1 genbil,r360x180 -seltimestep,1 -select,name=to "${W3FILES[0]}" "$OUT/w3_weights_bil_r360x180.nc"
