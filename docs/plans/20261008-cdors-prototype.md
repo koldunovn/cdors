@@ -412,16 +412,19 @@ cached. Rows needing `cdo` are skipped with a notice where it isn't available.
 - Modify: `crates/cdors-core/src/ops/files.rs`
 - Modify: `tests/make_fixtures.sh`, `tests/run_cases.sh`, `tests/cases.txt`
 
-- [ ] kerchunk reference store: Parquet first (the format EERIE uses), JSON as well; chunk keys map to
+- [x] kerchunk reference store: Parquet first (the format EERIE uses), JSON as well; chunk keys map to
       (file, offset, length) or inline data
-- [ ] NetCDF-4: list chunk byte ranges once via HDF5 (`hdf5-metno`, `chunk_info`, same HDF5 as netCDF-C), cache the
+- [x] NetCDF-4: list chunk byte ranges once via HDF5 (`hdf5-metno`, `chunk_info`, same HDF5 as netCDF-C), cache the
       index in `$CDORS_CACHE/nc4index/` keyed by path, size and modification time, then read and decode chunks in
       parallel (deflate, shuffle, fletcher32 and the HDF5 blosc filter used by the EERIE files); fall back to
       netCDF-C for filters we can't decode
-- [ ] `mergetime` over many files or a glob pattern as one virtual dataset (consistent grids checked)
+- [x] `mergetime` over many files or a glob pattern as one virtual dataset (consistent grids checked)
 - [ ] harness: NetCDF-4 rows also run with the netCDF-C fallback disabled; one kerchunk fixture if a reference
       generator is available in mambaforge, otherwise kerchunk is covered by the benchmarks only; a `mergetime` row
 - [ ] run `tests/run_cases.sh` — must pass
+- [ ] ➕ one process-wide HDF5 lock shared by every `netcdf` crate call (fallback reader, NetCDF writer, SCRIP weights
+      reader, Nc4Source metadata) and every `hdf5-metno` call (chunk indexing): the spack HDF5 is not thread-safe and
+      the two crates' internal locks do not exclude each other (found by the Task 5 agent)
 
 ### Task 11: Remote reads
 
