@@ -369,7 +369,7 @@ cached. Rows needing `cdo` are skipped with a notice where it isn't available.
 - Modify: `crates/cdors-core/src/model/grid.rs`, `crates/cdors-core/src/model/zaxis.rs`
 - Modify: `tests/cases.txt`
 
-- [ ] cell areas: from the file if present, otherwise from cell bounds (spherical polygon area), otherwise analytic
+- [x] cell areas: from the file if present, otherwise from cell bounds (spherical polygon area), otherwise analytic
       (regular, HEALPix)
 - [ ] `fldmean`, `fldmin`, `fldmax`, `fldsum`, `fldstd` with CDO's weighting; running sums carried across spatial
       chunks in cell order, timesteps processed in parallel
@@ -377,6 +377,9 @@ cached. Rows needing `cdo` are skipped with a notice where it isn't available.
       otherwise document) and `vertmean` (layer-thickness weights as in CDO)
 - [ ] rows: `fldmean` on all three fixtures, the other statistics once each, `zonmean`, `vertmean`
 - [ ] run `tests/run_cases.sh` — must pass
+- ⚠️ 2026-10-09: `model/area.rs` (merged) reproduces `cdo gridarea`/`gridweights` to ≤ 5e-15 relative on 13 cases and
+      gives 0-ulp fldmean/fldstd/zonmean/mermean/vertmean; weighting rules per operator family are in the module
+      (fld mean/std/var weighted, min/max/sum not; zon* per latitude row or HEALPix ring; vert* by layer thickness).
 
 ### Task 9: Remapping with cdo-generated weights, and HEALPix degrade
 
