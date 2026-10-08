@@ -85,3 +85,16 @@ ulp      | -remap,r18x9,{fix}/weights_con_r36x18_r18x9.nc {in} | r36x18_std
 ulp      | -hpdegrade,nside=2 {in}                     | hpz2_noleap
 ulp      | -hpdegrade,nside=1,order=ring,stat=avg {in} | hpz2_noleap
 err:unsupported_grid | -remapbil,r18x9 {in}            | unst_360
+
+# Task 12: behaviour for agents (--plan, ops/help, limits, JSON errors)
+json     | --plan --json -yearmean {in}                | r36x18_std hpz2_noleap unst_360
+json     | --plan --json -remapbil,r18x9 -selyear,2001 {in} | r36x18_std
+json     | ops --json                                  | r36x18_std
+json     | --json help yearmean                        | r36x18_std
+err:read_limit       | --max-read 1 -timmean {in}      | r36x18_std
+err:unknown_operator | -yearmaen {in}                  | r36x18_std
+err:unknown_operator | help yearmaen {noout}           | r36x18_std
+err:not_implemented  | -timcor {in} {in2}              | r36x18_std
+err:not_implemented  | help timcor {noout}             | r36x18_std
+err:no_coordinates   | -sellonlatbox,0,10,0,10 {in}    | nocoord_360
+err:no_coordinates   | -remapnn,r18x9 {in}             | nocoord_360

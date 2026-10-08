@@ -2,9 +2,14 @@
 //!
 //! [`run`] plans the command, refuses an existing output without `-O`, creates the writer on a
 //! temporary name in the output's directory, streams the stage through [`pipeline::run`] and
-//! renames the result into place on success. On failure it removes its own temporary output.
+//! renames the result into place on success. On failure it removes its own temporary output and
+//! the error says how far the run got (`stage`, `chunks_done`, `chunks_total`).
+//!
+//! Before any output is created, the planned decoded bytes are checked against `--max-read`
+//! (default 64 GB on login nodes, none inside Slurm jobs; `plan::explain`).
 
 pub mod pipeline;
+pub mod progress;
 
 use crate::chain::{Command, Precision};
 use crate::error::{Error, ErrorCode, Result};
@@ -185,8 +190,16 @@ pub fn run(cmd: &Command) -> Result<String> {
     let threads = default_threads(cmd);
     let io_threads = default_io_threads(cmd).max(1);
     if cmd.options.plan {
-        return Ok(format!("{}\n", plan.to_json(threads, io_threads)));
+        let p = plan::explain::to_json(&plan, cmd, threads, io_threads);
+        return Ok(if cmd.options.json {
+            format!("{p}\n")
+        } else {
+            plan::explain::to_text(&p)
+        });
     }
+    let stats = plan::explain::read_stats(&plan);
+    let bytes_decoded: u64 = stats.iter().map(|s| s.bytes_decoded).sum();
+    plan::explain::check_read_limit(bytes_decoded, plan::explain::read_limit(cmd))?;
     let out = PathBuf::from(&plan.output);
     if out.exists() {
         if !cmd.options.overwrite {
@@ -220,6 +233,11 @@ pub fn run(cmd: &Command) -> Result<String> {
     let lay = layout(&plan, cmd);
     let history = (!cmd.options.no_history).then(history_line);
     let tmp = temp_path(&out);
+    progress::start(plan.stages.len(), stats.iter().map(|s| s.chunks_read).sum());
+    let reporter = cmd
+        .options
+        .progress_json
+        .then(|| progress::Reporter::spawn(bytes_decoded));
     let result = (|| -> Result<()> {
         let writer: Arc<dyn Writer> = match plan.out_kind {
             OutKind::Nc4 | OutKind::NcClassic => {
@@ -239,50 +257,40 @@ pub fn run(cmd: &Command) -> Result<String> {
                 history.as_deref(),
             )?),
         };
-        // tiles in flight: enough to keep every read slot and compute thread busy, bounded by
-        // the memory budget (default 2 GB)
-        let max_tile = plan
-            .stages
-            .iter()
-            .flat_map(|s| s.vars.iter())
-            .map(|v| {
-                (0..v.tiling.segments.len())
-                    .map(|d| {
-                        v.tiling.segments[d]
-                            .iter()
-                            .map(|r| r.len())
-                            .max()
-                            .unwrap_or(1)
-                    })
-                    .product::<usize>()
-            })
-            .max()
-            .unwrap_or(1)
-            * 8;
-        let budget = cmd.options.mem.unwrap_or(2_000_000_000) as usize;
-        let window = (io_threads + 2 * threads)
-            .min(budget / max_tile.max(1))
-            .max(2);
+        let window = plan::explain::tile_window(&plan, threads, io_threads, cmd.options.mem);
         let settings = pipeline::Settings {
             threads,
             io_threads,
             window,
         };
-        for stage in &plan.stages {
+        for (i, stage) in plan.stages.iter().enumerate() {
+            progress::set_stage(i);
             pipeline::run(stage, &lay, writer.clone(), settings)?;
         }
         writer.finish()
     })();
+    let result = result.and_then(|()| {
+        std::fs::rename(&tmp, &out)
+            .map_err(|e| Error::io(format!("renaming the output into place: {e}")))
+    });
     match result {
         Ok(()) => {
-            std::fs::rename(&tmp, &out).map_err(|e| {
-                remove_own_temp(&tmp);
-                Error::io(format!("renaming the output into place: {e}"))
-            })?;
+            if let Some(r) = reporter {
+                r.finish("ok", None, &plan.output);
+            }
             Ok(String::new())
         }
         Err(e) => {
             remove_own_temp(&tmp);
+            let (stage, done, total, _) = progress::snapshot();
+            let e = e
+                .with("stage", stage)
+                .with("chunks_done", done)
+                .with("chunks_total", total)
+                .with("temporary_output_removed", true);
+            if let Some(r) = reporter {
+                r.finish("failed", Some(e.code.as_str()), &plan.output);
+            }
             Err(e)
         }
     }

@@ -559,4 +559,13 @@ impl ChunkSource for ZarrSource {
     fn codecs(&self, var: &str) -> Option<String> {
         self.vars.get(var).map(|v| ChunkDecoder::codecs(v.as_ref()))
     }
+
+    fn stored_size(&self, var: &str, indices: &[u64]) -> Option<u64> {
+        let zv = self.vars.get(var)?;
+        let key = zv.array.chunk_key(indices);
+        match zv.array.storage().size_key(&key) {
+            Ok(n) => Some(n.unwrap_or(0)),
+            Err(_) => None,
+        }
+    }
 }

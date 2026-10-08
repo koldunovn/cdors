@@ -78,6 +78,10 @@ fn rerr(op: &str, e: RemapError) -> Error {
 pub(crate) trait FieldMap: Send + Sync {
     /// `src` holds `n` fields of the input grid back to back; returns `n` output fields as `out`.
     fn apply(&self, var: usize, src: &Values, n: usize, out: DType) -> Result<Values>;
+    /// Facts for `--plan` (weights to generate), see [`FoldKernel::plan_info`].
+    fn plan_info(&self) -> Option<serde_json::Value> {
+        None
+    }
 }
 
 /// Shape bookkeeping of one variable folded by a [`FieldKernel`].
@@ -111,6 +115,10 @@ impl FoldKernel for FieldKernel {
             whole: None,
             buf: None,
         })
+    }
+
+    fn plan_info(&self) -> Option<serde_json::Value> {
+        self.map.plan_info()
     }
 }
 
@@ -417,6 +425,47 @@ struct RemapMap {
 }
 
 impl GridWeights {
+    /// `--plan`: where the weights come from and whether cdo has to generate them.
+    fn plan_info(&self, op: &str) -> serde_json::Value {
+        let WeightSpec::Gen {
+            method,
+            target,
+            grid,
+            ..
+        } = &self.spec
+        else {
+            return serde_json::json!({"operator": op, "weights": "given", "generate": false});
+        };
+        let cached = (|| -> Result<PathBuf> {
+            let cache = WeightCache::from_env().map_err(|e| rerr(op, e))?;
+            let identity = grid_identity(grid)?;
+            let probe = WeightRequest {
+                method: *method,
+                target,
+                source: Path::new(""),
+                variable: None,
+                identity: SourceIdentity::Bytes(&identity),
+            };
+            Ok(cache.dir().join(format!(
+                "{}.nc",
+                cache.key(&probe).map_err(|e| rerr(op, e))?
+            )))
+        })();
+        let (path, is_cached) = match &cached {
+            Ok(p) => (Some(p.display().to_string()), p.is_file()),
+            Err(_) => (None, false),
+        };
+        serde_json::json!({
+            "operator": op,
+            "generator": format!("cdo {}", method.cdo_operator()),
+            "target": target,
+            "source_grid": format!("{} ({} cells)", grid.kind.name(), grid.size()),
+            "cached": is_cached,
+            "generate": !is_cached,
+            "path": path,
+        })
+    }
+
     fn weights(&self, op: &str) -> Result<Arc<RemapWeights>> {
         self.cell
             .get_or_init(|| self.generate(op).map(Arc::new))
@@ -507,6 +556,11 @@ fn apply_t<T: crate::remap::Value, U: crate::remap::Value>(
 }
 
 impl FieldMap for RemapMap {
+    fn plan_info(&self) -> Option<serde_json::Value> {
+        let w: Vec<serde_json::Value> = self.grids.iter().map(|g| g.plan_info(&self.op)).collect();
+        Some(serde_json::json!({ "remap_weights": w }))
+    }
+
     fn apply(&self, var: usize, src: &Values, n: usize, out: DType) -> Result<Values> {
         let w = self.grids[self.var_grid[var]].weights(&self.op)?;
         let r = match (src, out) {

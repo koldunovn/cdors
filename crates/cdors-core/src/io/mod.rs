@@ -180,6 +180,13 @@ pub trait ChunkSource: Send + Sync {
     fn codecs(&self, _var: &str) -> Option<String> {
         None
     }
+
+    /// Stored (compressed) size of one chunk when the source can tell without reading it
+    /// (`--plan` samples a few chunks); `Some(0)` for a chunk absent from the store, `None` if
+    /// unknown.
+    fn stored_size(&self, _var: &str, _indices: &[u64]) -> Option<u64> {
+        None
+    }
 }
 
 /// Whether `path` is a Zarr store: a `.zarr` suffix, or a directory with `.zgroup`, `.zarray`,

@@ -304,6 +304,11 @@ impl ChunkSource for Nc4Source {
         self.nc.read_var(var)
     }
 
+    fn stored_size(&self, var: &str, indices: &[u64]) -> Option<u64> {
+        let dv = self.direct.get(var)?;
+        Some(dv.byte_range(indices).map_or(0, |(_, size)| size))
+    }
+
     fn codecs(&self, var: &str) -> Option<String> {
         match self.direct.get(var) {
             Some(dv) => Some(ChunkDecoder::codecs(dv.as_ref())),

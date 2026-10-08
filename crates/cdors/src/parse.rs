@@ -218,7 +218,13 @@ fn parse_options(args: &[String]) -> Result<(Options, usize)> {
                 o.io_threads = Some(n);
             }
             "--mem" => o.mem = Some(parse_size(&take(&mut i)?)?),
-            "--max-read" | "--max_read" => o.max_read = Some(parse_size(&take(&mut i)?)?),
+            "--max-read" | "--max_read" => {
+                let v = take(&mut i)?;
+                o.max_read = Some(match v.as_str() {
+                    "none" | "unlimited" => u64::MAX,
+                    _ => parse_size(&v)?,
+                });
+            }
             "--chunks" => o.chunks = Some(parse_chunks(&take(&mut i)?)?),
             "--timestat_date" => {
                 let v = take(&mut i)?;
@@ -387,7 +393,9 @@ pub fn parse(args: &[String]) -> Result<Command> {
     let root = p.op(true)?;
     let spec = ops::lookup(&root.name).expect("parsed operator exists");
     let rest = &toks[p.pos..];
-    if rest.len() < spec.outputs {
+    // `--plan` reads no data and writes nothing: the output file may be left out
+    let plan_only = options.plan && spec.outputs == 1 && rest.is_empty();
+    if rest.len() < spec.outputs && !plan_only {
         return Err(Error::bad_arguments(format!(
             "operator '{}' needs {} output file(s), got {}",
             root.name,

@@ -1,5 +1,6 @@
 //! cdors: CDO-style climate statistics on Zarr and NetCDF.
 
+mod ops_cmd;
 mod parse;
 
 use cdors_core::chain::{Command, Input};
@@ -9,6 +10,8 @@ use std::io::Write;
 
 const USAGE: &str =
     "usage: cdors [options] operator[,args] [-operator2[,args] ...] inputs... [output]
+       cdors ops [--json]          list operators (implemented ones with arguments, all of cdo's)
+       cdors help <operator>       cdo's help text plus cdors notes (also: cdors -h <operator>)
 
 options:
   -O                  overwrite existing outputs
@@ -17,20 +20,21 @@ options:
   -f <fmt>            output format: nc4, nc4c, nc, zarr, zarr2
   -b <F32|F64>        output precision
   -s                  silent
-  --json              machine-readable output and errors
-  --plan              print the plan (what will be read) and stop
-  --mem <size>        memory budget (e.g. 32G)
-  --max-read <size>   refuse runs that read more than this
+  --json              machine-readable output and errors (one JSON object on stderr on failure)
+  --plan              print what will be read (chunks, bytes, memory, weights) and stop;
+                      the output file may be left out; with --json as JSON
+  --mem <size>        memory budget for tiles in flight (e.g. 32G; default 2G)
+  --max-read <size>   refuse runs that decode more than this (default 64G on login nodes,
+                      no limit inside Slurm jobs; `none` for no limit)
   --chunks <spec>     output chunks, dim=n[,dim=n...]
   --timestat_date <first|middle|midhigh|last>
   --percentile <method>
   --no_history        do not write the history attribute
-  --progress json     progress on stderr
+  --progress json     progress lines on stderr about once per second, and a summary line
 
-information operators: sinfo, showname, showtimestamp, griddes
-selections: selname, sellevel, seltimestep, seldate, selyear, selmon, selseason, sellonlatbox
-arithmetic: add, sub, mul, div, addc, subc, mulc, divc, ifthen
-other: copy, setgrid";
+exit codes: 0 success, 1 usage (unknown operator, bad arguments, not implemented),
+            2 data (coordinates, grid, dimension), 3 I/O (worth retrying),
+            4 refused (--max-read limit, existing output without -O)";
 
 fn write_stdout(s: &str) -> Result<()> {
     let mut out = std::io::stdout().lock();
@@ -74,7 +78,7 @@ fn main() {
             println!("{}", cdors_core::native_library_versions());
             return;
         }
-        Some("-h" | "--help" | "help") => {
+        Some("--help") => {
             println!("{USAGE}");
             return;
         }
@@ -86,7 +90,26 @@ fn main() {
     }
     // Errors raised while parsing need to know about --json too.
     let json = args.iter().any(|a| a == "--json");
-    let result = parse::parse(&args).and_then(|cmd| run(&cmd));
+    // subcommands: `ops`, `help <op>`, `-h <op>` (long options such as --json may come first)
+    if let Some(i) = args.iter().position(|a| !a.starts_with("--")) {
+        let sub = match args[i].as_str() {
+            "ops" => Some(Ok(ops_cmd::ops(json))),
+            "help" | "-h" => match args[i + 1..].iter().find(|a| !a.starts_with("--")) {
+                Some(op) => Some(ops_cmd::help(op.trim_start_matches('-'), json)),
+                None => Some(Ok(format!("{USAGE}\n"))),
+            },
+            _ => None,
+        };
+        if let Some(r) = sub {
+            finish(r.and_then(|text| write_stdout(&text)), json);
+            return;
+        }
+    }
+    finish(parse::parse(&args).and_then(|cmd| run(&cmd)), json);
+}
+
+/// Prints a failure (one JSON line under --json) and exits with its code.
+fn finish(result: Result<()>, json: bool) {
     if let Err(e) = result {
         if json {
             eprintln!("{}", e.to_json());

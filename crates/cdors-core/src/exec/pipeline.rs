@@ -247,6 +247,7 @@ fn fetch_loop(
                 chunk_done(&f.tile, &tx, &shared);
             }
             Ok(raw) => {
+                super::progress::chunk_fetched(&raw);
                 let tx = tx.clone();
                 let shared = shared.clone();
                 pool.spawn(move || {
