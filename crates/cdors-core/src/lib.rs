@@ -12,6 +12,8 @@ pub mod io;
 pub mod model;
 pub mod ops;
 
+pub mod remap;
+
 /// Version of the cdors crates.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
