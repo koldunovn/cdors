@@ -1,6 +1,16 @@
 //! cdors-core: chunk-wise engine for CDO-style climate statistics on Zarr and NetCDF.
 //!
-//! Task 1 stub: only the version constant and a report of the linked native libraries.
+//! - [`error`]: error codes, hints, exit codes, JSON rendering
+//! - [`model`]: dataset description (variables, grids, vertical axes, CF time)
+//! - [`io`]: the chunk-source interface and the Zarr and NetCDF readers
+//! - [`chain`]: the parsed command (options and operator tree)
+//! - [`ops`]: the operator registry and the operators
+
+pub mod chain;
+pub mod error;
+pub mod io;
+pub mod model;
+pub mod ops;
 
 /// Version of the cdors crates.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -18,8 +28,6 @@ fn netcdf_version() -> String {
     unsafe extern "C" {
         fn nc_inq_libvers() -> *const std::ffi::c_char;
     }
-    // Keep the netcdf crate (and with it netcdf-sys and its link directives) in the binary.
-    let _: Option<netcdf::Error> = None;
     // SAFETY: nc_inq_libvers returns a pointer to a static NUL-terminated string.
     let s = unsafe { std::ffi::CStr::from_ptr(nc_inq_libvers()) };
     s.to_string_lossy()

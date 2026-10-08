@@ -246,19 +246,19 @@ cached. Rows needing `cdo` are skipped with a notice where it isn't available.
 - Create: `crates/cdors/src/parse.rs`
 - Modify: `crates/cdors/src/main.rs`
 
-- [ ] `error.rs`: error codes, hints and exit codes (0 ok, 1 usage, 2 data, 3 retryable I/O, 4 refused by a limit or
+- [x] `error.rs`: error codes, hints and exit codes (0 ok, 1 usage, 2 data, 3 retryable I/O, 4 refused by a limit or
       an existing output), rendered as text or as JSON
-- [ ] `parse.rs`: CDO chain grammar for fixed-arity operators (`-op,arg1,arg2` prefix chains, inputs, output) and the
+- [x] `parse.rs`: CDO chain grammar for fixed-arity operators (`-op,arg1,arg2` prefix chains, inputs, output) and the
       global options `-O -P -f -b --json --plan --mem --max-read --chunks --timestat_date --percentile --no_history
       --progress`; unknown operators get a did-you-mean hint
-- [ ] `model`: dataset, variable and dimension roles (time, vertical, horizontal; other dimensions listed but rejected
+- [x] `model`: dataset, variable and dimension roles (time, vertical, horizontal; other dimensions listed but rejected
       by operators); grid kinds (regular, Gaussian, curvilinear, unstructured, HEALPix detected as in CDO); vertical
       axis with layer bounds; CF time with calendars standard (1582 switch), proleptic_gregorian, noleap/365_day,
       all_leap/366_day, 360_day, julian, stored as seconds since the reference date
-- [ ] `io`: the chunk-source interface (metadata, plus "chunk i of variable v" returning compressed bytes and codecs);
+- [x] `io`: the chunk-source interface (metadata, plus "chunk i of variable v" returning compressed bytes and codecs);
       Zarr through `zarrs` on the filesystem; NetCDF through the `netcdf` crate as the first, serial reader
-- [ ] `ops/info.rs` and the operator registry: `sinfo` (text and `--json`), `showname`, `griddes` (CDO's text format)
-- [ ] verification is Task 4's first rows (code first, then rows)
+- [x] `ops/info.rs` and the operator registry: `sinfo` (text and `--json`), `showname`, `griddes` (CDO's text format)
+- [x] verification is Task 4's first rows (code first, then rows)
 
 ### Task 4: Fixtures and the cdo-comparison harness
 
@@ -277,7 +277,7 @@ cached. Rows needing `cdo` are skipped with a notice where it isn't available.
       exit on failure; the Zarr and planner-check variants are switched on in Task 5
 - [x] rows for `showname` and `griddes` on all fixtures; `sinfo` is checked only for valid JSON (its text format is
       CDO's and not compared)
-- [ ] run `tests/run_cases.sh` — must pass, in seconds
+- [x] run `tests/run_cases.sh` — must pass, in seconds
 
 ### Task 5: Engine core — planner stages, selections, pointwise operators, writers
 
