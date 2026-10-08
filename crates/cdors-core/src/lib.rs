@@ -7,11 +7,13 @@
 //! - [`ops`]: the operator registry and the operators
 //! - [`plan`]: operator descriptions, stages and tiles
 //! - [`exec`]: the streaming executor and output layout
+//! - [`kernels`]: numerical kernels on in-memory tiles (percentiles)
 
 pub mod chain;
 pub mod error;
 pub mod exec;
 pub mod io;
+pub mod kernels;
 pub mod model;
 pub mod ops;
 pub mod plan;
