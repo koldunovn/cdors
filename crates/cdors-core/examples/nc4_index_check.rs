@@ -12,6 +12,12 @@
 //!     Open a kerchunk reference set (JSON file or Parquet directory) with zarrs, read NCHUNKS
 //!     chunks of ARRAY spread over the chunk grid and write each as raw native-order bytes to
 //!     OUTDIR/<ARRAY>_<i.j.k>.bin for comparison with xarray.
+//!
+//! nc4_index_check --sources [--threads N] [--var V] A B
+//!     Open A and B through `io::open` (a `netcdf:` prefix forces the serial netCDF-C reader;
+//!     globs give a multi-file source), read and decode every chunk of every numeric variable (or
+//!     only V) on N threads, compare the values (bitwise, NaN = NaN) and print the times.
+//!     Chunkwise when the chunk grids agree, otherwise variable by variable.
 //! ```
 
 use std::path::Path;
@@ -19,7 +25,9 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use cdors_core::io::kerchunk::KerchunkStore;
+use cdors_core::io::netcdf_fallback::NetcdfSource;
 use cdors_core::io::netcdf4_index::{Nc4File, Nc4Index, Nc4Variable};
+use cdors_core::io::{ChunkSource, DecodedChunk, Values};
 use rayon::prelude::*;
 use zarrs::array::{Array, ArrayBytes};
 
@@ -35,10 +43,16 @@ fn main() -> Res<()> {
     }
     let mut threads = 8;
     let mut files = Vec::new();
+    let mut var = None;
+    let mut sources = false;
     let mut it = args.into_iter();
     while let Some(a) = it.next() {
         if a == "--threads" {
             threads = it.next().ok_or("--threads N")?.parse()?;
+        } else if a == "--var" {
+            var = Some(it.next().ok_or("--var V")?);
+        } else if a == "--sources" {
+            sources = true;
         } else {
             files.push(a);
         }
@@ -46,6 +60,12 @@ fn main() -> Res<()> {
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(threads)
         .build()?;
+    if sources {
+        let [a, b] = files.as_slice() else {
+            return Err("usage: --sources [--threads N] [--var V] A B".into());
+        };
+        return pool.install(|| sources_check(a, b, var.as_deref()));
+    }
     let mut failed = false;
     for f in &files {
         failed |= !check_file(Path::new(f), &pool, threads)?;
@@ -303,6 +323,124 @@ fn kerchunk_check(refs: &Path, array: &str, n: u64, out: &Path) -> Res<()> {
             None => "missing (fill)".into(),
         };
         println!("chunk {key}: {} bytes in {dt:.4} s from {r}", bytes.len());
+    }
+    Ok(())
+}
+
+fn open_input(a: &str) -> Res<Arc<dyn ChunkSource>> {
+    Ok(match a.strip_prefix("netcdf:") {
+        Some(p) => Arc::new(NetcdfSource::open(p)?),
+        None => cdors_core::io::open(a)?,
+    })
+}
+
+/// Values as bits, all NaNs equal.
+fn value_bits(v: &Values) -> Vec<u64> {
+    match v {
+        Values::F32(x) => x
+            .iter()
+            .map(|f| {
+                if f.is_nan() {
+                    u64::MAX
+                } else {
+                    f.to_bits() as u64
+                }
+            })
+            .collect(),
+        Values::F64(x) => x
+            .iter()
+            .map(|f| if f.is_nan() { u64::MAX } else { f.to_bits() })
+            .collect(),
+    }
+}
+
+/// Reads and decodes all chunks of `var` on the current rayon pool; returns them and the seconds.
+fn decode_all(src: &dyn ChunkSource, var: &str) -> Res<(Vec<DecodedChunk>, f64)> {
+    let grid = src.chunk_grid(var)?;
+    let coords = grid_coords(&grid.counts());
+    let t = Instant::now();
+    let chunks = coords
+        .par_iter()
+        .map(|c| src.read_chunk(var, c).and_then(|r| r.decode()))
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok((chunks, t.elapsed().as_secs_f64()))
+}
+
+/// Scatters decoded chunks into the whole variable (C order), as bits.
+fn assemble(chunks: &[DecodedChunk], shape: &[usize]) -> Vec<u64> {
+    let mut out = vec![0u64; shape.iter().product()];
+    for c in chunks {
+        let bits = value_bits(&c.values);
+        let ext: Vec<u64> = c.shape.iter().map(|&s| s as u64).collect();
+        for (k, local) in grid_coords(&ext).into_iter().enumerate() {
+            let mut lin = 0usize;
+            for d in 0..shape.len() {
+                lin = lin * shape[d] + (c.origin[d] + local[d]) as usize;
+            }
+            out[lin] = bits[k];
+        }
+    }
+    out
+}
+
+fn sources_check(a: &str, b: &str, only: Option<&str>) -> Res<()> {
+    let t = Instant::now();
+    let sa = open_input(a)?;
+    let ta = t.elapsed().as_secs_f64();
+    let t = Instant::now();
+    let sb = open_input(b)?;
+    let tb = t.elapsed().as_secs_f64();
+    println!("open: A {ta:.3} s, B {tb:.3} s");
+    let names: Vec<String> = match only {
+        Some(v) => vec![v.to_owned()],
+        None => sa
+            .dataset()
+            .vars
+            .iter()
+            .filter(|v| v.dtype.is_numeric())
+            .map(|v| v.name.clone())
+            .collect(),
+    };
+    let (mut sum_a, mut sum_b, mut mb, mut bad) = (0.0, 0.0, 0.0, 0usize);
+    for name in &names {
+        let (ga, gb) = (sa.chunk_grid(name)?, sb.chunk_grid(name)?);
+        let (ca, da) = decode_all(sa.as_ref(), name)?;
+        let (cb, db) = decode_all(sb.as_ref(), name)?;
+        let same = if ga == gb {
+            ca.iter().zip(&cb).all(|(x, y)| {
+                x.origin == y.origin
+                    && x.shape == y.shape
+                    && value_bits(&x.values) == value_bits(&y.values)
+            })
+        } else {
+            ga.shape == gb.shape && assemble(&ca, &ga.shape) == assemble(&cb, &gb.shape)
+        };
+        let vmb = ga.shape.iter().product::<usize>() as f64
+            * sa.dataset().var(name).map_or(4, |v| v.dtype.size()) as f64
+            / 1e6;
+        println!(
+            "  {name:<16} shape {:?} chunks A {:?} B {:?}: {}  A {da:.3} s  B {db:.3} s  ({:?} | {:?})",
+            ga.shape,
+            ga.chunk_shape,
+            gb.chunk_shape,
+            if same { "equal" } else { "DIFFERENT" },
+            sa.codecs(name),
+            sb.codecs(name),
+        );
+        bad += usize::from(!same);
+        sum_a += da;
+        sum_b += db;
+        mb += vmb;
+    }
+    println!(
+        "total {mb:.1} MB decoded: A {sum_a:.3} s ({:.0} MB/s), B {sum_b:.3} s ({:.0} MB/s); {} of {} variables differ",
+        mb / sum_a,
+        mb / sum_b,
+        bad,
+        names.len()
+    );
+    if bad > 0 {
+        return Err("values differ".into());
     }
     Ok(())
 }

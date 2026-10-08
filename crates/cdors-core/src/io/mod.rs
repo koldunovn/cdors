@@ -12,9 +12,13 @@
 //! edge are trimmed to the array extent.
 
 pub mod kerchunk;
+pub mod multifile;
+pub mod netcdf4;
 pub mod netcdf4_index;
 pub mod netcdf_fallback;
 pub mod zarr;
+
+pub use multifile::open_many;
 
 use crate::error::{Error, ErrorCode, Result};
 use crate::model::{DType, Dataset, Encoding};
@@ -188,7 +192,24 @@ pub fn is_zarr(path: &str) -> bool {
             .any(|f| dir.join(f).exists())
 }
 
-/// Opens a path (lazily: metadata only). Zarr by path (see [`is_zarr`]), otherwise NetCDF.
+/// Whether `path` starts with the HDF5 signature (NetCDF-4 files are HDF5 files).
+fn is_hdf5(path: &str) -> bool {
+    use std::os::unix::fs::FileExt;
+    let mut head = [0u8; 8];
+    std::fs::File::open(path)
+        .and_then(|f| f.read_exact_at(&mut head, 0))
+        .is_ok_and(|()| head == *b"\x89HDF\r\n\x1a\n")
+}
+
+/// Opens an input (lazily: metadata only):
+/// - a glob pattern that is not an existing path: the matching files, sorted, concatenated
+///   along time ([`multifile::MultiFileSource`]);
+/// - kerchunk references (Parquet directory or JSON file, see [`kerchunk::is_kerchunk`]): a Zarr
+///   source over [`kerchunk::KerchunkStore`];
+/// - a Zarr store (see [`is_zarr`]);
+/// - a NetCDF-4 (HDF5) file: metadata from netCDF-C, chunks read directly through the chunk
+///   index ([`netcdf4::Nc4Source`]), unless `CDORS_NC4=netcdf`;
+/// - anything else (NetCDF-3 classic / 64-bit offset / CDF5): netCDF-C.
 pub fn open(path: &str) -> Result<Arc<dyn ChunkSource>> {
     if path.starts_with("http://") || path.starts_with("https://") || path.starts_with("s3://") {
         return Err(Error::new(
@@ -198,14 +219,21 @@ pub fn open(path: &str) -> Result<Arc<dyn ChunkSource>> {
         .with_hint("remote Zarr stores come with a later version; use a local path"));
     }
     if !Path::new(path).exists() {
+        if multifile::is_glob(path) {
+            return open_many(&multifile::expand_glob(path)?);
+        }
         return Err(Error::new(
             ErrorCode::MissingInput,
             format!("input '{path}' does not exist"),
         )
         .with("path", path));
     }
-    if is_zarr(path) {
+    if kerchunk::is_kerchunk(Path::new(path)) {
+        Ok(Arc::new(kerchunk::open_source(path)?))
+    } else if is_zarr(path) {
         Ok(Arc::new(zarr::ZarrSource::open(path)?))
+    } else if is_hdf5(path) && !netcdf4::netcdf_only() {
+        Ok(Arc::new(netcdf4::Nc4Source::open(path)?))
     } else {
         Ok(Arc::new(netcdf_fallback::NetcdfSource::open(path)?))
     }
