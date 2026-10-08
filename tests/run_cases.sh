@@ -5,7 +5,8 @@
 #
 # Row format (tests/cases.txt):   tag | arguments | fixtures      (# starts a comment)
 #   tag        exact | ulp | bin | text | json | err:<code>
-#   arguments  cdo arguments without the output file; {in} and {in2} are replaced by fixture paths.
+#   arguments  cdo arguments without the output file; {in} and {in2} are replaced by fixture paths,
+#              {fix} by the fixtures directory (e.g. for weight files made by make_fixtures.sh).
 #              Split on whitespace, no quoting, no globbing.
 #   fixtures   space-separated fixture names (files $CDORS_FIXTURES/<name>.nc); a token "a:b"
 #              sets {in}=a and {in2}=b, otherwise {in2}={in}.
@@ -63,7 +64,7 @@ run_job() {
   [[ $tag == err:* || $tag == json ]] || have "$CDO" || skip "cdo not found ($CDO)"
 
   args_for() {  # args_for IN1 IN2 -> fills array A
-    local a=${args//\{in\}/$1}; a=${a//\{in2\}/$2}
+    local a=${args//\{in\}/$1}; a=${a//\{in2\}/$2}; a=${a//\{fix\}/$CDORS_FIXTURES}
     read -ra A <<< "$a"
   }
   local A; args_for "$in1" "$in2"

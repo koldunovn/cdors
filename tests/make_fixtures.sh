@@ -8,6 +8,7 @@
 #   unst_360      20x18 regular grid turned unstructured (360 cells), 360_day calendar, 1080 steps
 #   hpz2_noleap.zarr2 / .zarr3   xarray copies of hpz2_noleap (Zarr v2 / v3), time chunks of 73
 #   hpz2_noleap_tiny.zarr2       tiny chunks (10 steps x 16 cells) for the planner check
+#   weights_con_r36x18_r18x9.nc  SCRIP weights of cdo gencon,r18x9 for r36x18_std (remap,<grid>,<weights> rows)
 #
 # All values are float32 (-b F32), vary in space and time, and come from cdo `expr` on a
 # `for` time series, so they are reproducible. Writes are atomic (tmp name, then mv).
@@ -88,3 +89,12 @@ EOF
 zarr hpz2_noleap.zarr2      2 73 192
 zarr hpz2_noleap.zarr3      3 73 192
 zarr hpz2_noleap_tiny.zarr2 2 10 16
+
+# SCRIP weights for the remap,<grid>,<weights.nc> rows.
+if [[ -e weights_con_r36x18_r18x9.nc ]]; then
+  echo "exists: $FIX/weights_con_r36x18_r18x9.nc"
+else
+  "$CDO" -s --no_history gencon,r18x9 r36x18_std.nc "weights_con_r36x18_r18x9.nc.tmp$$"
+  mv "weights_con_r36x18_r18x9.nc.tmp$$" weights_con_r36x18_r18x9.nc
+  echo "made:   $FIX/weights_con_r36x18_r18x9.nc"
+fi

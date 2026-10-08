@@ -34,6 +34,7 @@ const OPTIONS: &[&str] = &[
     "--no_history",
     "--progress",
     "--io-threads",
+    "--force",
 ];
 
 const PERCENTILE_METHODS: &[&str] = &[
@@ -169,7 +170,9 @@ fn parse_options(args: &[String]) -> Result<(Options, usize)> {
             "-O" => o.overwrite = true,
             "-s" => o.silent = true,
             "-v" => o.verbose = true,
-            "-L" | "-w" => {}
+            // --force: cdo needs it for conservative remapping on HEALPix grids; cdors always
+            // passes it to `cdo gencon` and accepts it for compatibility
+            "-L" | "-w" | "--force" => {}
             "--json" => o.json = true,
             "--plan" => o.plan = true,
             "--no_history" | "--no-history" => o.no_history = true,

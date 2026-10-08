@@ -14,6 +14,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::{PRECOMPUTED_HINT, RemapError};
 
+/// Hint attached to failures of target-grid template generation.
+pub const TEMPLATE_HINT: &str = "the target grid must be one cdo accepts: r<nx>x<ny>, global_<inc>, \
+     hpz<zoom>[_nested|_ring], hp<nside>, a grid description file or a NetCDF file";
+
 /// Methods whose weights cdo can generate for cdors.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum GenMethod {
@@ -121,28 +125,90 @@ impl WeightCache {
         // ycon and con produce the same weights.
         h.update(req.method.cdo_operator().as_bytes());
         h.update(b"\0");
-        let target = Path::new(req.target);
-        if target.is_file() {
-            let bytes = std::fs::read(target).map_err(|source| RemapError::Io {
-                path: target.to_owned(),
+        self.target_hash(&mut h, req.target)?;
+        h.update(b"\0source\0");
+        match req.identity {
+            // The caller's identity names the source grid itself; the variable only picks that
+            // grid in the file, so the same grid read from another file hits the same weights.
+            SourceIdentity::Bytes(b) => h.update(b),
+            SourceIdentity::HashFile => {
+                hash_source_grid(req.source, &mut h)?;
+                if let Some(v) = req.variable {
+                    h.update(b"\0var\0");
+                    h.update(v.as_bytes());
+                }
+            }
+        }
+        Ok(format!("{}-{:032x}", req.method.cdo_operator(), h.finish()))
+    }
+
+    /// Hash of a target grid argument: its name, or the bytes of a grid file.
+    fn target_hash(&self, h: &mut Fnv128, target: &str) -> Result<(), RemapError> {
+        let path = Path::new(target);
+        if path.is_file() {
+            let bytes = std::fs::read(path).map_err(|source| RemapError::Io {
+                path: path.to_owned(),
                 source,
             })?;
             h.update(b"file\0");
             h.update(&bytes);
         } else {
             h.update(b"name\0");
-            h.update(req.target.as_bytes());
+            h.update(target.as_bytes());
         }
-        h.update(b"\0source\0");
-        match req.identity {
-            SourceIdentity::Bytes(b) => h.update(b),
-            SourceIdentity::HashFile => hash_source_grid(req.source, &mut h)?,
+        Ok(())
+    }
+
+    /// A small NetCDF file on the target grid, written by cdo (`cdo -f nc4 const,0,<grid>`) and
+    /// cached as `<cache>/grid-<key>.nc`, so that output grids (coordinates, bounds, HEALPix
+    /// mapping, attributes) are exactly what cdo writes for `remap*,<grid>`.
+    pub fn grid_template(&self, target: &str) -> Result<PathBuf, RemapError> {
+        let mut h = Fnv128::new();
+        h.update(b"cdors-grid-v1\0");
+        self.target_hash(&mut h, target)?;
+        let key = format!("grid-{:032x}", h.finish());
+        let path = self.dir.join(format!("{key}.nc"));
+        if path.is_file() {
+            return Ok(path);
         }
-        if let Some(v) = req.variable {
-            h.update(b"\0var\0");
-            h.update(v.as_bytes());
-        }
-        Ok(format!("{}-{:032x}", req.method.cdo_operator(), h.finish()))
+        let cdo = self.cdo.as_deref().ok_or_else(|| RemapError::CdoMissing {
+            reason: "neither $CDO nor `cdo` on PATH".into(),
+            hint: TEMPLATE_HINT,
+        })?;
+        let tmp = self.tmp_path(&key)?;
+        let args: Vec<String> = vec![
+            "-s".into(),
+            "--no_history".into(),
+            "-f".into(),
+            "nc4".into(),
+            format!("const,0,{target}"),
+            tmp.to_string_lossy().into_owned(),
+        ];
+        run_cdo_hint(cdo, &args, TEMPLATE_HINT)?;
+        self.publish(&tmp, &path)?;
+        Ok(path)
+    }
+
+    /// A fresh temporary path under `<cache>/tmp/`.
+    pub fn tmp_path(&self, key: &str) -> Result<PathBuf, RemapError> {
+        let tmpdir = self.dir.join("tmp");
+        std::fs::create_dir_all(&tmpdir).map_err(|source| RemapError::Io {
+            path: tmpdir.clone(),
+            source,
+        })?;
+        Ok(tmpdir.join(format!(
+            "{key}.{}.{}.nc",
+            std::process::id(),
+            TMP_COUNTER.fetch_add(1, Ordering::Relaxed)
+        )))
+    }
+
+    /// Renames a finished temporary file into place.
+    pub fn publish(&self, tmp: &Path, path: &Path) -> Result<(), RemapError> {
+        std::fs::rename(tmp, path).map_err(|source| RemapError::Io {
+            path: path.to_owned(),
+            source,
+        })
     }
 
     /// Path of cached weights for the request, generating them with cdo on a cache miss.
@@ -159,16 +225,7 @@ impl WeightCache {
         if req.method == GenMethod::Bil {
             check_bilinear_source(cdo, req)?;
         }
-        let tmpdir = self.dir.join("tmp");
-        std::fs::create_dir_all(&tmpdir).map_err(|source| RemapError::Io {
-            path: tmpdir.clone(),
-            source,
-        })?;
-        let tmp = tmpdir.join(format!(
-            "{key}.{}.{}.nc",
-            std::process::id(),
-            TMP_COUNTER.fetch_add(1, Ordering::Relaxed)
-        ));
+        let tmp = self.tmp_path(&key)?;
         let mut args: Vec<String> = vec!["-s".into(), "--no_history".into()];
         if matches!(req.method, GenMethod::Con | GenMethod::Ycon) {
             // cdo refuses conservative weights for HEALPix grids without --force (cell edges are
@@ -185,10 +242,7 @@ impl WeightCache {
         args.push(req.source.to_string_lossy().into_owned());
         args.push(tmp.to_string_lossy().into_owned());
         run_cdo(cdo, &args)?;
-        std::fs::rename(&tmp, &path).map_err(|source| RemapError::Io {
-            path: path.clone(),
-            source,
-        })?;
+        self.publish(&tmp, &path)?;
         Ok(path)
     }
 }
@@ -205,19 +259,23 @@ pub fn find_cdo() -> Option<PathBuf> {
 }
 
 fn run_cdo(cdo: &Path, args: &[String]) -> Result<String, RemapError> {
+    run_cdo_hint(cdo, args, PRECOMPUTED_HINT)
+}
+
+fn run_cdo_hint(cdo: &Path, args: &[String], hint: &'static str) -> Result<String, RemapError> {
     let command = format!("{} {}", cdo.display(), args.join(" "));
     let out = Command::new(cdo)
         .args(args)
         .output()
         .map_err(|e| RemapError::CdoMissing {
             reason: format!("cannot run {}: {e}", cdo.display()),
-            hint: PRECOMPUTED_HINT,
+            hint,
         })?;
     if !out.status.success() {
         return Err(RemapError::CdoFailed {
             command,
             stderr: String::from_utf8_lossy(&out.stderr).trim().to_owned(),
-            hint: PRECOMPUTED_HINT,
+            hint,
         });
     }
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
@@ -331,21 +389,21 @@ fn hash_source_grid(path: &Path, h: &mut Fnv128) -> Result<(), RemapError> {
 }
 
 /// 128-bit FNV-1a: stable across runs and platforms, no dependency.
-struct Fnv128(u128);
+pub(crate) struct Fnv128(u128);
 
 impl Fnv128 {
     const OFFSET: u128 = 0x6c62272e07bb014262b821756295c58d;
     const PRIME: u128 = 0x0000000001000000000000000000013B;
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self(Self::OFFSET)
     }
-    fn update(&mut self, bytes: &[u8]) {
+    pub(crate) fn update(&mut self, bytes: &[u8]) {
         for &b in bytes {
             self.0 ^= u128::from(b);
             self.0 = self.0.wrapping_mul(Self::PRIME);
         }
     }
-    fn finish(&self) -> u128 {
+    pub(crate) fn finish(&self) -> u128 {
         self.0
     }
 }
