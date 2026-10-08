@@ -31,5 +31,13 @@ serde_json = "1.0"
 thiserror = "2.0"
 glob = "0.3.4"
 
+# Task 10 readers: kerchunk Parquet references (zstd pages only, no Arrow), inline base64 refs,
+# direct inflate of NetCDF-4 chunks.
+parquet = { version = "60.0.0", default-features = false, features = ["zstd"] }
+base64 = "0.22.1"
+flate2 = "1.1.10"
+# c-blosc for the HDF5 blosc filter (32001); the same build zarrs' `blosc` feature already links.
+blosc-src = { version = "0.3.8", features = ["lz4", "zlib", "zstd", "snappy"] }
+
 [profile.release]
 debug = "line-tables-only"
