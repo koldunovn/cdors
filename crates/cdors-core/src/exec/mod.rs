@@ -459,12 +459,15 @@ pub fn out_meta(plan: &Plan, lay: &[OutVar], history: Option<&str>) -> Result<Ou
         };
         let v = &desc.vars[first];
         let hd: Vec<String> = v.hdims().iter().map(|&i| v.dims[i].name.clone()).collect();
-        let sattrs = |name: &str| {
-            g.src
+        let sattrs = |name: &str| match &g.fixed {
+            Some(f) if g.base.x.as_ref().is_some_and(|x| x.var == name) => f.xattrs.clone(),
+            Some(f) => f.yattrs.clone(),
+            None => g
+                .src
                 .dataset()
                 .var(name)
                 .map(|v| copy_attrs(&v.attrs, &["bounds"]))
-                .unwrap_or_default()
+                .unwrap_or_default(),
         };
         let mut extra: Vec<(String, AttrValue)> = Vec::new();
         if g.is_healpix() {

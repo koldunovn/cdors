@@ -15,6 +15,7 @@
 pub mod arith;
 pub mod catalog;
 pub mod files;
+pub mod fldstat;
 pub mod info;
 pub mod select;
 pub mod timstat;
@@ -470,17 +471,6 @@ fn build_registry() -> Vec<OpSpec> {
             "Subtract the multi-year monthly climatology",
             false,
         ),
-        // space statistics
-        op("zonmean", one, 1, vec![], Reduction, "Zonal mean", false),
-        op(
-            "vertmean",
-            one,
-            1,
-            vec![],
-            Reduction,
-            "Vertical mean (layer-thickness weights)",
-            false,
-        ),
         // remapping
         op(
             "remap",
@@ -520,16 +510,9 @@ fn build_registry() -> Vec<OpSpec> {
             false,
         ),
     ];
-    for s in ["mean", "min", "max", "sum", "std"] {
-        r.push(op(
-            &format!("fld{s}"),
-            one,
-            1,
-            vec![],
-            Reduction,
-            &format!("Field {s} (area-weighted where cdo weights)"),
-            false,
-        ));
+    // space statistics
+    for (name, d) in fldstat::operators() {
+        r.push(op(&name, one, 1, vec![], Reduction, &d, true));
     }
     for m in ["nn", "dis", "bil", "con"] {
         r.push(op(
@@ -696,6 +679,9 @@ pub fn describe(node: &OpNode, inputs: Vec<Desc>, srcs: &mut Sources) -> Result<
         ))),
         AccessClass::Reduction if timstat::parse(&node.name).is_some() => {
             timstat::describe(node, inputs, srcs)
+        }
+        AccessClass::Reduction if fldstat::handles(&node.name) => {
+            fldstat::describe(node, inputs, srcs)
         }
         AccessClass::Reduction | AccessClass::WholeExtent => Err(Error::new(
             ErrorCode::NotImplemented,
