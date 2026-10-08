@@ -432,12 +432,17 @@ cached. Rows needing `cdo` are skipped with a notice where it isn't available.
 - Create: `crates/cdors-core/src/io/remote.rs`
 - Modify: `crates/cdors-core/src/io/zarr.rs`, `crates/cdors-core/src/io/kerchunk.rs`
 
-- [ ] HTTPS and S3 through `object_store`: about 64 requests in flight, adjacent byte ranges merged, retries with
+- [x] HTTPS and S3 through `object_store`: about 64 requests in flight, adjacent byte ranges merged, retries with
       backoff on timeouts and server errors, consolidated metadata used when present
-- [ ] retryable failures map to exit code 3 with the failing chunk key in the error
-- [ ] smoke check against the W2 dataset in the EERIE cloud (its `/kerchunk` endpoint; `sinfo --json`, a one-month
+- [x] retryable failures map to exit code 3 with the failing chunk key in the error
+- [x] smoke check against the W2 dataset in the EERIE cloud (its `/kerchunk` endpoint; `sinfo --json`, a one-month
       `fldmean`); no network rows
       in the harness, so the suite stays fast and offline
+- ⚠️ 2026-10-09: done and merged. The EERIE server answers ranged GETs with 206 but no Content-Length/Content-Range, so
+      object_store rejects ranges there and whole objects are read (fine for its per-chunk objects; bad for kerchunk
+      refs into large files on such servers). HTTP/1.1 is the default (HTTP/2 was slower at 64 in flight;
+      `CDORS_HTTP2=1`). End-to-end check: one month of W2 `pr` copied from the cloud (1.7 s) is identical to the copy
+      from the local Parquet refs (0.75 s). Cross-chunk range merging needs a batched read and is a follow-up.
 
 ### Task 12: Behaviour for agents — plan output, operator listing, limits, progress, usage docs
 
