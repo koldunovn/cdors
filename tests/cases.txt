@@ -108,3 +108,16 @@ ulp      | -runstd,10 {in}                             | hpz2_noleap
 exact    | -ymonsub {in} {in2}                         | r36x18_std:r36x18_std_ymonmean hpz2_noleap:hpz2_noleap_ymonmean
 exact    | -ydaysub {in} {in2}                         | r36x18_std:r36x18_std_ydaymean hpz2_noleap:hpz2_noleap_ydaymean
 exact    | -yseassub {in} {in2}                        | r36x18_std:r36x18_std_yseasmean hpz2_noleap:hpz2_noleap_yseasmean
+
+# Task 12: behaviour for agents (--plan, ops/help, limits, JSON errors)
+json     | --plan --json -yearmean {in}                | r36x18_std hpz2_noleap unst_360
+json     | --plan --json -remapbil,r18x9 -selyear,2001 {in} | r36x18_std
+json     | ops --json                                  | r36x18_std
+json     | --json help yearmean                        | r36x18_std
+err:read_limit       | --max-read 1 -timmean {in}      | r36x18_std
+err:unknown_operator | -yearmaen {in}                  | r36x18_std
+err:unknown_operator | help yearmaen {noout}           | r36x18_std
+err:not_implemented  | -timcor {in} {in2}              | r36x18_std
+err:not_implemented  | help timcor {noout}             | r36x18_std
+err:no_coordinates   | -sellonlatbox,0,10,0,10 {in}    | nocoord_360
+err:no_coordinates   | -remapnn,r18x9 {in}             | nocoord_360

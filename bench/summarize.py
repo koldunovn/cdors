@@ -4,7 +4,8 @@
     summarize.py OUTDIR [--md FILE]      (default: stdout; run with python -I)
 
 Reads OUTDIR/runs.tsv, OUTDIR/compare.tsv and, where present, OUTDIR/<run>.plan.json (cdors
---plan --json: decoded bytes = sum of "bytes_decoded" over all leaves; otherwise the nominal
+--plan --json: decoded bytes = "totals.bytes_decoded", or for older plans the sum of
+"bytes_decoded" over all leaves; otherwise the nominal
 decoded size from runs.tsv is used). Prints two tables:
 
 1. every run: wall time, decoded GB/s, peak RSS, status, and the diffn result against cdo;
@@ -64,7 +65,13 @@ def plan_bytes(outdir, run):
             for v in o:
                 walk(v)
     for o in objs:
-        walk(o)
+        # schema 1 (cdors_plan): the total is given; per-stage and per-leaf counts repeat it
+        tot = o.get("totals", {}).get("bytes_decoded") if isinstance(o, dict) else None
+        if isinstance(tot, (int, float)):
+            total += tot
+            found = True
+        else:
+            walk(o)
     return total if found else None
 
 

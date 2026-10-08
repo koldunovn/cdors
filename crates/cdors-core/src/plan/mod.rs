@@ -20,6 +20,7 @@
 //! description and the stages. `tiling` splits each output variable into tiles aligned to the
 //! chunks of its primary leaf; `crate::exec` runs them.
 
+pub mod explain;
 pub mod stage;
 pub mod tiling;
 
@@ -29,7 +30,6 @@ use crate::io::ChunkSource;
 use crate::model::{
     Attrs, DType, DimRole, Grid, GridKind, HealpixOrder, TimeAxis, VarDim, VarKind, ZAxis,
 };
-use serde_json::{Value, json};
 use std::sync::Arc;
 
 /// Maps output indices along one dimension to indices of the dimension below.
@@ -775,10 +775,12 @@ pub fn out_kind(cmd: &Command, path: &str) -> OutKind {
 
 /// Builds the plan for a command with one output.
 pub fn build(cmd: &Command) -> Result<Plan> {
+    // `--plan` needs no output file
     let output = cmd
         .outputs
         .first()
         .cloned()
+        .or_else(|| cmd.options.plan.then(String::new))
         .ok_or_else(|| Error::bad_arguments("no output file given"))?;
     let mut srcs = Sources {
         timestat_date: cmd.options.timestat_date.map(|t| {
@@ -830,25 +832,4 @@ pub fn build(cmd: &Command) -> Result<Plan> {
         out_kind: out_kind(cmd, &output),
         output,
     })
-}
-
-impl Plan {
-    /// `--plan --json`: stages, tiles and the chunks each variable reads.
-    pub fn to_json(&self, threads: usize, io_threads: usize) -> Value {
-        let stages: Vec<Value> = self
-            .stages
-            .iter()
-            .map(|s| {
-                let d = self.desc.fold.as_ref().map_or(&self.desc, |f| &f.input);
-                s.to_json(&self.sources, d)
-            })
-            .collect();
-        json!({
-            "output": self.output,
-            "format": format!("{:?}", self.out_kind).to_ascii_lowercase(),
-            "threads": threads,
-            "io_threads": io_threads,
-            "stages": stages,
-        })
-    }
 }

@@ -21,7 +21,7 @@ use super::{BinOp, Desc, Expr, UnOp};
 use crate::error::Result;
 use crate::io::{ChunkSource, Values};
 use crate::model::{DType, DimRole};
-use serde_json::{Value, json};
+use serde_json::Value;
 use std::sync::Arc;
 
 /// Values of one tile of one output variable.
@@ -41,6 +41,10 @@ pub trait FoldKernel: Send + Sync {
     /// Starts the running state of one lane of variable `var`; `lane` is the lane's box with the
     /// folded dimension spanning the whole extent.
     fn start(&self, var: usize, lane: &TileBox) -> Box<dyn FoldState>;
+    /// Kernel-specific facts for `--plan` (e.g. remap weights to generate), as a JSON object.
+    fn plan_info(&self) -> Option<Value> {
+        None
+    }
 }
 
 /// Running state of one lane.
@@ -92,59 +96,6 @@ impl Stage {
 
     pub fn num_tiles(&self) -> usize {
         self.vars.iter().map(|v| v.tiling.num_tiles()).sum()
-    }
-
-    pub fn to_json(&self, sources: &[Arc<dyn ChunkSource>], desc: &Desc) -> Value {
-        let vars: Vec<Value> = self
-            .vars
-            .iter()
-            .map(|sv| {
-                let vd = &desc.vars[sv.var];
-                let ntiles = sv.tiling.num_tiles();
-                // chunks read per leaf (summed over tiles) and decoded bytes
-                let leaves: Vec<Value> = sv
-                    .leaves
-                    .iter()
-                    .map(|li| {
-                        let mut chunks = 0usize;
-                        let mut distinct = std::collections::HashSet::new();
-                        for t in 0..ntiles {
-                            let lr = super::tiling::LeafRead::new(li, &sv.tiling.tile(t));
-                            chunks += lr.num_chunks();
-                            if distinct.len() < 1_000_000 {
-                                distinct.extend(lr.chunks());
-                            }
-                        }
-                        let csize: usize = li.grid.chunk_shape.iter().product();
-                        let esize = match super::leaf_dtype(li.src.as_ref(), &li.leaf.var) {
-                            DType::F32 => 4,
-                            _ => 8,
-                        };
-                        json!({
-                            "source": li.src.dataset().source,
-                            "variable": li.leaf.var,
-                            "chunk_shape": li.grid.chunk_shape,
-                            "chunks_total": li.grid.num_chunks(),
-                            "chunks_read": chunks,
-                            "chunks_distinct": distinct.len(),
-                            "bytes_decoded": chunks * csize * esize,
-                        })
-                    })
-                    .collect();
-                json!({
-                    "name": vd.name,
-                    "dims": vd.dims.iter().map(|d| d.name.clone()).collect::<Vec<_>>(),
-                    "shape": vd.shape(),
-                    "expr": sv.expr.describe(sources),
-                    "tiles": ntiles,
-                    "leaves": leaves,
-                })
-            })
-            .collect();
-        json!({
-            "kind": if self.kernel.is_some() { "fold" } else { "map" },
-            "variables": vars,
-        })
     }
 }
 

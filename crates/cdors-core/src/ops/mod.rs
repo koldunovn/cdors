@@ -621,23 +621,53 @@ pub fn suggestions(name: &str) -> Vec<&'static str> {
     scored.into_iter().take(3).map(|(_, n)| n).collect()
 }
 
-/// The `unknown_operator` error with a did-you-mean hint.
+/// Names of the implemented operators (and their aliases).
+pub fn implemented_names() -> Vec<&'static str> {
+    REGISTRY
+        .iter()
+        .filter(|o| o.implemented)
+        .flat_map(|o| std::iter::once(o.name.as_str()).chain(o.aliases.iter().copied()))
+        .collect()
+}
+
+/// The error for an operator name cdors does not register: `not_implemented` for an operator
+/// of cdo's catalog, otherwise `unknown_operator` with did-you-mean candidates from cdo's
+/// catalog, implemented operators first.
 pub fn unknown_operator(name: &str) -> Error {
-    let sugg = suggestions(name);
-    let mut e = Error::new(
+    if let Some(c) = catalog::cdo_operator(name) {
+        return Error::new(
+            ErrorCode::NotImplemented,
+            format!(
+                "cdo operator '{name}' ({}) is not implemented in cdors",
+                c.description
+            ),
+        )
+        .with("operator", name)
+        .with("cdo_section", c.section)
+        .with_hint("list the implemented operators with `cdors ops`; run this step with cdo");
+    }
+    let implemented = implemented_names();
+    let sugg = catalog::suggest(name, &implemented);
+    let e = Error::new(
         ErrorCode::UnknownOperator,
         format!("unknown operator '{name}'"),
     )
     .with("operator", name);
-    e = if sugg.is_empty() {
-        e.with_hint(
-            "see the operator list with `cdors ops` (cdo operators not listed are not implemented)",
-        )
-    } else {
-        e.with("suggestions", sugg.clone())
-            .with_hint(format!("did you mean {}?", sugg.join(" or ")))
-    };
-    e
+    if sugg.is_empty() {
+        return e.with_hint("see the operator list with `cdors ops`");
+    }
+    let marked: Vec<String> = sugg
+        .iter()
+        .map(|s| {
+            if implemented.contains(s) {
+                (*s).to_owned()
+            } else {
+                format!("{s} (cdo only, not in cdors)")
+            }
+        })
+        .collect();
+    e.with("suggestions", sugg.clone())
+        .with_hint(format!("did you mean {}?", marked.join(" or ")))
 }
 
 /// Returns the spec of an implemented operator, or `not_implemented`.
@@ -649,15 +679,7 @@ pub fn require_implemented(node: &OpNode) -> Result<&'static OpSpec> {
             format!("operator '{}' is not implemented yet", node.name),
         )
         .with("operator", node.name.clone())
-        .with_hint(format!(
-            "implemented now: {}",
-            REGISTRY
-                .iter()
-                .filter(|o| o.implemented)
-                .map(|o| o.name.as_str())
-                .collect::<Vec<_>>()
-                .join(", ")
-        )));
+        .with_hint("list the implemented operators with `cdors ops`; run this step with cdo"));
     }
     Ok(spec)
 }

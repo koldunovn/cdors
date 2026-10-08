@@ -19,6 +19,9 @@ except for the points below. Each entry says what cdo does, what cdors does, and
   `cat` keeps the argument order, and both refuse inputs whose times overlap, repeat or go
   backwards (`bad_data`), because the downstream operators assume a monotonic time axis. Their
   inputs must be files or stores (or one glob pattern), not the output of other operators.
+- **Read limit on login nodes.** cdo has none. cdors refuses a run that would decode more than
+  `--max-read` (default 64 GB outside Slurm jobs, no limit inside them) with `read_limit`, exit
+  code 4, before any output is created; `--max-read none` removes the limit.
 
 ## Statistics
 

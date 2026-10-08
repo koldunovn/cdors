@@ -247,6 +247,7 @@ fn fetch_loop(rx: Receiver<Fetch>, tx: Sender<Msg>, shared: Arc<Shared>) {
                 chunk_done(&f.tile, &tx, &shared);
             }
             Ok(raw) => {
+                super::progress::chunk_fetched(&raw);
                 let (tx, sh) = (tx.clone(), shared.clone());
                 let task = move || {
                     let r = match raw {

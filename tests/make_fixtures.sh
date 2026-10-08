@@ -11,6 +11,7 @@
 #   hpz2_noleap_tiny.zarr2       tiny chunks (10 steps x 16 cells) for the planner check
 #   <f>_ymonmean / _ydaymean / _yseasmean   climatologies of r36x18_std and hpz2_noleap (cdo)
 #   weights_con_r36x18_r18x9.nc  SCRIP weights of cdo gencon,r18x9 for r36x18_std (remap,<grid>,<weights> rows)
+#   nocoord_360   unst_360 without horizontal coordinates (FESOM-like; written by xarray)
 #
 # All values are float32 (-b F32), vary in space and time, and come from cdo `expr` on a
 # `for` time series, so they are reproducible. Writes are atomic (tmp name, then mv).
@@ -106,6 +107,27 @@ EOF
 zarr hpz2_noleap.zarr2      2 73 192
 zarr hpz2_noleap.zarr3      3 73 192
 zarr hpz2_noleap_tiny.zarr2 2 10 16
+
+# FESOM-like file without horizontal coordinates: unst_360 with lon/lat, their bounds and the
+# `coordinates`/`CDI_grid_type` attributes removed, cells renamed to nod2 (err:no_coordinates rows).
+if [[ -e nocoord_360.nc ]]; then
+  echo "exists: $FIX/nocoord_360.nc"
+elif [[ ! -x $ZARR_PYTHON ]]; then
+  echo "skip:   nocoord_360.nc (no ZARR_PYTHON=$ZARR_PYTHON)"
+else
+  "$ZARR_PYTHON" -I - "$FIX/unst_360.nc" "$FIX/nocoord_360.nc.tmp$$" <<'EOF'
+import sys, xarray as xr
+ds = xr.open_dataset(sys.argv[1], decode_times=False)
+ds = ds.drop_vars([v for v in ds.variables if v.startswith(("clon", "clat", "lon", "lat"))])
+ds = ds.rename_dims({d: "nod2" for d in ds["tas"].dims if d != "time"})
+for v in ds.variables.values():
+    v.attrs.pop("coordinates", None); v.attrs.pop("CDI_grid_type", None)
+    v.encoding.pop("coordinates", None)
+ds.to_netcdf(sys.argv[2], format="NETCDF4")
+EOF
+  mv "$FIX/nocoord_360.nc.tmp$$" "$FIX/nocoord_360.nc"
+  echo "made:   $FIX/nocoord_360.nc"
+fi
 
 # SCRIP weights for the remap,<grid>,<weights.nc> rows.
 if [[ -e weights_con_r36x18_r18x9.nc ]]; then
