@@ -319,23 +319,29 @@ cached. Rows needing `cdo` are skipped with a notice where it isn't available.
 - Create: `docs/deviations.md`
 - Modify: `tests/cases.txt`
 
-- [ ] kernel: per-cell state (sum, count, min, max, second moment) folded one timestep at a time in time order, carried
+- [x] kernel: per-cell state (sum, count, min, max, second moment) folded one timestep at a time in time order, carried
       across time chunks, cells processed in parallel; groups keyed by period in the variable's calendar; a group is
       finalised and written as soon as it closes; NaN-aware
-- [ ] read CDO's variance code in the reference source and port it if it is numerically sound; otherwise use Welford's
+- [x] read CDO's variance code in the reference source and port it if it is numerically sound; otherwise use Welford's
       update (sequential, so no merge formula is needed) and record the deviation in `docs/deviations.md`
-- [ ] operators: `tim`, `day`, `mon`, `seas`, `year` × `mean`, `min`, `max`, `sum`, `std`, `std1`, `var`, `var1`;
+- [x] operators: `tim`, `day`, `mon`, `seas`, `year` × `mean`, `min`, `max`, `sum`, `std`, `std1`, `var`, `var1`;
       `ymon*` and `yday*` (multi-year groups)
-- [ ] output time axis: `--timestat_date` rules, `time_bnds`, `cell_methods`
-- [ ] rows: every period with `mean` on all three fixtures (the calendars matter); every statistic once with `tim` on
+- [x] output time axis: `--timestat_date` rules, `time_bnds`, `cell_methods`
+- [x] rows: every period with `mean` on all three fixtures (the calendars matter); every statistic once with `tim` on
       one fixture; `ymonmean` and `ydaymean` on all three
-- [ ] run `tests/run_cases.sh` — must pass
+- [x] run `tests/run_cases.sh` — must pass
 - [ ] **checkpoint:** with Nikolay's go-ahead (about 0.5 node-hour), run W1 with cdors and cdo on one node; if cdors
       is not on track for 5×, investigate before Task 7
 - ⚠️ 2026-10-09: the grouping and output-time-axis rules exist in `model/timegroup.rs` (GroupTracker, ClimTracker)
       and match cdo 2.6.0 in 990 checks (timestamps and `time_bnds`, all `--timestat_date` values, seasons with
       `CDO_SEASON_START`, Feb 29 in `yday*`). Kernels and operator wiring still to do. CDI rewrites timestamps when
       time units are months/years since (`taxis.c:1033`); writers must reproduce it if such units are written.
+- ⚠️ 2026-10-09: merged. Login-node speed: `yearmean` of 2 years of W1 tas in 1.4–1.9 s (4.9–6.7 GB/s) vs cdo 9.25 s
+      (1.0 GB/s), identical values. Variance uses Welford (cdo: one-pass sum of squares), ≤ 1–2 float32 ulp, logged in
+      `docs/deviations.md`. Gaps handed to Task 7: chaining after a statistic is refused (multi-stage chains with
+      in-memory intermediates needed); data with one field per chunk folds serially (one lane) — split chunks into
+      finer tiles for fold stages; `ydaymean` at zoom 9 needs ≈ 14 GB (multi-pass). The compute-node checkpoint
+      still needs Nikolay's go-ahead.
 
 ### Task 7: Whole-extent time operators, memory budget and multi-pass
 
