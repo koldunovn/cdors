@@ -216,6 +216,8 @@ const IMPLEMENTED: &[&str] = &[
     "ifthen",
     "copy",
     "setgrid",
+    "mergetime",
+    "cat",
 ];
 
 fn build_registry() -> Vec<OpSpec> {

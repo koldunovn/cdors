@@ -11,6 +11,14 @@ except for the points below. Each entry says what cdo does, what cdors does, and
   unless `-O` is given, and never appends.
 - **`-O` never deletes an existing Zarr directory.** `-O` replaces files only; an existing store
   must be removed by the user.
+- **`mergetime` and `cat` need time to increase from one input to the next.** cdo `mergetime`
+  merges its inputs timestep by timestep, so overlapping inputs interleave, and keeps repeated
+  timesteps unless `skip_same_time` (`src/operators/Mergetime.cc:256-287`); cdo `cat` appends in
+  argument order whatever the dates (`src/operators/Cat.cc`). cdors reads the inputs as one
+  virtual dataset without copying them: `mergetime` orders the inputs by their first timestep,
+  `cat` keeps the argument order, and both refuse inputs whose times overlap, repeat or go
+  backwards (`bad_data`), because the downstream operators assume a monotonic time axis. Their
+  inputs must be files or stores (or one glob pattern), not the output of other operators.
 
 ## Statistics
 

@@ -62,3 +62,10 @@ ulp      | -monvar1 {in}                               | hpz2_noleap
 ulp      | --timestat_date first -ymonmean {in}        | hpz2_noleap
 ulp      | --timestat_date last -seasmean {in}         | r36x18_std
 ulp      | -yearmean -selyear,2001/2002 -selname,tas -mulc,2 {in} | r36x18_std hpz2_noleap unst_360
+#
+# Task 10: mergetime and cat over the yearly pieces of r36x18_std ({fx}: fixture directory)
+exact    | -mergetime {fx}/r36x18_std_y2001.nc {fx}/r36x18_std_y2002.nc {fx}/r36x18_std_y2000.nc | r36x18_std
+exact    | -cat {fx}/r36x18_std_y2000.nc {fx}/r36x18_std_y2001.nc {fx}/r36x18_std_y2002.nc | r36x18_std
+ulp      | -yearmean -mergetime {fx}/r36x18_std_y*.nc | r36x18_std
+exact    | -selname,pr -seltimestep,300/500 -cat {fx}/r36x18_std_y*.nc | r36x18_std
+err:bad_data | -cat {fx}/r36x18_std_y2001.nc {fx}/r36x18_std_y2000.nc | r36x18_std

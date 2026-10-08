@@ -268,6 +268,7 @@ dependencies = [
  "flate2",
  "glob",
  "hdf5-metno",
+ "hdf5-metno-sys",
  "netcdf",
  "object_store",
  "parquet",

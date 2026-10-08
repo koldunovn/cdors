@@ -63,12 +63,23 @@ pub fn is_url(s: &str) -> bool {
 fn runtime() -> &'static tokio::runtime::Runtime {
     static RT: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
     RT.get_or_init(|| {
-        tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(4)
-            .thread_name("cdors-net")
-            .enable_all()
-            .build()
-            .expect("cannot start the I/O runtime")
+        // fewer workers if the system refuses threads; without any, a current-thread runtime
+        // (driven by whichever caller blocks on it)
+        let multi = crate::exec::threads::with_fallback("the network runtime", 4, |k| {
+            tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(k)
+                .max_blocking_threads(k)
+                .thread_name("cdors-net")
+                .enable_all()
+                .build()
+        });
+        multi.unwrap_or_else(|e| {
+            crate::exec::threads::warn("threads_reduced", &e.to_text());
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("cannot start the I/O runtime")
+        })
     })
 }
 

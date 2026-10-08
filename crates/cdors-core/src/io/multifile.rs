@@ -136,8 +136,15 @@ fn var_signature(v: &Variable, tdim: &str) -> String {
 }
 
 impl MultiFileSource {
-    /// Opens and checks the members (see the module docs).
+    /// Opens and checks the members, ordered by their first timestep (see the module docs).
     pub fn open(paths: &[String]) -> Result<Self> {
+        Self::open_with(paths, true)
+    }
+
+    /// Opens and checks the members; `sort`: order them by their first timestep (`mergetime`),
+    /// otherwise keep the given order (`cat`). Either way time must increase from one member
+    /// to the next: overlapping, interleaved or repeated timesteps are refused.
+    pub fn open_with(paths: &[String], sort: bool) -> Result<Self> {
         let mut members: Vec<(String, Arc<dyn ChunkSource>)> = Vec::with_capacity(paths.len());
         for p in paths {
             let src = super::open(p)?;
@@ -150,7 +157,9 @@ impl MultiFileSource {
         }
         let first_dt =
             |s: &Arc<dyn ChunkSource>| s.dataset().time.as_ref().map(|t| t.steps[0].datetime);
-        members.sort_by_key(|(_, s)| first_dt(s));
+        if sort {
+            members.sort_by_key(|(_, s)| first_dt(s));
+        }
 
         let (p0, m0) = &members[0];
         let d0 = m0.dataset();
@@ -195,11 +204,23 @@ impl MultiFileSource {
                     return Err(mismatch(
                         pair,
                         format!(
-                            "time does not increase: {} follows {} (overlapping inputs)",
+                            "time does not increase: {} follows {} ({})",
                             t.steps[0].datetime.cdo_string().trim_start(),
-                            prev.datetime.cdo_string().trim_start()
+                            prev.datetime.cdo_string().trim_start(),
+                            if sort {
+                                "overlapping inputs"
+                            } else {
+                                "inputs out of time order"
+                            }
                         ),
-                    ));
+                    )
+                    .with_hint(if sort {
+                        "the inputs' time ranges must not overlap: cdors does not merge \
+                         interleaved or repeated timesteps (cdo mergetime keeps duplicates)"
+                    } else {
+                        "cat keeps the argument order: give the inputs in time order, or use \
+                         mergetime, which sorts them"
+                    }));
                 }
                 // everything except the time axis must agree with the first member
                 let names = |d: &Dataset| -> Vec<String> {

@@ -5,8 +5,9 @@
 #
 # Row format (tests/cases.txt):   tag | arguments | fixtures      (# starts a comment)
 #   tag        exact | ulp | bin | text | json | err:<code>
-#   arguments  cdo arguments without the output file; {in} and {in2} are replaced by fixture paths.
-#              Split on whitespace, no quoting, no globbing.
+#   arguments  cdo arguments without the output file; {in} and {in2} are replaced by fixture paths,
+#              {fx} by the fixture directory (for rows on several files, e.g. -mergetime).
+#              Split on whitespace, no quoting, no globbing (a glob pattern reaches both tools).
 #   fixtures   space-separated fixture names (files $CDORS_FIXTURES/<name>.nc); a token "a:b"
 #              sets {in}=a and {in2}=b, otherwise {in2}={in}.
 #
@@ -21,6 +22,9 @@
 #                     reference); 0 switches the variant off
 #   CDORS_PLANNER=1   (default) also run rows on hpz2_noleap on the tiny-chunk Zarr copy; must equal
 #                     the first cdors output exactly. CDORS_PLANNER_MEM=1M adds "--mem 1M" to that run.
+#   CDORS_THREADS     thread options of every cdors run   (default: -P 2 --io-threads 2)
+#   CDORS_THREADS_TINY  ... of the tiny-chunk run         (default: -P 3 --io-threads 3; different
+#                     from the base run, so the planner check also checks thread-count invariance)
 #
 # err rows: the output "$dir/out.nc" is appended unless the arguments contain {noout} (removed).
 # text rows of showname compare the names order-insensitively on the Zarr and tiny variants
@@ -37,6 +41,8 @@ export CDORS_FIXTURES=${CDORS_FIXTURES:-$CDORS_TARGET/fixtures}
 export CDORS=${CDORS:-$CDORS_TARGET/release/cdors}
 export CDORS_REF=${CDORS_REF:-$CDORS_TARGET/cdo-ref}
 export CDORS_ZARR=${CDORS_ZARR:-1} CDORS_PLANNER=${CDORS_PLANNER:-1} CDORS_PLANNER_MEM=${CDORS_PLANNER_MEM:-}
+# modest threads: rows run in parallel on a login node with a per-user thread limit
+export CDORS_THREADS=${CDORS_THREADS--P 2 --io-threads 2} CDORS_THREADS_TINY=${CDORS_THREADS_TINY--P 3 --io-threads 3}
 VARIANT_FIXTURE=hpz2_noleap
 
 # ---------------------------------------------------------------- one row x fixture
@@ -63,10 +69,11 @@ run_job() {
   [[ $tag == err:* || $tag == json ]] || have "$CDO" || skip "cdo not found ($CDO)"
 
   args_for() {  # args_for IN1 IN2 -> fills array A
-    local a=${args//\{in\}/$1}; a=${a//\{in2\}/$2}
+    local a=${args//\{in\}/$1}; a=${a//\{in2\}/$2}; a=${a//\{fx\}/$CDORS_FIXTURES}
     read -ra A <<< "$a"
   }
   local A; args_for "$in1" "$in2"
+  local -a T; read -ra T <<< "$CDORS_THREADS"
 
   case $tag in
   err:*)
@@ -74,14 +81,14 @@ run_job() {
     local -a O=()
     for a in "${A[@]}"; do [[ $a == '{noout}' ]] && noout=1 || O+=("$a"); done
     ((noout)) || O+=("$dir/out.nc")
-    "$CDORS" --json "${O[@]}" > "$dir/out.json" 2> "$dir/err.json"
+    "$CDORS" "${T[@]}" --json "${O[@]}" > "$dir/out.json" 2> "$dir/err.json"
     local rc=$?
     { echo "exit $rc"; cat "$dir/out.json" "$dir/err.json"; } >> "$log"
     ((rc != 0)) || fail "cdors succeeded, expected error $code"
     grep -qE "\"error\" *: *\"$code\"" "$dir/out.json" "$dir/err.json" || fail "no \"error\": \"$code\" in JSON output"
     pass ;;
   json)
-    "$CDORS" "${A[@]}" > "$dir/out.json" 2>> "$log" || fail "cdors failed"
+    "$CDORS" "${T[@]}" "${A[@]}" > "$dir/out.json" 2>> "$log" || fail "cdors failed"
     python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "$dir/out.json" 2>> "$log" || fail "output is not valid JSON"
     pass ;;
   exact|ulp|bin|text) ;;
@@ -106,19 +113,19 @@ run_job() {
   fi
 
   # cdors run(s): base, then the variants on the variant fixture
-  local -a runs=("base|$in1|$in2|")
+  local -a runs=("base|$in1|$in2|$CDORS_THREADS")
   if [[ $f1 == "$VARIANT_FIXTURE" ]]; then
     local z2=$in2
     if [[ $CDORS_ZARR == 1 ]]; then
       for z in zarr2 zarr3; do
         local zp=$CDORS_FIXTURES/$f1.$z
         [[ $f2 == "$f1" ]] && z2=$zp
-        [[ -e $zp ]] && runs+=("$z|$zp|$z2|") || echo "variant $z skipped: $zp missing" >> "$log"
+        [[ -e $zp ]] && runs+=("$z|$zp|$z2|$CDORS_THREADS") || echo "variant $z skipped: $zp missing" >> "$log"
       done
     fi
     if [[ $CDORS_PLANNER == 1 ]]; then
       local tp=$CDORS_FIXTURES/${f1}_tiny.zarr2; [[ $f2 == "$f1" ]] && z2=$tp
-      [[ -e $tp ]] && runs+=("tiny|$tp|$z2|${CDORS_PLANNER_MEM:+--mem $CDORS_PLANNER_MEM}") || echo "planner variant skipped: $tp missing" >> "$log"
+      [[ -e $tp ]] && runs+=("tiny|$tp|$z2|$CDORS_THREADS_TINY${CDORS_PLANNER_MEM:+ --mem $CDORS_PLANNER_MEM}") || echo "planner variant skipped: $tp missing" >> "$log"
     fi
   fi
 

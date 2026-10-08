@@ -256,6 +256,7 @@ fn hash_source_grid(path: &Path, h: &mut Fnv128) -> Result<(), RemapError> {
         path: path.to_owned(),
         source,
     };
+    let _hdf5 = crate::io::hdf5_lock();
     let file = netcdf::open(path).map_err(nc_err)?;
     let is_time_dim = |name: &str, unlimited: bool| {
         unlimited

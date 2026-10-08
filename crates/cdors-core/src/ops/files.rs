@@ -1,11 +1,85 @@
-//! `copy` (format change and rechunking happen in the writer: `-f`, `--chunks`) and
+//! `copy` (format change and rechunking happen in the writer: `-f`, `--chunks`),
 //! `setgrid,<file>` (take the horizontal grid of another dataset, e.g. the mesh file of FESOM
-//! output, when the number of points matches).
+//! output, when the number of points matches), and `mergetime` / `cat` (several files, or one
+//! glob pattern, as one input concatenated along time).
+//!
+//! `mergetime` orders its inputs by their first timestep, `cat` keeps the argument order (a
+//! glob pattern expands to sorted names). Both read the inputs as one virtual dataset
+//! ([`MultiFileSource`]) rather than copying them, so the rest of the chain sees one input.
+//! Differences from cdo: time must increase from one input to the next (cdo `mergetime`
+//! interleaves overlapping inputs step by step and keeps repeated timesteps unless
+//! `skip_same_time`; cdo `cat` appends in any order, and appends to an existing output
+//! without `-O`); inputs must be files or stores, not the output of other operators.
 
-use crate::chain::OpNode;
+use crate::chain::{Input, OpNode};
 use crate::error::{Error, ErrorCode, Result};
+use crate::io::ChunkSource;
+use crate::io::multifile::{MultiFileSource, expand_glob, is_glob};
 use crate::model::{DimRole, GridKind};
 use crate::plan::{Desc, GridDesc, IndexMap, Sources};
+use std::sync::Arc;
+
+/// Whether `name` is an operator that concatenates its input files along time.
+pub fn is_concat(name: &str) -> bool {
+    matches!(name, "mergetime" | "cat")
+}
+
+/// Input paths of `mergetime` / `cat`, glob patterns expanded.
+fn concat_paths(node: &OpNode) -> Result<Vec<String>> {
+    let mut paths = Vec::new();
+    for i in &node.inputs {
+        match i {
+            Input::Path(p) if is_glob(p) && !std::path::Path::new(p).exists() => {
+                paths.extend(expand_glob(p)?);
+            }
+            Input::Path(p) => paths.push(p.clone()),
+            Input::Op(o) => {
+                return Err(Error::new(
+                    ErrorCode::NotImplemented,
+                    format!(
+                        "{} of the output of another operator (-{}) is not implemented yet",
+                        node.name, o.name
+                    ),
+                )
+                .with("operator", node.name.clone())
+                .with_hint(format!(
+                    "give {} files or a quoted glob pattern, and apply -{} outside it",
+                    node.name, o.name
+                )));
+            }
+        }
+    }
+    Ok(paths)
+}
+
+/// Opens the inputs of `mergetime` / `cat` as one dataset.
+pub fn open_concat(node: &OpNode) -> Result<Arc<dyn ChunkSource>> {
+    let paths = concat_paths(node)?;
+    match paths.as_slice() {
+        [] => Err(Error::bad_arguments(format!("{} needs inputs", node.name))),
+        [one] => crate::io::open(one),
+        _ => Ok(Arc::new(MultiFileSource::open_with(
+            &paths,
+            node.name == "mergetime",
+        )?)),
+    }
+}
+
+/// Output description of `mergetime` / `cat`: the concatenated dataset as one source.
+pub fn describe_concat(node: &OpNode, srcs: &mut Sources) -> Result<Desc> {
+    crate::ops::require_implemented(node)?;
+    let key = format!("-{} {}", node.name, concat_paths(node)?.join(" "));
+    let si = match srcs.paths.iter().position(|p| *p == key) {
+        Some(i) => i,
+        None => {
+            let src = open_concat(node)?;
+            srcs.paths.push(key);
+            srcs.srcs.push(src);
+            srcs.srcs.len() - 1
+        }
+    };
+    crate::plan::describe_source(srcs, si)
+}
 
 fn setgrid(node: &OpNode, mut d: Desc, srcs: &mut Sources) -> Result<Desc> {
     let path = &node.args[0];
