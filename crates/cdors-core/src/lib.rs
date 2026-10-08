@@ -2,6 +2,8 @@
 //!
 //! Task 1 stub: only the version constant and a report of the linked native libraries.
 
+pub mod remap;
+
 /// Version of the cdors crates.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
