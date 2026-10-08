@@ -225,7 +225,7 @@ cached. Rows needing `cdo` are skipped with a notice where it isn't available.
       kerchunk from Task 10 on);
       W3 daily SST on a **regular or curvilinear** source grid (cdo's bilinear weights refuse unstructured sources);
       W4 a multi-TB variable in a store **chunked in space**, so that percentile passes read disjoint chunks
-- [ ] write `read_probe.rs`: read and decode every chunk of one variable through `zarrs` with N threads, from the
+- [x] write `read_probe.rs`: read and decode every chunk of one variable through `zarrs` with N threads, from the
       filesystem (W1) and over HTTPS (W2 in the EERIE cloud); report compressed and decoded GB/s
 - [x] write `baseline.sbatch`: on one exclusive compute node, run cdo for W1–W4 under `/usr/bin/time -v`; for the
       read-time share, run each workload's single operator again with `-P 1 -T` (cdo's timers need one process and one
@@ -235,6 +235,11 @@ cached. Rows needing `cdo` are skipped with a notice where it isn't available.
 - [ ] **gate:** if the probe's parallel read-and-decode throughput on W1 is not clearly above cdo's effective
       throughput (target at least 5×), stop and discuss before Task 3 (fallbacks: a Rust reader inside CDO, or a
       narrower scope); revisit the pass marks in Task 13 with these numbers
+- ⚠️ preliminary login-node probe (2026-10-09, `docs/baseline.md`): W1 cold 9.6 GB/s decoded with 64 reads in
+      flight vs cdo ≈ 0.95 GB/s (≈ 10×; only ≈ 3× with 16 synchronous threads); W4 8.9 vs 0.18 GB/s. I/O concurrency
+      must be a separate, larger knob than the decode pool. The EERIE cloud `/kerchunk` endpoint stays at ≈ 0.19 GB/s
+      whatever the concurrency, so the pass mark "remote ≥ half of local" needs revisiting with Nikolay.
+      `bench/baseline.sbatch` is ready (≈ 0.4–0.6 node-hours) and waits for his go-ahead.
 
 ### Task 3: Data model, CF time, CLI parser and first readers
 
@@ -294,7 +299,7 @@ cached. Rows needing `cdo` are skipped with a notice where it isn't available.
       operators merged into the stage; tiles aligned to chunk boundaries; any running state is carried across chunk
       boundaries in a fixed order, never merged from per-chunk partials
 - [ ] executor: fetch, decode, compute, write as a pipeline with bounded queues; async I/O runtime plus a rayon pool;
-      `-P` caps threads
+      `-P` caps threads; ➕ reads in flight are a separate knob (default 64; lower on login nodes), per the probe
 - [ ] writers: output format from the suffix (`.nc` NetCDF-4, `.zarr` Zarr v3) unless `-f` says otherwise (`nc4`,
       `zarr`, `zarr2`); NetCDF-4 via `netcdf`; Zarr via `zarrs` (zstd, about 4 MB chunks with one timestep each,
       `--chunks`); write to a temporary name and rename on success; refuse an existing output without `-O`;
