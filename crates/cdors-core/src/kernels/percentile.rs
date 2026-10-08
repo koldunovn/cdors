@@ -8,7 +8,12 @@
 //!
 //! Every method is a function of the order statistics `x[0] <= x[1] <= ... <= x[n-1]` of the
 //! valid (non-NaN) values, of `n` and of `q = p / 100`. The formulas below are those of CDO 2.6.5
-//! `src/percentiles.cc` (identical in 2.6.0), evaluated in the same order in `f64`:
+//! `src/percentiles.cc` (identical in 2.6.0), evaluated in the same order in `f64`. The cdo build
+//! contracts `a + b*c` into fused multiply-adds (GCC's default `-ffp-contract=fast`), so cdors
+//! uses `mul_add` at the same places (the ranks of `rtype8`, the NumPy family, the continuous and
+//! `closest_observation` variants, and both interpolations, as `fma(1-h, x[i], h*x[j])` and
+//! `fma(d, x[k]-x[k-1], x[k-1])`); with that, `monpctl` matches cdo 2.6.0 bit for bit for all 16
+//! methods (checked at p = 3, 37, 50, 66.6, 81.5, 95):
 //!
 //! - `nrank` (default, `percentile_nrank`): `x[clamp(ceil(n*q), 1, n) - 1]`.
 //! - `nist` (`percentile_nist`): `r = (n+1)*q`, `k = trunc(r)`; `k == 0` gives `x[0]`, `k >= n`
@@ -220,7 +225,7 @@ fn pick(n: usize, q: f64, method: PercentileMethod) -> (Pick, bool) {
     let p = match method {
         PercentileMethod::Nrank => one_clamped((nf * q).ceil() as usize),
         PercentileMethod::Nist => lerp((n + 1) as f64 * q),
-        PercentileMethod::Rtype8 => lerp(1.0 / 3.0 + (nf + 1.0 / 3.0) * q),
+        PercentileMethod::Rtype8 => lerp((nf + 1.0 / 3.0).mul_add(q, 1.0 / 3.0)),
         PercentileMethod::Numpy(m) => return pick_numpy(n, q, m),
     };
     (p, false)
@@ -229,7 +234,7 @@ fn pick(n: usize, q: f64, method: PercentileMethod) -> (Pick, bool) {
 fn pick_numpy(n: usize, q: f64, m: NumpyMethod) -> (Pick, bool) {
     use NumpyMethod as N;
     let nf = n as f64;
-    let rank = 1.0 + (n - 1) as f64 * q;
+    let rank = ((n - 1) as f64).mul_add(q, 1.0);
     let k = rank as usize;
     if k == 1 {
         return (Pick::One(0), false);
@@ -277,7 +282,7 @@ fn pick_numpy(n: usize, q: f64, m: NumpyMethod) -> (Pick, bool) {
                 N::MedianUnbiased => (1.0 / 3.0, 1.0 / 3.0),
                 _ => (3.0 / 8.0, 3.0 / 8.0),
             };
-            let nppn = a + q * (nf + 1.0 - a - b);
+            let nppn = q.mul_add(nf + 1.0 - a - b, a);
             let fuzz = 4.0 * f64::EPSILON;
             let j = (nppn + fuzz).floor() as usize;
             let mut h = nppn - j as f64;
@@ -288,7 +293,7 @@ fn pick_numpy(n: usize, q: f64, m: NumpyMethod) -> (Pick, bool) {
         }
         N::InvertedCdf | N::AveragedInvertedCdf | N::ClosestObservation => {
             let nppm = if m == N::ClosestObservation {
-                nf * q - 0.5
+                nf.mul_add(q, -0.5)
             } else {
                 nf * q
             };
@@ -340,7 +345,7 @@ fn percentile_valid<T: Sample>(valid: &mut [T], q: f64, method: PercentileMethod
         Pick::One(i) => nth(valid, i),
         Pick::Lerp(i, d) => {
             let (vk, vk2) = nth_pair(valid, i);
-            vk + d * (vk2 - vk)
+            d.mul_add(vk2 - vk, vk)
         }
         Pick::Blend(i, j, h) => {
             let (a, b) = if j == i {
@@ -349,7 +354,7 @@ fn percentile_valid<T: Sample>(valid: &mut [T], q: f64, method: PercentileMethod
             } else {
                 nth_pair(valid, i)
             };
-            (1.0 - h) * a + h * b
+            (1.0 - h).mul_add(a, h * b)
         }
     }
 }

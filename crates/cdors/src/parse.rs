@@ -310,6 +310,42 @@ impl Parser<'_> {
                     node.inputs.push(self.input()?);
                 }
             }
+            Inputs::OneOrThree => {
+                if self.pos >= self.toks.len() {
+                    return Err(
+                        Error::bad_arguments(format!("operator '{name}' needs an input"))
+                            .with("operator", name.clone()),
+                    );
+                }
+                node.inputs.push(self.input()?);
+                // cdo's `pctl,p data min max`: as the outermost operator when more inputs
+                // follow; nested, when the next two inputs are `-<x>min ...` and `-<x>max ...`
+                let three = if root {
+                    self.toks.len() - self.pos > self.reserve
+                } else {
+                    let mut probe = Parser {
+                        toks: self.toks,
+                        pos: self.pos,
+                        reserve: self.reserve,
+                    };
+                    let mut is_op = |suffix: &str| {
+                        probe.pos < probe.toks.len()
+                            && matches!(probe.input(), Ok(Input::Op(o)) if o.name.ends_with(suffix))
+                    };
+                    is_op("min") && is_op("max")
+                };
+                if three {
+                    for k in 1..3 {
+                        if self.pos >= self.toks.len() {
+                            return Err(Error::bad_arguments(format!(
+                                "operator '{name}' takes 1 or 3 inputs, got {k}"
+                            ))
+                            .with("operator", name.clone()));
+                        }
+                        node.inputs.push(self.input()?);
+                    }
+                }
+            }
             Inputs::Variadic => {
                 while self.toks.len() - self.pos > self.reserve {
                     node.inputs.push(self.input()?);

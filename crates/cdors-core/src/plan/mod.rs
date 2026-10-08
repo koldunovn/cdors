@@ -598,6 +598,10 @@ pub struct Sources {
     pub srcs: Vec<Arc<dyn ChunkSource>>,
     /// `--timestat_date` as given on the command line.
     pub timestat_date: Option<crate::model::timegroup::TimestatDate>,
+    /// `--percentile` (cdo's default `nrank` when not given).
+    pub percentile: crate::kernels::percentile::PercentileMethod,
+    /// `--mem` in bytes (`None`: the default budget).
+    pub mem: Option<u64>,
 }
 
 impl Sources {
@@ -735,8 +739,11 @@ pub fn describe_tree(node: &OpNode, srcs: &mut Sources) -> Result<Desc> {
     if crate::ops::files::is_concat(&node.name) {
         return crate::ops::files::describe_concat(node, srcs);
     }
-    let mut inputs = Vec::with_capacity(node.inputs.len());
-    for i in &node.inputs {
+    // inputs an operator ignores (the min/max inputs of `timpctl,p in min max`) are neither
+    // opened nor described
+    let used = crate::ops::used_inputs(node);
+    let mut inputs = Vec::with_capacity(used);
+    for i in &node.inputs[..used] {
         inputs.push(match i {
             Input::Path(p) => {
                 let si = srcs.open(p)?;
@@ -784,6 +791,12 @@ pub fn build(cmd: &Command) -> Result<Plan> {
                 C::Last => T::Last,
             }
         }),
+        percentile: match &cmd.options.percentile {
+            Some(m) => crate::kernels::percentile::PercentileMethod::parse(m)
+                .ok_or_else(|| Error::bad_arguments(format!("unknown percentile method '{m}'")))?,
+            None => Default::default(),
+        },
+        mem: cmd.options.mem,
         ..Sources::default()
     };
     let desc = describe_tree(&cmd.root, &mut srcs)?;

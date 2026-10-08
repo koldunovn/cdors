@@ -18,9 +18,12 @@ pub mod files;
 pub mod fldstat;
 pub mod healpix;
 pub mod info;
+pub mod pctl;
 pub mod remap;
+pub mod runstat;
 pub mod select;
 pub mod timstat;
+pub mod ymonarith;
 
 use crate::chain::OpNode;
 use crate::error::{Error, ErrorCode, Result};
@@ -94,6 +97,9 @@ pub enum Inputs {
     Fixed(usize),
     /// One or more: all remaining inputs (only as the outermost operator, as in cdo).
     Variadic,
+    /// One input, or cdo's three inputs `data min max` of the percentile operators, whose last
+    /// two are accepted but never evaluated (see [`used_inputs`]).
+    OneOrThree,
 }
 
 /// Registry entry of one operator.
@@ -437,52 +443,6 @@ fn build_registry() -> Vec<OpSpec> {
             "Set the horizontal grid (grid file or mesh)",
             false,
         ),
-        // whole extent
-        op(
-            "timpctl",
-            Fixed(3),
-            1,
-            vec![arg("p", Float)],
-            WholeExtent,
-            "Percentile over all timesteps (min/max inputs accepted, not used)",
-            false,
-        ),
-        op(
-            "monpctl",
-            Fixed(3),
-            1,
-            vec![arg("p", Float)],
-            WholeExtent,
-            "Monthly percentile",
-            false,
-        ),
-        op(
-            "yearpctl",
-            Fixed(3),
-            1,
-            vec![arg("p", Float)],
-            WholeExtent,
-            "Yearly percentile",
-            false,
-        ),
-        op(
-            "runmean",
-            one,
-            1,
-            vec![arg("nts", Int)],
-            WholeExtent,
-            "Running mean over nts timesteps",
-            false,
-        ),
-        op(
-            "ymonsub",
-            two,
-            1,
-            vec![],
-            Pointwise,
-            "Subtract the multi-year monthly climatology",
-            false,
-        ),
         // remapping
         op(
             "remap",
@@ -533,6 +493,32 @@ fn build_registry() -> Vec<OpSpec> {
             false,
         ),
     ];
+    // percentiles, running statistics, climatology arithmetic
+    for (name, d) in pctl::operators() {
+        r.push(op(
+            &name,
+            OneOrThree,
+            1,
+            vec![arg("p", Float)],
+            WholeExtent,
+            &d,
+            true,
+        ));
+    }
+    for (name, d) in runstat::operators() {
+        r.push(op(
+            &name,
+            one,
+            1,
+            vec![arg("nts", Int)],
+            WholeExtent,
+            &d,
+            true,
+        ));
+    }
+    for (name, d) in ymonarith::operators() {
+        r.push(op(&name, two, 1, vec![], Pointwise, &d, true));
+    }
     // space statistics
     for (name, d) in fldstat::operators() {
         r.push(op(&name, one, 1, vec![], Reduction, &d, true));
@@ -676,6 +662,16 @@ pub fn require_implemented(node: &OpNode) -> Result<&'static OpSpec> {
     Ok(spec)
 }
 
+/// Number of leading inputs of `node` that are evaluated: the percentile operators ignore the
+/// min/max inputs of cdo's three-input form, which are therefore never opened or read.
+pub fn used_inputs(node: &OpNode) -> usize {
+    if pctl::handles(&node.name) {
+        node.inputs.len().min(1)
+    } else {
+        node.inputs.len()
+    }
+}
+
 /// Output description of a data operator from the descriptions of its inputs (no data read).
 pub fn describe(node: &OpNode, inputs: Vec<Desc>, srcs: &mut Sources) -> Result<Desc> {
     let spec = require_implemented(node)?;
@@ -693,6 +689,9 @@ pub fn describe(node: &OpNode, inputs: Vec<Desc>, srcs: &mut Sources) -> Result<
     match node.name.as_str() {
         n if remap::handles(n) => return remap::describe(node, inputs),
         "hpdegrade" | "hpupgrade" => return healpix::describe(node, inputs),
+        n if pctl::handles(n) => return pctl::describe(node, inputs, srcs),
+        n if runstat::handles(n) => return runstat::describe(node, inputs, srcs),
+        n if ymonarith::handles(n) => return ymonarith::describe(node, inputs),
         _ => {}
     }
     match spec.class {

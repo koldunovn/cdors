@@ -24,6 +24,18 @@ fn shape_err(op: &str, msg: String) -> Error {
 /// Re-expresses `b` (a variable of the other input) over the dimensions of `a`.
 /// `bcast_time`: `b` has one timestep that is used for every timestep of `a`.
 fn align(op: &str, a: &VarDesc, b: &VarDesc, bcast_time: bool) -> Result<Expr> {
+    align_time(op, a, b, bcast_time, None)
+}
+
+/// As [`align`]; `tmap`, if given, says which timestep of `b` each timestep of `a` reads (the
+/// climatology arithmetic `ymonsub` & co.).
+pub(crate) fn align_time(
+    op: &str,
+    a: &VarDesc,
+    b: &VarDesc,
+    bcast_time: bool,
+    tmap: Option<&IndexMap>,
+) -> Result<Expr> {
     let mut map: Vec<(usize, Option<IndexMap>)> = Vec::with_capacity(b.dims.len());
     let ah = a.hdims();
     let bh = b.hdims();
@@ -41,7 +53,9 @@ fn align(op: &str, a: &VarDesc, b: &VarDesc, bcast_time: bool) -> Result<Expr> {
                     ));
                 };
                 let n = a.dims[t].size;
-                if bd.size == n && !bcast_time {
+                if let Some(m) = tmap {
+                    (t, Some(m.clone()))
+                } else if bd.size == n && !bcast_time {
                     (t, None)
                 } else if bd.size == 1 {
                     (t, Some(IndexMap::Const { idx: 0, len: n }))

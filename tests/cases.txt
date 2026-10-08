@@ -90,6 +90,21 @@ err:unsupported_grid | -remapbil,r18x9 {in}            | unst_360
 # Task 10: mergetime and cat over the yearly pieces of r36x18_std ({fx}: fixture directory)
 exact    | -mergetime {fx}/r36x18_std_y2001.nc {fx}/r36x18_std_y2002.nc {fx}/r36x18_std_y2000.nc | r36x18_std
 exact    | -cat {fx}/r36x18_std_y2000.nc {fx}/r36x18_std_y2001.nc {fx}/r36x18_std_y2002.nc | r36x18_std
-ulp      | -yearmean -mergetime {fx}/r36x18_std_y*.nc | r36x18_std
-exact    | -selname,pr -seltimestep,300/500 -cat {fx}/r36x18_std_y*.nc | r36x18_std
+ulp      | -yearmean -mergetime {fx}/r36x18_std_y2*.nc | r36x18_std
+exact    | -selname,pr -seltimestep,300/500 -cat {fx}/r36x18_std_y2*.nc | r36x18_std
 err:bad_data | -cat {fx}/r36x18_std_y2001.nc {fx}/r36x18_std_y2000.nc | r36x18_std
+
+# Task 7: percentiles (exact; cdo uses histograms above 50 values per group: tag bin), running
+# statistics, climatology arithmetic (second input: climatology fixtures made by cdo)
+exact    | -monpctl,90 {in} -monmin {in} -monmax {in}  | r36x18_std hpz2_noleap unst_360
+exact    | --percentile nist -monpctl,10 {in} -monmin {in} -monmax {in} | hpz2_noleap
+exact    | --percentile linear -monpctl,33 {in} -monmin {in} -monmax {in} | r36x18_std   # pins cdo's fused multiply-add
+bin      | -timpctl,95 {in} -timmin {in} -timmax {in}  | r36x18_std hpz2_noleap
+bin      | -yearpctl,50 {in} -yearmin {in} -yearmax {in} | r36x18_std hpz2_noleap
+bin      | -seaspctl,90 {in} -seasmin {in} -seasmax {in} | r36x18_std hpz2_noleap
+ulp      | -runmean,5 {in}                             | r36x18_std hpz2_noleap unst_360
+exact    | -runmax,7 {in}                              | r36x18_std hpz2_noleap unst_360
+ulp      | -runstd,10 {in}                             | hpz2_noleap
+exact    | -ymonsub {in} {in2}                         | r36x18_std:r36x18_std_ymonmean hpz2_noleap:hpz2_noleap_ymonmean
+exact    | -ydaysub {in} {in2}                         | r36x18_std:r36x18_std_ydaymean hpz2_noleap:hpz2_noleap_ydaymean
+exact    | -yseassub {in} {in2}                        | r36x18_std:r36x18_std_yseasmean hpz2_noleap:hpz2_noleap_yseasmean

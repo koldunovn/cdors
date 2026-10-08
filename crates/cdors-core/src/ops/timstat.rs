@@ -35,7 +35,7 @@ use crate::model::timegroup::{
 use crate::model::{AttrValue, Attrs, DimRole, TimeStep, TimeUnit, TimeUnits};
 use crate::plan::stage::{FoldKernel, FoldState, Tile};
 use crate::plan::tiling::TileBox;
-use crate::plan::{Desc, Fold, Sources};
+use crate::plan::{Desc, Fold, Sources, TimeDesc};
 use std::sync::Arc;
 
 /// The statistic computed per group.
@@ -54,7 +54,7 @@ pub enum Stat {
 }
 
 impl Stat {
-    fn parse(s: &str) -> Option<Self> {
+    pub(crate) fn parse(s: &str) -> Option<Self> {
         Some(match s {
             "mean" => Self::Mean,
             "avg" => Self::Avg,
@@ -118,7 +118,7 @@ pub fn parse(name: &str) -> Option<(Grouping, Stat)> {
         .find_map(|(p, g)| name.strip_prefix(p).and_then(Stat::parse).map(|s| (*g, s)))
 }
 
-fn set_attr(a: &mut Attrs, k: &str, v: AttrValue) {
+pub(crate) fn set_attr(a: &mut Attrs, k: &str, v: AttrValue) {
     match a.0.iter_mut().find(|(n, _)| n == k) {
         Some(e) => e.1 = v,
         None => a.0.push((k.to_owned(), v)),
@@ -126,7 +126,7 @@ fn set_attr(a: &mut Attrs, k: &str, v: AttrValue) {
 }
 
 /// Output index of every input step and the closed groups in output order.
-fn group_steps(
+pub(crate) fn group_steps(
     grouping: Grouping,
     members: &[Member],
     cal: crate::model::Calendar,
@@ -163,37 +163,24 @@ fn group_steps(
     }
 }
 
-/// Output description: grouped time axis, `cell_methods`, and the pending fold.
-pub fn describe(node: &OpNode, inputs: Vec<Desc>, srcs: &mut Sources) -> Result<Desc> {
-    let (grouping, stat) = parse(&node.name)
-        .ok_or_else(|| Error::internal(format!("'{}' is not a time statistic", node.name)))?;
-    let input = inputs
-        .into_iter()
-        .next()
-        .ok_or_else(|| Error::bad_arguments(format!("'{}' needs one input", node.name)))?;
-    let t = input
-        .time
-        .as_ref()
-        .filter(|t| !t.is_empty())
-        .ok_or_else(|| {
-            Error::bad_data(format!("'{}' needs an input with timesteps", node.name))
-                .with("operator", node.name.clone())
-        })?;
-    let cal = t.axis.calendar;
-    let members: Vec<Member> = (0..t.len())
+/// The input steps as the grouping sees them.
+pub(crate) fn members(t: &TimeDesc) -> Vec<Member> {
+    (0..t.len())
         .map(|i| Member::new(&t.axis.steps[i], t.axis.bounds.as_ref().map(|b| &b[i])))
-        .collect();
-    let (groups, closed) = group_steps(grouping, &members, cal, srcs.timestat_date);
-    let ngroups = closed.len();
+        .collect()
+}
 
-    // output time axis, in the input's units where they can be encoded exactly
+/// The output time axis of closed groups (timestamps and `time_bnds`), in the input's units where
+/// they can be encoded exactly, otherwise in days since the same reference
+/// (`docs/deviations.md`).
+pub(crate) fn grouped_time(t: &TimeDesc, closed: &[ClosedGroup]) -> TimeDesc {
+    let cal = t.axis.calendar;
     let mut time = t.clone();
     let reference = time.axis.reference;
     if closed
         .iter()
         .any(|c| time.axis.units.encode(&c.timestamp, cal).is_none())
     {
-        // months/years since: write days since the same reference (docs/deviations.md)
         time.axis.units = TimeUnits::Relative {
             unit: TimeUnit::Day,
             reference,
@@ -223,6 +210,42 @@ pub fn describe(node: &OpNode, inputs: Vec<Desc>, srcs: &mut Sources) -> Result<
         .as_ref()
         .map(|b| b.iter().map(|p| [enc(&p[0]), enc(&p[1])]).collect());
     time.axis.bounds = bounds.map(|b| b.iter().map(|p| [step(p[0]), step(p[1])]).collect());
+    time
+}
+
+/// The global `frequency` attribute of period statistics.
+fn set_frequency(out: &mut Desc, p: Period) {
+    let freq = match p {
+        Period::Day => Some("day"),
+        Period::Month => Some("mon"),
+        Period::Year => Some("year"),
+        _ => None,
+    };
+    if let Some(f) = freq {
+        set_attr(&mut out.attrs, "frequency", AttrValue::Text(f.into()));
+    }
+}
+
+/// Output description: grouped time axis, `cell_methods`, and the pending fold.
+pub fn describe(node: &OpNode, inputs: Vec<Desc>, srcs: &mut Sources) -> Result<Desc> {
+    let (grouping, stat) = parse(&node.name)
+        .ok_or_else(|| Error::internal(format!("'{}' is not a time statistic", node.name)))?;
+    let input = inputs
+        .into_iter()
+        .next()
+        .ok_or_else(|| Error::bad_arguments(format!("'{}' needs one input", node.name)))?;
+    let t = input
+        .time
+        .as_ref()
+        .filter(|t| !t.is_empty())
+        .ok_or_else(|| {
+            Error::bad_data(format!("'{}' needs an input with timesteps", node.name))
+                .with("operator", node.name.clone())
+        })?;
+    let members = members(t);
+    let (groups, closed) = group_steps(grouping, &members, t.axis.calendar, srcs.timestat_date);
+    let ngroups = closed.len();
+    let time = grouped_time(t, &closed);
 
     let mut out = input.clone();
     let method = format!("{}: {}", time.axis.var, stat.cell_method());
@@ -241,15 +264,7 @@ pub fn describe(node: &OpNode, inputs: Vec<Desc>, srcs: &mut Sources) -> Result<
     }
     out.time = Some(time);
     if let Grouping::Period(p) = grouping {
-        let freq = match p {
-            Period::Day => Some("day"),
-            Period::Month => Some("mon"),
-            Period::Year => Some("year"),
-            _ => None,
-        };
-        if let Some(f) = freq {
-            set_attr(&mut out.attrs, "frequency", AttrValue::Text(f.into()));
-        }
+        set_frequency(&mut out, p);
     }
     let kernel = Kernel {
         stat,
@@ -313,14 +328,14 @@ impl FoldKernel for Kernel {
 
 /// Per-cell accumulators of one group: `a` = sum, minimum, maximum or Welford mean; `b` =
 /// minimum (range) or Welford M2; `n` = number of valid values.
-struct Acc {
+pub(crate) struct Acc {
     a: Vec<f64>,
     b: Vec<f64>,
     n: Vec<u32>,
 }
 
 impl Acc {
-    fn new(stat: Stat, ncell: usize) -> Self {
+    pub(crate) fn new(stat: Stat, ncell: usize) -> Self {
         let mut acc = Self {
             a: vec![0.0; ncell],
             b: if stat.is_var() || stat == Stat::Range {
@@ -338,7 +353,7 @@ impl Acc {
         acc
     }
 
-    fn reset(&mut self, stat: Stat) {
+    pub(crate) fn reset(&mut self, stat: Stat) {
         let a0 = if matches!(stat, Stat::Min | Stat::Max | Stat::Range) {
             f64::NAN
         } else {
@@ -351,7 +366,7 @@ impl Acc {
     }
 
     /// Folds one timestep (`row`: one value per lane cell).
-    fn update<T: Copy + Into<f64>>(&mut self, stat: Stat, row: &[T]) {
+    pub(crate) fn update<T: Copy + Into<f64>>(&mut self, stat: Stat, row: &[T]) {
         let x = row.iter().map(|&v| -> f64 { v.into() });
         match stat {
             Stat::Mean | Stat::Sum => {
@@ -407,7 +422,7 @@ impl Acc {
     }
 
     /// The statistic per cell.
-    fn result(&self, stat: Stat) -> Vec<f64> {
+    pub(crate) fn result(&self, stat: Stat) -> Vec<f64> {
         let nan = f64::NAN;
         match stat {
             Stat::Mean | Stat::Avg => self
