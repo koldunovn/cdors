@@ -1,0 +1,14 @@
+# Harness self-test rows (not cdors rows): run with  CDORS=$CDO tests/run_cases.sh tests/selftest.txt
+# Each tag and placeholder form appears at least once; all must pass when cdors is cdo itself.
+# tag    | arguments                                   | fixtures
+exact    | -selname,tas {in}                           | r36x18_std hpz2_noleap unst_360
+ulp      | -yearmean {in}                              | r36x18_std hpz2_noleap unst_360
+ulp      | -timmean {in}                               | r36x18_std hpz2_noleap
+ulp      | -vertmean {in}                              | r36x18_2lev
+ulp      | -sub {in} -timmean {in2}                    | r36x18_std:r36x18_std
+exact    | -monpctl,90 {in} -monmin {in} -monmax {in}  | hpz2_noleap      # <= 50 values per group: cdo is exact
+bin      | -timpctl,90 {in} -timmin {in} -timmax {in}  | hpz2_noleap      # > 50 values: cdo uses histograms
+text     | showname {in}                               | r36x18_std hpz2_noleap unst_360
+text     | griddes {in}                                | r36x18_std hpz2_noleap unst_360
+ulp      | -yearmean -selyear,2001 {in}              | r36x18_std       # FAKE_MODE=alt: passes (1-ulp differences)
+exact    | -yearmean -selyear,2001 {in}              | r36x18_std       # FAKE_MODE=alt: fails (differences are real)

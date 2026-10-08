@@ -1,0 +1,4 @@
+# Self-test rows for the cdors-only tags; run with  CDORS=tests/fake_cdors.sh
+# tag           | arguments                       | fixtures
+json            | --json sinfo {in}               | r36x18_std
+err:read_limit  | --max-read 1 -timmean {in}      | r36x18_std

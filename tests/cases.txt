@@ -1,0 +1,7 @@
+# cdors vs cdo comparison table, read by tests/run_cases.sh (format and tags described there).
+# tag    | arguments                                   | fixtures
+#
+# Task 4: info operators
+text     | showname {in}                               | r36x18_std hpz2_noleap unst_360
+text     | griddes {in}                                | r36x18_std hpz2_noleap unst_360
+json     | --json sinfo {in}                           | r36x18_std hpz2_noleap unst_360
