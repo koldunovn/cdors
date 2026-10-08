@@ -470,19 +470,23 @@ cached. Rows needing `cdo` are skipped with a notice where it isn't available.
 - Create: `README.md`
 - Modify: `tests/cases.txt`
 
-- [ ] `--plan` as text and JSON: stages, merged operators, chunks and bytes to read (compressed and decoded), passes,
+- [x] `--plan` as text and JSON: stages, merged operators, chunks and bytes to read (compressed and decoded), passes,
       peak memory, weights to build; no wall-time estimate yet
-- [ ] `cdors ops --json`: implemented operators with arguments, types, defaults and descriptions, plus cdo operators
+- [x] `cdors ops --json`: implemented operators with arguments, types, defaults and descriptions, plus cdo operators
       not implemented yet **by name only**, extracted once from CDO's `OPERATORS` catalog; `cdors help <op>`
       mirroring `cdo -h <op>` for implemented operators
-- [ ] `--max-read` guard: low default and a thread cap on login nodes (no `SLURM_JOB_ID`) with an `srun` hint, higher
+- [x] `--max-read` guard: low default and a thread cap on login nodes (no `SLURM_JOB_ID`) with an `srun` hint, higher
       inside Slurm jobs; never prompt; on failure remove the run's own temporary output and report how far it got
-- [ ] `--progress json` on stderr (stage, chunks done, bytes read)
-- [ ] `README.md` section on agent usage (`--plan`, `--json`, `ops`, error codes, limits) — needed by the agent
+- [x] `--progress json` on stderr (stage, chunks done, bytes read)
+- [x] `README.md` section on agent usage (`--plan`, `--json`, `ops`, error codes, limits) — needed by the agent
       check in Task 14
-- [ ] rows: `err:read_limit`, `err:no_coordinates` (FESOM-like fixture without coordinates), and `--plan --json`
+- [x] rows: `err:read_limit`, `err:no_coordinates` (FESOM-like fixture without coordinates), and `--plan --json`
       parsing as valid JSON
-- [ ] run `tests/run_cases.sh` — must pass
+- [x] run `tests/run_cases.sh` — must pass
+- ⚠️ 2026-10-09: merged. `--plan` JSON (`"cdors_plan": 1`) with per-stage chunks/bytes (compressed sizes sampled),
+      memory estimate, remap weights, read limit; `ops --json` (182 implemented + 543 cdo-only operators), `help`
+      with cdo's text plus cdors notes; `--max-read` 64 GB default on login nodes, none in Slurm jobs; `--progress
+      json`; README with an agent section. Pass count and memory model to be filled in by the Task 7 planner work.
 
 ### Task 13: Benchmarks W1–W4
 
