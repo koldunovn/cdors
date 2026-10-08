@@ -350,23 +350,26 @@ cached. Rows needing `cdo` are skipped with a notice where it isn't available.
 - Modify: `crates/cdors-core/src/ops/arith.rs`, `crates/cdors-core/src/plan/tiling.rs`
 - Modify: `tests/run_cases.sh`, `tests/cases.txt`, `docs/deviations.md`
 
-- [ ] `timpctl`, `monpctl`, `yearpctl` computed exactly with cdo's default nearest-rank definition, `--percentile`
+- [x] `timpctl`, `monpctl`, `yearpctl` computed exactly with cdo's default nearest-rank definition, `--percentile`
       honoured for cdo's other methods; accept CDO's three-input form and never evaluate the min/max inputs; record in
       `docs/deviations.md` that groups above 50 values differ from cdo's histogram result by up to one bin
-- [ ] `runmean` with CDO's output timestamps; `ymonsub` matching the climatology by month
+- [x] `runmean` with CDO's output timestamps; `ymonsub` matching the climatology by month
 - [ ] memory budget: `--mem`, defaulting to a fraction of the Slurm allocation or of free memory; tile sizing; several
       passes over the input when the state doesn't fit (percentiles, `ydaymean` with 366 open groups), each pass
       reading only its own spatial chunks on space-chunked data
 - [ ] intermediate results between stages must fit in memory; otherwise fail with `intermediate_too_large` and a hint
       (no spilling to disk in the prototype)
 - [ ] switch on `--mem 1M` in the planner-check variant
-- [ ] rows: `monpctl` (`exact`), `timpctl` (`bin`), `runmean`, `ymonsub`
+- [x] rows: `monpctl` (`exact`), `timpctl` (`bin`), `runmean`, `ymonsub`
 - [ ] run `tests/run_cases.sh` — must pass
 - ⚠️ 2026-10-09: exact percentile kernel (`kernels/percentile.rs`, branch `worktree-agent-a1b8b4bdf4f834f6b`, merge
       after Task 5) supports all 16 cdo methods; `monpctl` matches cdo to ≤ 1 ulp (99.9 % bit-identical), `timpctl` nrank
       within 0.96 histogram bins. cdo bug to record in `docs/deviations.md`: for hazen, weibull, median_unbiased and
       normal_unbiased near p = 100 cdo reads `x[n]` past its buffer (zeroed memory) and returns `(1−h)·x[n−1]`;
       cdors returns `x[n−1]`.
+- ⚠️ 2026-10-09: operators merged (pctl for all periods, run*, ymon/yday/yseas arithmetic); percentiles are now
+      bit-identical to cdo 2.6.0 for all 16 methods (cdo's build uses fused multiply-adds; cdors matches with
+      mul_add). Memory budget, lane waves, multi-pass, multi-stage chains and finer tiles: planner agent running.
 
 ### Task 8: Space statistics
 
