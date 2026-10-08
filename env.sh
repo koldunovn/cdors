@@ -20,6 +20,8 @@ export CDO=/sw/spack-levante/cdo-2.6.0-akkxhz/bin/cdo
 # netcdf-sys and hdf5-metno-sys must both use this HDF5 so that only one libhdf5 is loaded.
 export NETCDF_DIR=/sw/spack-levante/netcdf-c-main-k4lh4v
 export HDF5_DIR=/sw/spack-levante/hdf5-1.14.3-76f2fb
+# HDF5 filter plugins (blosc, bzip2, ...) so the netCDF-C fallback can read blosc-compressed NetCDF-4 (EERIE ICON).
+export HDF5_PLUGIN_PATH=/sw/spack-levante/netcdf-c-main-bdxvs5/plugins:/sw/spack-levante/netcdf-c-main-k4lh4v/plugins
 
 # Embed the library directories as rpath so the binary runs without LD_LIBRARY_PATH.
 # libnetcdf itself carries an rpath for its own dependencies (HDF5, MPI, NVHPC runtime).
