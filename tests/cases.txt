@@ -74,3 +74,14 @@ ulp      | -fldmean -sellonlatbox,-30,90,0,60 {in}     | r36x18_std hpz2_noleap 
 ulp      | -fldmean -sellonlatbox,300,60,-45,10 {in}   | r36x18_std
 ulp      | -zonmean {in}                               | r36x18_std hpz2_noleap
 ulp      | -vertmean {in}                              | r36x18_2lev
+
+# Task 9: remapping (weights from cdo gen*, cached) and HEALPix degrade; cdo needs --force for
+# conservative remapping from or to HEALPix grids (cdors accepts and ignores it)
+exact    | -remapnn,r18x9 {in}                         | r36x18_std hpz2_noleap unst_360
+ulp      | -remapdis,hpz1 {in}                         | r36x18_std hpz2_noleap unst_360
+ulp      | --force -remapcon,r18x9 {in}                | r36x18_std hpz2_noleap unst_360
+ulp      | -remapbil,r18x9 {in}                        | r36x18_std hpz2_noleap
+ulp      | -remap,r18x9,{fix}/weights_con_r36x18_r18x9.nc {in} | r36x18_std
+ulp      | -hpdegrade,nside=2 {in}                     | hpz2_noleap
+ulp      | -hpdegrade,nside=1,order=ring,stat=avg {in} | hpz2_noleap
+err:unsupported_grid | -remapbil,r18x9 {in}            | unst_360

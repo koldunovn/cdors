@@ -16,7 +16,9 @@ pub mod arith;
 pub mod catalog;
 pub mod files;
 pub mod fldstat;
+pub mod healpix;
 pub mod info;
+pub mod remap;
 pub mod select;
 pub mod timstat;
 
@@ -217,6 +219,14 @@ const IMPLEMENTED: &[&str] = &[
     "ifthen",
     "copy",
     "setgrid",
+    "remap",
+    "remapnn",
+    "remapdis",
+    "remapbil",
+    "remapcon",
+    "remapycon",
+    "hpdegrade",
+    "hpupgrade",
 ];
 
 fn build_registry() -> Vec<OpSpec> {
@@ -485,9 +495,20 @@ fn build_registry() -> Vec<OpSpec> {
             "hpdegrade",
             one,
             1,
-            vec![arg("nside", Str)],
-            Reduction,
-            "Degrade a HEALPix grid (nside=<n>)",
+            vec![args_of("params", Str)],
+            WholeExtent,
+            "Degrade a HEALPix grid: mean over nested children \
+             (nside=<n>|zoom=<z>|fact=<f>[,order=nested|ring][,stat=mean|avg][,power=<p>])",
+            false,
+        ),
+        op(
+            "hpupgrade",
+            one,
+            1,
+            vec![args_of("params", Str)],
+            WholeExtent,
+            "Upgrade a HEALPix grid: copy to nested children \
+             (nside=<n>|zoom=<z>|fact=<f>[,order=nested|ring][,power=<p>])",
             false,
         ),
         // multi-file
@@ -514,7 +535,7 @@ fn build_registry() -> Vec<OpSpec> {
     for (name, d) in fldstat::operators() {
         r.push(op(&name, one, 1, vec![], Reduction, &d, true));
     }
-    for m in ["nn", "dis", "bil", "con"] {
+    for m in ["nn", "dis", "bil", "con", "ycon"] {
         r.push(op(
             &format!("remap{m}"),
             one,
@@ -666,6 +687,11 @@ pub fn describe(node: &OpNode, inputs: Vec<Desc>, srcs: &mut Sources) -> Result<
         )
         .with("operator", node.name.clone())
         .with_hint("put selections inside the statistic (-yearmean -selname,tas in.nc), or run two commands"));
+    }
+    match node.name.as_str() {
+        n if remap::handles(n) => return remap::describe(node, inputs),
+        "hpdegrade" | "hpupgrade" => return healpix::describe(node, inputs),
+        _ => {}
     }
     match spec.class {
         AccessClass::Selection => select::describe(node, inputs),
