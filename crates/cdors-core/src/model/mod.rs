@@ -5,6 +5,7 @@
 //! are data and which are coordinates, the role of every dimension (time, vertical, horizontal,
 //! other), the grids, the vertical axes and the decoded time axis.
 
+pub mod area;
 pub mod dataset;
 pub mod grid;
 pub mod time;
