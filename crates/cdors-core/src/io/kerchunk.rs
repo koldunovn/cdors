@@ -164,10 +164,10 @@ impl KerchunkStore {
             let name = key.rsplit('/').next().unwrap_or(key);
             if let (true, Ref::Inline(b)) = (name.starts_with(".z"), &*r) {
                 let b = sanitize_json(b);
-                *r = Ref::Inline(if name == ".zarray" {
-                    normalize_zarray(&b)
-                } else {
-                    b
+                *r = Ref::Inline(match name {
+                    ".zarray" => normalize_zarray(&b),
+                    ".zmetadata" => normalize_zmetadata(&b),
+                    _ => b,
                 });
             }
         }
@@ -201,6 +201,8 @@ impl KerchunkStore {
             .ok_or_else(|| KerchunkError::Format(format!("{}: no metadata", zpath.display())))?;
         let mut refs = HashMap::new();
         let mut arrays = HashMap::new();
+        // the consolidated metadata with the same `.zarray` normalisation as the single keys
+        let mut consolidated = serde_json::Map::new();
         for (key, value) in metadata {
             let bytes = match value {
                 Value::String(s) => Bytes::from(s.clone().into_bytes()),
@@ -211,8 +213,16 @@ impl KerchunkStore {
                 let meta: Value = serde_json::from_slice(&bytes)
                     .map_err(|e| KerchunkError::Format(format!("{key}: {e}")))?;
                 arrays.insert(name.to_owned(), ChunkGrid::from_zarray(key, &meta)?);
+                consolidated.insert(key.clone(), meta);
                 refs.insert(key.clone(), Ref::Inline(bytes));
             } else {
+                // fsspec may store each entry as a JSON string
+                let parsed = match value {
+                    Value::String(s) => serde_json::from_slice(&sanitize_json(s.as_bytes()))
+                        .unwrap_or_else(|_| value.clone()),
+                    other => other.clone(),
+                };
+                consolidated.insert(key.clone(), parsed);
                 refs.insert(key.clone(), Ref::Inline(bytes));
             }
         }
@@ -220,7 +230,7 @@ impl KerchunkStore {
         refs.insert(
             ".zmetadata".into(),
             Ref::Inline(Bytes::from(
-                serde_json::json!({"metadata": metadata, "zarr_consolidated_format": 1})
+                serde_json::json!({"metadata": consolidated, "zarr_consolidated_format": 1})
                     .to_string()
                     .into_bytes(),
             )),
@@ -457,6 +467,28 @@ fn sanitize_json(text: &[u8]) -> Bytes {
 /// kerchunk describes HDF5 pipelines as `"compressor": null, "filters": [..., {"id": "blosc"}]`,
 /// and zarrs refuses blosc as a v2 filter. With no compressor, the last filter is decoded first,
 /// exactly as a compressor would be, so it is moved into `compressor`.
+/// [`normalize_zarray`] applied to every array of consolidated metadata (`.zmetadata`).
+fn normalize_zmetadata(bytes: &Bytes) -> Bytes {
+    let Ok(mut zm) = serde_json::from_slice::<Value>(bytes) else {
+        return bytes.clone();
+    };
+    let Some(meta) = zm.get_mut("metadata").and_then(Value::as_object_mut) else {
+        return bytes.clone();
+    };
+    for (key, value) in meta.iter_mut() {
+        if key.ends_with("/.zarray") {
+            let raw = match &*value {
+                Value::String(s) => Bytes::from(s.clone().into_bytes()),
+                other => Bytes::from(other.to_string().into_bytes()),
+            };
+            if let Ok(v) = serde_json::from_slice(&normalize_zarray(&raw)) {
+                *value = v;
+            }
+        }
+    }
+    Bytes::from(zm.to_string().into_bytes())
+}
+
 fn normalize_zarray(bytes: &Bytes) -> Bytes {
     let Ok(Value::Object(mut meta)) = serde_json::from_slice::<Value>(bytes) else {
         return bytes.clone();
@@ -571,7 +603,9 @@ struct FileCache(Mutex<HashMap<PathBuf, Arc<File>>>);
 
 impl FileCache {
     /// Upper bound on cached handles; beyond it the map is reset (in-flight readers keep theirs).
-    const MAX_OPEN: usize = 256;
+    /// Reference sets over thousands of files (EERIE: 2424 monthly files) are read in parallel
+    /// across all of them, so a small bound makes every chunk read reopen its file.
+    const MAX_OPEN: usize = 4096;
 
     fn get(&self, path: &Path) -> Result<Arc<File>, StorageError> {
         let mut map = self.0.lock().unwrap_or_else(|e| e.into_inner());
@@ -675,25 +709,19 @@ impl ParquetRefs {
 
     fn records(&self, array: &str, file_no: u64) -> Result<Records, KerchunkError> {
         let cache_key = (array.to_owned(), file_no);
-        if let Some(r) = self
-            .records
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .get(&cache_key)
-        {
+        // Decoded under the lock: many threads asking for chunks of the same array at once
+        // would otherwise each decode the file (a few ms, but megabytes of rows each).
+        let mut records = self.records.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(r) = records.get(&cache_key) {
             return Ok(r.clone());
         }
-        // Decoded outside the lock; two threads may decode the same file once each.
         let path = self.root.join(array).join(format!("refs.{file_no}.parq"));
         let rows = if path.exists() {
             Arc::new(read_parquet_refs(&path)?)
         } else {
             Arc::new(Vec::new())
         };
-        self.records
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(cache_key, rows.clone());
+        records.insert(cache_key, rows.clone());
         Ok(rows)
     }
 }
@@ -737,4 +765,43 @@ fn read_parquet_refs(path: &Path) -> Result<Vec<Option<Ref>>, KerchunkError> {
         });
     }
     Ok(out)
+}
+
+/// Whether `path` is a kerchunk reference set: a directory whose `.zmetadata` has a
+/// `record_size` (Parquet references), or a file holding a JSON object (JSON references).
+pub fn is_kerchunk(path: &Path) -> bool {
+    if path.is_dir() {
+        return std::fs::read(path.join(".zmetadata"))
+            .ok()
+            .and_then(|b| serde_json::from_slice::<Value>(&sanitize_json(&b)).ok())
+            .is_some_and(|v| v.get("record_size").is_some());
+    }
+    let mut head = [0u8; 64];
+    let n = File::open(path)
+        .and_then(|f| f.read_at(&mut head, 0))
+        .unwrap_or(0);
+    head[..n]
+        .iter()
+        .find(|b| !b.is_ascii_whitespace())
+        .is_some_and(|&b| b == b'{')
+}
+
+/// Opens a kerchunk reference set as a Zarr dataset: the description comes out exactly as for
+/// the equivalent Zarr v2 store.
+pub fn open_source(path: &str) -> crate::error::Result<super::zarr::ZarrSource> {
+    use crate::error::{Error, ErrorCode};
+    let store = KerchunkStore::open(Path::new(path)).map_err(|e| match e {
+        KerchunkError::Remote(_) => Error::new(ErrorCode::NotImplemented, e.to_string())
+            .with("path", path)
+            .with_hint("remote references come with a later version; use local references"),
+        _ => Error::bad_data(format!("cannot open kerchunk references '{path}': {e}"))
+            .with("path", path),
+    })?;
+    let names: Vec<String> = store
+        .arrays()
+        .into_iter()
+        .filter(|n| !n.contains('/'))
+        .collect();
+    let root = path.trim_end_matches('/');
+    super::zarr::ZarrSource::open_store(root, Arc::new(store), &move || names.clone())
 }

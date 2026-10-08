@@ -38,7 +38,7 @@ fn zerr(e: impl std::fmt::Display) -> Error {
     Error::bad_data(format!("zarr: {e}"))
 }
 
-fn trim<T: Copy>(v: &[T], full: &[usize], ext: &[usize]) -> Vec<T> {
+pub(crate) fn trim<T: Copy>(v: &[T], full: &[usize], ext: &[usize]) -> Vec<T> {
     if full == ext {
         return v.to_vec();
     }
@@ -236,16 +236,6 @@ impl ZarrSource {
         let root = path.trim_end_matches('/');
         let fs = FilesystemStore::new(root)
             .map_err(|e| Error::io(format!("cannot open Zarr store '{root}': {e}")))?;
-        let store: Arc<Store> = Arc::new(fs);
-        let get = |key: &str| -> Result<Option<Value>> {
-            let k = StoreKey::new(key).map_err(zerr)?;
-            match store.get(&k).map_err(|e| Error::io(format!("zarr: {e}")))? {
-                Some(b) => Ok(Some(serde_json::from_slice(&b).map_err(|e| {
-                    Error::bad_data(format!("invalid JSON in '{root}/{key}': {e}"))
-                })?)),
-                None => Ok(None),
-            }
-        };
         let list_dirs = || -> Vec<String> {
             let mut names: Vec<String> = std::fs::read_dir(root)
                 .into_iter()
@@ -258,7 +248,26 @@ impl ZarrSource {
             names.sort();
             names
         };
+        Self::open_store(root, Arc::new(fs), &list_dirs)
+    }
 
+    /// Opens a Zarr hierarchy from any `zarrs` store (a filesystem directory or kerchunk
+    /// references). `root` names the dataset; `list_dirs` lists the root group's members and is
+    /// used only when there is no consolidated metadata.
+    pub(crate) fn open_store(
+        root: &str,
+        store: Arc<Store>,
+        list_dirs: &dyn Fn() -> Vec<String>,
+    ) -> Result<Self> {
+        let get = |key: &str| -> Result<Option<Value>> {
+            let k = StoreKey::new(key).map_err(zerr)?;
+            match store.get(&k).map_err(|e| Error::io(format!("zarr: {e}")))? {
+                Some(b) => Ok(Some(serde_json::from_slice(&b).map_err(|e| {
+                    Error::bad_data(format!("invalid JSON in '{root}/{key}': {e}"))
+                })?)),
+                None => Ok(None),
+            }
+        };
         // (name, metadata, attrs-for-v2) per array, plus global attributes
         let mut arrays: Vec<(String, ArrayMetadata)> = Vec::new();
         let format;
