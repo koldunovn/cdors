@@ -8,6 +8,7 @@
 #   unst_360      20x18 regular grid turned unstructured (360 cells), 360_day calendar, 1080 steps
 #   hpz2_noleap.zarr2 / .zarr3   xarray copies of hpz2_noleap (Zarr v2 / v3), time chunks of 73
 #   hpz2_noleap_tiny.zarr2       tiny chunks (10 steps x 16 cells) for the planner check
+#   <f>_ymonmean / _ydaymean / _yseasmean   climatologies of r36x18_std and hpz2_noleap (cdo)
 #   weights_con_r36x18_r18x9.nc  SCRIP weights of cdo gencon,r18x9 for r36x18_std (remap,<grid>,<weights> rows)
 #
 # All values are float32 (-b F32), vary in space and time, and come from cdo `expr` on a
@@ -66,6 +67,11 @@ printf 'zaxistype = pressure\nsize = 1\nlevels = 85000\n'  > zaxis_p85000.txt
 nc r36x18_2lev -merge \
   -setzaxis,zaxis_p100000.txt -selname,tas $(chain r36x18 standard 1096 '' deg) \
   -setzaxis,zaxis_p85000.txt -subc,15 -selname,tas $(chain r36x18 standard 1096 '' deg)
+
+# Climatologies for the ymon*/yday*/yseas* arithmetic rows (second input "a:a_ymonmean" etc.).
+for f in r36x18_std hpz2_noleap; do
+  for s in ymonmean ydaymean yseasmean; do nc "${f}_$s" "-$s" "$f.nc"; done
+done
 
 # Zarr copies of hpz2_noleap, written by xarray (real third-party Zarr, not our own writer).
 zarr() {  # zarr NAME FORMAT TIMECHUNK CELLCHUNK

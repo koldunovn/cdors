@@ -85,3 +85,18 @@ ulp      | -remap,r18x9,{fix}/weights_con_r36x18_r18x9.nc {in} | r36x18_std
 ulp      | -hpdegrade,nside=2 {in}                     | hpz2_noleap
 ulp      | -hpdegrade,nside=1,order=ring,stat=avg {in} | hpz2_noleap
 err:unsupported_grid | -remapbil,r18x9 {in}            | unst_360
+
+# Task 7: percentiles (exact; cdo uses histograms above 50 values per group: tag bin), running
+# statistics, climatology arithmetic (second input: climatology fixtures made by cdo)
+exact    | -monpctl,90 {in} -monmin {in} -monmax {in}  | r36x18_std hpz2_noleap unst_360
+exact    | --percentile nist -monpctl,10 {in} -monmin {in} -monmax {in} | hpz2_noleap
+exact    | --percentile linear -monpctl,33 {in} -monmin {in} -monmax {in} | r36x18_std   # pins cdo's fused multiply-add
+bin      | -timpctl,95 {in} -timmin {in} -timmax {in}  | r36x18_std hpz2_noleap
+bin      | -yearpctl,50 {in} -yearmin {in} -yearmax {in} | r36x18_std hpz2_noleap
+bin      | -seaspctl,90 {in} -seasmin {in} -seasmax {in} | r36x18_std hpz2_noleap
+ulp      | -runmean,5 {in}                             | r36x18_std hpz2_noleap unst_360
+exact    | -runmax,7 {in}                              | r36x18_std hpz2_noleap unst_360
+ulp      | -runstd,10 {in}                             | hpz2_noleap
+exact    | -ymonsub {in} {in2}                         | r36x18_std:r36x18_std_ymonmean hpz2_noleap:hpz2_noleap_ymonmean
+exact    | -ydaysub {in} {in2}                         | r36x18_std:r36x18_std_ydaymean hpz2_noleap:hpz2_noleap_ydaymean
+exact    | -yseassub {in} {in2}                        | r36x18_std:r36x18_std_yseasmean hpz2_noleap:hpz2_noleap_yseasmean

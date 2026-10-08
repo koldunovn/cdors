@@ -17,8 +17,12 @@ except for the points below. Each entry says what cdo does, what cdors does, and
 - **Exact percentiles also above 50 values per group.** cdo computes exact percentiles only while
   a grid point holds at most 50 values and switches to a 101-bin histogram bounded by the min/max
   input files above that (`src/percentiles_hist.cc`), so its result is approximate. cdors is exact
-  for any group size. cdo's three-input form (`timpctl,p in -timmin in -timmax in`) is accepted;
-  the min/max inputs are ignored.
+  for any group size; above 50 values it differs from cdo's result by up to about one bin
+  (`(max − min) / 101`). cdo's three-input form (`timpctl,p in -timmin in -timmax in`) is accepted,
+  but the min/max inputs are never opened or computed; the one-input form `timpctl,p in` (an
+  error in cdo) is accepted too.
+- **Percentiles of double-precision input.** cdo stores the values of a group as float32 before
+  computing percentiles (`percentiles_hist.cc:histAddValue`); cdors keeps double precision.
 - **Percentile methods `hazen`, `weibull`, `median_unbiased`, `normal_unbiased` near p = 100.**
   cdo reads `x[n]`, one element past its buffer (zeroed memory), and returns `(1−h)·x[n−1]`;
   cdors returns `x[n−1]`.
@@ -33,8 +37,12 @@ except for the points below. Each entry says what cdo does, what cdors does, and
 - **`cell_methods`.** cdo (through CDI) writes `cell_methods = "time: <method>"` only for `mean`,
   `avg`, `sum`, `range`, `min` and `max` statistics, and only when the output has time bounds
   (`libcdi/src/cdf_write.c:cdfDefineCellMethods`), so not for `*std`, `*var` and `yseas*`. cdors
-  writes it for every time statistic, with the CF names `standard_deviation` and `variance` for
-  the spread statistics. Like cdo, it replaces an existing `cell_methods` attribute.
+  writes it for every time statistic except percentiles and running statistics (for which cdo
+  writes none either), with the CF names `standard_deviation` and `variance` for the spread
+  statistics. Like cdo, it replaces an existing `cell_methods` attribute.
+- **Climatology arithmetic pairs variables by name** (`ymonsub` & co.) when both inputs have the
+  same variable names; cdo pairs them by position. Zarr stores have no variable order, so pairing
+  by position would combine the wrong variables.
 
 ## Time axis
 
