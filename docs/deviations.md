@@ -58,3 +58,34 @@ except for the points below. Each entry says what cdo does, what cdors does, and
 - **NaN is the internal missing value.** cdo carries the variable's missing value (default
   −9e33) through its computations; cdors uses NaN inside the engine and writes the variable's
   `_FillValue` on output. Results are the same unless an input contains NaN as a valid value.
+
+## Space statistics
+
+- **`cell_methods` on space statistics.** cdors adds `area: mean` (and the analogous
+  `longitude: …` / `latitude: …` / vertical-coordinate entries) to `fld*`, `zon*`, `mer*` and
+  `vert*` output; cdo does not.
+- **HEALPix `zon*` summation order.** cdors sums each ring in stored (nested) order, cdo in ring
+  order, so the last bits can differ. The ring latitudes cdors writes differ from cdo's in the
+  15th significant digit.
+- **`vert*` accumulates in double precision.** cdo accumulates vertical statistics in float32;
+  cdors accumulates in f64 and rounds once on output.
+
+## Remapping
+
+- **Weights are generated for the unmasked grid.** cdo regenerates weights whenever the
+  missing-value mask of a field changes; cdors generates them once for the unmasked grid and
+  reproduces cdo's per-method missing-value rules by renormalising (see `remap/weights.rs`).
+  Results agree with `cdo remap*` within 1 float32 ulp with identical missing patterns.
+- **`hpdegrade,zoom=0`.** cdo 2.6.0 ignores `zoom=0` and keeps the input resolution; cdors
+  follows cdo 2.6.5 and degrades to nside 1.
+- **`--force` is accepted and ignored.** cdo needs it for `remapcon` from or to HEALPix grids;
+  cdors always passes it to `cdo gencon`.
+
+## cdo bugs observed (cdors does not reproduce them)
+
+- **Percentiles near p = 100.** For the methods hazen, weibull, median_unbiased and
+  normal_unbiased, cdo computes `j == n` and reads `x[n]` past its buffer (zeroed memory),
+  returning `(1−h)·x[n−1]`; cdors returns `x[n−1]`.
+- **Partial last chunk of a Zarr store read through NCZarr.** On a single-variable view of the
+  nextGEMS W1 store with 731 timesteps (the last time chunk partial), cdo returned wrong values for
+  11 timesteps (up to 0.21 K); cdors and xarray agree with each other.

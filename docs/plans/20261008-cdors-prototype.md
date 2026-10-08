@@ -377,15 +377,17 @@ cached. Rows needing `cdo` are skipped with a notice where it isn't available.
 
 - [x] cell areas: from the file if present, otherwise from cell bounds (spherical polygon area), otherwise analytic
       (regular, HEALPix)
-- [ ] `fldmean`, `fldmin`, `fldmax`, `fldsum`, `fldstd` with CDO's weighting; running sums carried across spatial
+- [x] `fldmean`, `fldmin`, `fldmax`, `fldsum`, `fldstd` with CDO's weighting; running sums carried across spatial
       chunks in cell order, timesteps processed in parallel
-- [ ] `zonmean` (regular grids by latitude row; HEALPix by iso-latitude ring if cdo supports it as a reference,
+- [x] `zonmean` (regular grids by latitude row; HEALPix by iso-latitude ring if cdo supports it as a reference,
       otherwise document) and `vertmean` (layer-thickness weights as in CDO)
-- [ ] rows: `fldmean` on all three fixtures, the other statistics once each, `zonmean`, `vertmean`
-- [ ] run `tests/run_cases.sh` — must pass
+- [x] rows: `fldmean` on all three fixtures, the other statistics once each, `zonmean`, `vertmean`
+- [x] run `tests/run_cases.sh` — must pass
 - ⚠️ 2026-10-09: `model/area.rs` (merged) reproduces `cdo gridarea`/`gridweights` to ≤ 5e-15 relative on 13 cases and
       gives 0-ulp fldmean/fldstd/zonmean/mermean/vertmean; weighting rules per operator family are in the module
       (fld mean/std/var weighted, min/max/sum not; zon* per latitude row or HEALPix ring; vert* by layer thickness).
+- ⚠️ 2026-10-09: merged. W1 fldmean over 720 steps: cdors 2.5 s (3.6 GB/s) vs cdo 10.0 s, identical output.
+      Gap: a statistic must still be the outermost operator (chaining after it is refused) — Task 7.
 
 ### Task 9: Remapping with cdo-generated weights, and HEALPix degrade
 
@@ -400,16 +402,19 @@ cached. Rows needing `cdo` are skipped with a notice where it isn't available.
 - [x] (core in `remap/gen.rs`; operator wiring pending) `remapnn`, `remapdis`, `remapbil`, `remapcon`: run `cdo gen<method>,<grid>` once per (source grid, target grid,
       method), writing a small source-grid NetCDF first when the input is remote Zarr; cache weights in
       `$CDORS_CACHE/weights/` keyed by a hash; if `cdo` is missing, fail with a hint to use `remap,<grid>,<weights.nc>`
-- [ ] `remap,<grid>,<weights.nc>` for any SCRIP file
-- [ ] target grids: CDO names (`r<nx>x<ny>`, `global_<inc>`, `hpz<zoom>`, `hp<nside>`), grid description files,
+- [x] `remap,<grid>,<weights.nc>` for any SCRIP file
+- [x] target grids: CDO names (`r<nx>x<ny>`, `global_<inc>`, `hpz<zoom>`, `hp<nside>`), grid description files,
       another dataset's grid
-- [ ] `hpdegrade`: exact average over nested children, NaN-aware
-- [ ] rows: `remapnn`, `remapdis`, `remapcon` on all fixtures, `remapbil` on the regular and HEALPix fixtures only
+- [x] `hpdegrade`: exact average over nested children, NaN-aware
+- [x] rows: `remapnn`, `remapdis`, `remapcon` on all fixtures, `remapbil` on the regular and HEALPix fixtures only
       (cdo refuses unstructured sources), `hpdegrade` against cdo
-- [ ] run `tests/run_cases.sh` — must pass
+- [x] run `tests/run_cases.sh` — must pass
 - ⚠️ 2026-10-09: `remap/` core matches `cdo remap` within 1 float32 ulp with identical missing patterns in 60 cases.
       cdo regenerates weights whenever the missing-value mask changes; cdors generates weights for the unmasked grid
       and reproduces cdo per method by renormalising (rules documented at the top of `remap/weights.rs`).
+- ⚠️ 2026-10-09: operators merged. Target grids come from a cdo-written template cached next to the weights;
+      source grids are hashed by coordinates (NetCDF and Zarr copies share weights). W3 remapbil r360x180 of
+      181 days: cdors 0.51 s (-P 16) vs cdo 1.5 s at best, identical output.
 
 ### Task 10: Fast local readers — kerchunk, NetCDF-4 chunk index, multi-file inputs
 
@@ -478,7 +483,7 @@ cached. Rows needing `cdo` are skipped with a notice where it isn't available.
 - Create: `bench/bench.sh`, `bench/bench.sbatch`, `bench/xarray_baseline.py`
 - Create: `docs/bench-results.md`
 
-- [ ] `bench.sh`: each workload once per tool; W1 `yearmean` (HEALPix Zarr), W2 `fldmean -sellonlatbox`, W3
+- [x] `bench.sh`: each workload once per tool; W1 `yearmean` (HEALPix Zarr), W2 `fldmean -sellonlatbox`, W3
       `remapbil` from the regular or curvilinear SST grid with cached weights, W4 `timpctl,95` and `ydaymean` under
       `--mem 32G`; W2 both from Lustre (kerchunk) and from the EERIE cloud — the same-dataset local-versus-remote
       comparison — with xarray + dask + flox as the remote baseline; record wall time, peak memory
@@ -486,6 +491,9 @@ cached. Rows needing `cdo` are skipped with a notice where it isn't available.
 - [ ] **ask Nikolay before submitting** (about 10–20 node-hours); submit, report job ids, end the turn
 - [ ] write `docs/bench-results.md` against the pass marks, revised with the Task 2 numbers (proposed: at least 5× on
       W1/W2, 3× on W3, W4 within 32 GB, remote throughput at least half of local)
+- ⚠️ 2026-10-09: scripts merged and smoke-tested (DRY, FIXTURE, PLAN_ONLY modes); `bench/bench.sbatch` estimate
+      ≈ 5–6 node-hours, ≤ 8 (mostly cdo's 2 h timeouts on full W4); `WORKLOADS="W1 W2 W3 W4Y"` ≈ 1–1.5 node-hours.
+      Python env for the xarray baseline: mambaforge `envs/hk25` (the only one with flox). Waits for Nikolay.
 
 ### Task 14: Agent check
 
