@@ -1,0 +1,30 @@
+//! cdors-core: chunk-wise engine for CDO-style climate statistics on Zarr and NetCDF.
+//!
+//! Task 1 stub: only the version constant and a report of the linked native libraries.
+
+/// Version of the cdors crates.
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// Versions of the native libraries this build is linked against (HDF5 and netCDF-C).
+pub fn native_library_versions() -> String {
+    let (major, minor, patch) = hdf5_metno::library_version();
+    format!(
+        "HDF5 {major}.{minor}.{patch}, netCDF-C {}",
+        netcdf_version()
+    )
+}
+
+fn netcdf_version() -> String {
+    unsafe extern "C" {
+        fn nc_inq_libvers() -> *const std::ffi::c_char;
+    }
+    // Keep the netcdf crate (and with it netcdf-sys and its link directives) in the binary.
+    let _: Option<netcdf::Error> = None;
+    // SAFETY: nc_inq_libvers returns a pointer to a static NUL-terminated string.
+    let s = unsafe { std::ffi::CStr::from_ptr(nc_inq_libvers()) };
+    s.to_string_lossy()
+        .split_whitespace()
+        .next()
+        .unwrap_or("?")
+        .to_owned()
+}

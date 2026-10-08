@@ -1,0 +1,35 @@
+[workspace]
+resolver = "2"
+members = ["crates/cdors-core", "crates/cdors"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.91"
+license = "BSD-3-Clause"
+
+[workspace.dependencies]
+cdors-core = { path = "crates/cdors-core" }
+
+# Zarr: filesystem store is a default feature; remote access goes through
+# zarrs_object_store + object_store (http, aws). `async` enables zarrs' async array API
+# for those stores; zlib/fletcher32 cover numcodecs zlib and HDF5-style checksums.
+zarrs = { version = "0.23.14", features = ["async", "zlib", "fletcher32"] }
+zarrs_object_store = { version = "0.7.0", features = ["http", "aws"] }
+object_store = { version = "0.14.2", default-features = false, features = ["http", "aws"] }
+
+tokio = { version = "1.53", features = ["rt-multi-thread", "macros", "sync"] }
+rayon = "1.12"
+
+# NetCDF / HDF5 via the system (spack) netCDF-C and its HDF5; see env.sh.
+netcdf = "0.12.1"
+hdf5-metno = "0.15.0"
+
+cdshealpix = "0.9.1"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "2.0"
+glob = "0.3.4"
+
+[profile.release]
+debug = "line-tables-only"

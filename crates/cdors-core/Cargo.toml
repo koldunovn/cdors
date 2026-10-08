@@ -1,0 +1,21 @@
+[package]
+name = "cdors-core"
+description = "Chunk-wise engine for CDO-style climate statistics on Zarr and NetCDF"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+zarrs.workspace = true
+zarrs_object_store.workspace = true
+object_store.workspace = true
+tokio.workspace = true
+rayon.workspace = true
+netcdf.workspace = true
+hdf5-metno.workspace = true
+cdshealpix.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+glob.workspace = true

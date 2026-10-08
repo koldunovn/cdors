@@ -185,15 +185,15 @@ cached. Rows needing `cdo` are skipped with a notice where it isn't available.
 - Create: `crates/cdors/Cargo.toml`, `crates/cdors/src/main.rs`
 - Create: `.gitignore`
 
-- [ ] install rustup with `RUSTUP_HOME=/work/ab0995/a270088/rust/rustup`, `CARGO_HOME=/work/ab0995/a270088/rust/cargo`
+- [x] install rustup with `RUSTUP_HOME=/work/ab0995/a270088/rust/rustup`, `CARGO_HOME=/work/ab0995/a270088/rust/cargo`
       and `--no-modify-path` (no edits to shell profiles); stable toolchain
-- [ ] write `env.sh`: the two variables above, `PATH`, `CARGO_TARGET_DIR=/work/ab0995/a270088/cdors-target`,
+- [x] write `env.sh`: the two variables above, `PATH`, `CARGO_TARGET_DIR=/work/ab0995/a270088/cdors-target`,
       `CDORS_CACHE=/work/ab0995/a270088/cdors-cache`, `module load cdo/2.6.0`, and the netCDF-C and HDF5 locations of
       the spack netCDF-C (`nc-config --prefix`, its HDF5 dependency) for the `-sys` crates — not mambaforge's HDF5
-- [ ] extract the CDO reference source to `/work/ab0995/a270088/cdors-ref/cdo-2.6.5` (outside home)
-- [ ] create the workspace (library `cdors-core`, binary `cdors`) with the dependencies listed under Context; `git init`
+- [x] extract the CDO reference source to `/work/ab0995/a270088/cdors-ref/cdo-2.6.5` (outside home)
+- [x] create the workspace (library `cdors-core`, binary `cdors`) with the dependencies listed under Context; `git init`
       the repository locally (no remote)
-- [ ] `cargo build` succeeds, `cdors --version` runs, and `ldd` shows a single HDF5 library (no tests in this task)
+- [x] `cargo build` succeeds, `cdors --version` runs, and `ldd` shows a single HDF5 library (no tests in this task)
 
 ### Task 2: Day-1 decisive experiment — cdo baseline and raw read throughput (GATE)
 
