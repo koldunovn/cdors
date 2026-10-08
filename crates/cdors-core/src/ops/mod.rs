@@ -13,6 +13,7 @@
 //! | info | reads metadata (and possibly data) and prints to stdout; no output file |
 
 pub mod arith;
+pub mod catalog;
 pub mod files;
 pub mod info;
 pub mod select;
