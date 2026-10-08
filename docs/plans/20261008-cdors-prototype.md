@@ -418,7 +418,7 @@ cached. Rows needing `cdo` are skipped with a notice where it isn't available.
       index in `$CDORS_CACHE/nc4index/` keyed by path, size and modification time, then read and decode chunks in
       parallel (deflate, shuffle, fletcher32 and the HDF5 blosc filter used by the EERIE files); fall back to
       netCDF-C for filters we can't decode
-- [x] `mergetime` over many files or a glob pattern as one virtual dataset (consistent grids checked)
+- [ ] (multi-file source `io/multifile.rs` and glob inputs done; the `mergetime` operator itself is not wired yet) `mergetime` over many files or a glob pattern as one virtual dataset (consistent grids checked)
 - [ ] harness: NetCDF-4 rows also run with the netCDF-C fallback disabled; one kerchunk fixture if a reference
       generator is available in mambaforge, otherwise kerchunk is covered by the benchmarks only; a `mergetime` row
 - [ ] run `tests/run_cases.sh` — must pass
