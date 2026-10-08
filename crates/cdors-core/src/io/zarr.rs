@@ -533,10 +533,12 @@ impl ChunkSource for ZarrSource {
     fn read_chunk(&self, var: &str, indices: &[u64]) -> Result<RawChunk> {
         let zv = self.var(var)?;
         zv.grid.check(var, indices)?;
-        let bytes = zv
-            .array
-            .retrieve_encoded_chunk(indices)
-            .map_err(|e| Error::io(format!("zarr: reading chunk {indices:?} of '{var}': {e}")))?;
+        let bytes = zv.array.retrieve_encoded_chunk(indices).map_err(|e| {
+            Error::io(format!("zarr: reading chunk {indices:?} of '{var}': {e}"))
+                .with("source", self.ds.source.as_str())
+                .with("variable", var)
+                .with("chunk", indices.to_vec())
+        })?;
         Ok(RawChunk::Encoded(EncodedChunk {
             indices: indices.to_vec(),
             bytes,

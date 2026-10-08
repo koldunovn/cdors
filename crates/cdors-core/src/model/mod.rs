@@ -384,7 +384,14 @@ pub fn classify(ds: &mut Dataset, read: ReadVar<'_>) -> Result<()> {
 fn build_zaxis(ds: &Dataset, var: &str, dim: &str, read: ReadVar<'_>) -> Result<ZAxis> {
     let v = ds.var(var).expect("vertical coordinate exists");
     let values = read(var)?;
-    let bounds = match v.attrs.get_str("bounds").filter(|b| ds.var(b).is_some()) {
+    // Only bounds of the expected size (n × 2) are read: some stores carry time-dependent
+    // bounds (EERIE `height_3_bnds`, 36890 × 1 × 2 in one-step chunks), which would cost one
+    // read per time step, and would be discarded anyway.
+    let bounds_ok = |b: &str| {
+        ds.var(b)
+            .is_some_and(|bv| bv.dims.iter().map(|d| d.size).product::<usize>() == 2 * values.len())
+    };
+    let bounds = match v.attrs.get_str("bounds").filter(|b| bounds_ok(b)) {
         Some(b) => {
             let bv = read(b)?;
             (bv.len() == 2 * values.len()).then(|| bv.chunks(2).map(|p| [p[0], p[1]]).collect())
