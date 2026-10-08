@@ -5,10 +5,12 @@
 //! - [`io`]: the chunk-source interface and the Zarr and NetCDF readers
 //! - [`chain`]: the parsed command (options and operator tree)
 //! - [`ops`]: the operator registry and the operators
+//! - [`kernels`]: numerical kernels on in-memory tiles (percentiles)
 
 pub mod chain;
 pub mod error;
 pub mod io;
+pub mod kernels;
 pub mod model;
 pub mod ops;
 
