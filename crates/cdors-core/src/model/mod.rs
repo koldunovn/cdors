@@ -8,6 +8,7 @@
 pub mod dataset;
 pub mod grid;
 pub mod time;
+pub mod timegroup;
 pub mod zaxis;
 
 pub use dataset::{
