@@ -377,9 +377,9 @@ cached. Rows needing `cdo` are skipped with a notice where it isn't available.
 - Modify: `crates/cdors-core/src/model/grid.rs`
 - Modify: `tests/cases.txt`
 
-- [ ] read SCRIP weight files; apply them in parallel over target cells with double-precision sums and CDO's
+- [x] read SCRIP weight files; apply them in parallel over target cells with double-precision sums and CDO's
       missing-value handling
-- [ ] `remapnn`, `remapdis`, `remapbil`, `remapcon`: run `cdo gen<method>,<grid>` once per (source grid, target grid,
+- [x] (core in `remap/gen.rs`; operator wiring pending) `remapnn`, `remapdis`, `remapbil`, `remapcon`: run `cdo gen<method>,<grid>` once per (source grid, target grid,
       method), writing a small source-grid NetCDF first when the input is remote Zarr; cache weights in
       `$CDORS_CACHE/weights/` keyed by a hash; if `cdo` is missing, fail with a hint to use `remap,<grid>,<weights.nc>`
 - [ ] `remap,<grid>,<weights.nc>` for any SCRIP file
@@ -389,6 +389,9 @@ cached. Rows needing `cdo` are skipped with a notice where it isn't available.
 - [ ] rows: `remapnn`, `remapdis`, `remapcon` on all fixtures, `remapbil` on the regular and HEALPix fixtures only
       (cdo refuses unstructured sources), `hpdegrade` against cdo
 - [ ] run `tests/run_cases.sh` — must pass
+- ⚠️ 2026-10-09: `remap/` core matches `cdo remap` within 1 float32 ulp with identical missing patterns in 60 cases.
+      cdo regenerates weights whenever the missing-value mask changes; cdors generates weights for the unmasked grid
+      and reproduces cdo per method by renormalising (rules documented at the top of `remap/weights.rs`).
 
 ### Task 10: Fast local readers — kerchunk, NetCDF-4 chunk index, multi-file inputs
 
