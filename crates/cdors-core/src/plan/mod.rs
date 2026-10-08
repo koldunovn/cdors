@@ -253,6 +253,17 @@ pub struct GridDesc {
     pub sel: Vec<IndexMap>,
     /// Longitudes of a regular grid after `sellonlatbox` (cdo shifts them to a monotonic range).
     pub xvals: Option<Vec<f64>>,
+    /// A grid made by an operator (the point of `fld*`, the latitudes of `zon*`): coordinates
+    /// and their attributes as written, instead of reading them from `src`.
+    pub fixed: Option<Arc<FixedGrid>>,
+}
+
+/// Coordinates of a grid an operator made, as written.
+#[derive(Debug, Clone)]
+pub struct FixedGrid {
+    pub coords: GridCoords,
+    pub xattrs: Attrs,
+    pub yattrs: Attrs,
 }
 
 /// Coordinates of a grid as written: values and optional vertex bounds (`nv` per point).
@@ -292,6 +303,9 @@ impl GridDesc {
 
     /// Reads (and subsets) the coordinates. `None` for HEALPix (analytic) and generic grids.
     pub fn coords(&self) -> Result<Option<GridCoords>> {
+        if let Some(f) = &self.fixed {
+            return Ok(Some(f.coords.clone()));
+        }
         let b = &self.base;
         let units = |ax: &Option<crate::model::CoordAxis>, d: &str| {
             ax.as_ref()
@@ -541,6 +555,16 @@ pub struct Desc {
     pub grids: Vec<GridDesc>,
     pub zaxes: Vec<ZDesc>,
     pub time: Option<TimeDesc>,
+    /// Set by reductions: the variables are computed by folding the stage of `input`.
+    pub fold: Option<Fold>,
+}
+
+/// A reduction ending a stage: the description of its input and the kernel that folds it.
+/// Output variable `i` is computed from input variable `i`.
+#[derive(Clone)]
+pub struct Fold {
+    pub input: Box<Desc>,
+    pub kernel: Arc<dyn stage::FoldKernel>,
 }
 
 impl Desc {
@@ -602,6 +626,7 @@ pub fn describe_source(srcs: &Sources, si: usize) -> Result<Desc> {
                 vec![IndexMap::identity(g.size)]
             },
             xvals: None,
+            fixed: None,
         })
         .collect();
     let zaxes: Vec<ZDesc> = ds
@@ -680,6 +705,7 @@ pub fn describe_source(srcs: &Sources, si: usize) -> Result<Desc> {
         grids,
         zaxes,
         time,
+        fold: None,
     })
 }
 
@@ -759,7 +785,13 @@ pub fn build(cmd: &Command) -> Result<Plan> {
     if desc.vars.is_empty() {
         return Err(Error::bad_arguments("no variables to write"));
     }
-    let stages = vec![stage::Stage::map(&desc, &srcs.srcs)?];
+    let stages = vec![match &desc.fold {
+        Some(f) => stage::Stage {
+            kernel: Some(f.kernel.clone()),
+            ..stage::Stage::map(&f.input, &srcs.srcs)?
+        },
+        None => stage::Stage::map(&desc, &srcs.srcs)?,
+    }];
     Ok(Plan {
         sources: srcs.srcs,
         desc,
@@ -775,7 +807,10 @@ impl Plan {
         let stages: Vec<Value> = self
             .stages
             .iter()
-            .map(|s| s.to_json(&self.sources, &self.desc))
+            .map(|s| {
+                let d = self.desc.fold.as_ref().map_or(&self.desc, |f| &f.input);
+                s.to_json(&self.sources, d)
+            })
             .collect();
         json!({
             "output": self.output,

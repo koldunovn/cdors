@@ -14,6 +14,7 @@
 
 pub mod arith;
 pub mod files;
+pub mod fldstat;
 pub mod info;
 pub mod select;
 
@@ -468,17 +469,6 @@ fn build_registry() -> Vec<OpSpec> {
             "Subtract the multi-year monthly climatology",
             false,
         ),
-        // space statistics
-        op("zonmean", one, 1, vec![], Reduction, "Zonal mean", false),
-        op(
-            "vertmean",
-            one,
-            1,
-            vec![],
-            Reduction,
-            "Vertical mean (layer-thickness weights)",
-            false,
-        ),
         // remapping
         op(
             "remap",
@@ -518,16 +508,9 @@ fn build_registry() -> Vec<OpSpec> {
             false,
         ),
     ];
-    for s in ["mean", "min", "max", "sum", "std"] {
-        r.push(op(
-            &format!("fld{s}"),
-            one,
-            1,
-            vec![],
-            Reduction,
-            &format!("Field {s} (area-weighted where cdo weights)"),
-            false,
-        ));
+    // space statistics
+    for (name, d) in fldstat::operators() {
+        r.push(op(&name, one, 1, vec![], Reduction, &d, true));
     }
     for m in ["nn", "dis", "bil", "con"] {
         r.push(op(
@@ -667,6 +650,17 @@ pub fn require_implemented(node: &OpNode) -> Result<&'static OpSpec> {
 /// Output description of a data operator from the descriptions of its inputs (no data read).
 pub fn describe(node: &OpNode, inputs: Vec<Desc>, srcs: &mut Sources) -> Result<Desc> {
     let spec = require_implemented(node)?;
+    if inputs.iter().any(|d| d.fold.is_some()) {
+        return Err(Error::new(
+            ErrorCode::NotImplemented,
+            format!(
+                "operator '{}' on the result of a statistic is not supported yet",
+                node.name
+            ),
+        )
+        .with("operator", node.name.clone())
+        .with_hint("a statistic must be the outermost operator of the chain for now"));
+    }
     match spec.class {
         AccessClass::Selection => select::describe(node, inputs),
         AccessClass::Pointwise => match node.name.as_str() {
@@ -677,6 +671,9 @@ pub fn describe(node: &OpNode, inputs: Vec<Desc>, srcs: &mut Sources) -> Result<
             "'{}' prints information and cannot be the input of another operator",
             node.name
         ))),
+        AccessClass::Reduction if fldstat::handles(&node.name) => {
+            fldstat::describe(node, inputs, srcs)
+        }
         AccessClass::Reduction | AccessClass::WholeExtent => Err(Error::new(
             ErrorCode::NotImplemented,
             format!("operator '{}' is not implemented yet", node.name),

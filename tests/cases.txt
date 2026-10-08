@@ -30,3 +30,15 @@ exact    | -setgrid,{in2} {in}                         | r36x18_std hpz2_noleap 
 exact    | -selname,tas -seltimestep,5/40 -sellonlatbox,0,120,-20,50 -mulc,2 {in} | r36x18_std hpz2_noleap unst_360
 err:unknown_operator | -yearmeans {in}                 | r36x18_std
 err:output_exists    | -addc,1 {in} {in} {noout}       | r36x18_std
+#
+# Task 8: space statistics
+ulp      | -fldmean {in}                               | r36x18_std hpz2_noleap unst_360
+exact    | -fldmin {in}                                | hpz2_noleap
+exact    | -fldmax {in}                                | hpz2_noleap
+ulp      | -fldsum {in}                                | hpz2_noleap
+ulp      | -fldstd {in}                                | hpz2_noleap
+ulp      | -fldvar1 {in}                               | hpz2_noleap
+ulp      | -fldmean -sellonlatbox,-30,90,0,60 {in}     | r36x18_std hpz2_noleap unst_360
+ulp      | -fldmean -sellonlatbox,300,60,-45,10 {in}   | r36x18_std
+ulp      | -zonmean {in}                               | r36x18_std hpz2_noleap
+ulp      | -vertmean {in}                              | r36x18_2lev

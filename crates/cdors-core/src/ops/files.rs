@@ -45,6 +45,7 @@ fn setgrid(node: &OpNode, mut d: Desc, srcs: &mut Sources) -> Result<Desc> {
         base: grid,
         src,
         xvals: None,
+        fixed: None,
     };
     let mut replaced = false;
     for gi in 0..d.grids.len() {
