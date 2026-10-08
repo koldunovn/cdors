@@ -13,8 +13,9 @@
 //!   grid. Both `path` and `raw` null means the chunk is missing (fill value).
 //!
 //! Chunk reads are positioned reads (`pread`) of local files, so the store can be used from many
-//! threads at once. `file://` URLs and plain paths are local; `http(s)://`, `s3://` and other
-//! schemes return a "remote not yet supported" error (Task 11 adds remote reads).
+//! threads at once. `file://` URLs and plain paths are local; `http(s)://` and `s3://` targets
+//! are range GETs through the shared remote client ([`super::remote`]); other schemes are
+//! refused.
 //!
 //! ```ignore
 //! let store = Arc::new(KerchunkStore::open(Path::new("refs.json"))?);
@@ -29,6 +30,8 @@ use std::sync::{Arc, Mutex};
 
 use base64::Engine as _;
 use serde_json::Value;
+
+use super::normalize::{self, normalize_zarray, sanitize_json};
 use zarrs::storage::byte_range::{ByteRange, ByteRangeIterator, InvalidByteRangeError};
 use zarrs::storage::{
     Bytes, ListableStorageTraits, MaybeBytes, MaybeBytesIterator, ReadableStorageTraits,
@@ -55,7 +58,9 @@ pub enum KerchunkError {
     },
     #[error("invalid kerchunk reference: {0}")]
     Format(String),
-    #[error("remote references are not yet supported (Task 11): {0}")]
+    #[error(
+        "unsupported reference URL scheme (only local paths, file://, http(s):// and s3://): {0}"
+    )]
     Remote(String),
 }
 
@@ -161,14 +166,10 @@ impl KerchunkStore {
     /// Build from an already resolved reference map (used for NetCDF-4 chunk indexes).
     pub fn from_refs(mut refs: HashMap<String, Ref>) -> Self {
         for (key, r) in refs.iter_mut() {
-            let name = key.rsplit('/').next().unwrap_or(key);
-            if let (true, Ref::Inline(b)) = (name.starts_with(".z"), &*r) {
-                let b = sanitize_json(b);
-                *r = Ref::Inline(match name {
-                    ".zarray" => normalize_zarray(&b),
-                    ".zmetadata" => normalize_zmetadata(&b),
-                    _ => b,
-                });
+            if let Ref::Inline(b) = &*r
+                && normalize::is_metadata_key(key)
+            {
+                *r = Ref::Inline(normalize::metadata(key, b));
             }
         }
         Self {
@@ -292,6 +293,9 @@ impl KerchunkStore {
                 offset,
                 length,
             } => {
+                if super::remote::is_url(url) {
+                    return super::remote::read_ref_ranges(url, *offset, *length, ranges);
+                }
                 let path = local_path(url)?;
                 let file = self.files.get(&path)?;
                 let len = match length {
@@ -350,6 +354,9 @@ impl ReadableStorageTraits for KerchunkStore {
             Some(Ref::Range {
                 length: Some(l), ..
             }) => Some(l),
+            Some(Ref::Range { url, offset, .. }) if super::remote::is_url(&url) => {
+                Some(super::remote::object_size(&url)?.saturating_sub(offset))
+            }
             Some(Ref::Range { url, offset, .. }) => {
                 let path = local_path(&url)?;
                 let file = self.files.get(&path)?;
@@ -415,104 +422,6 @@ impl ListableStorageTraits for KerchunkStore {
         }
         Ok(total)
     }
-}
-
-/// Python's `json` writes `NaN`, `Infinity` and `-Infinity` as bare tokens, which are not JSON;
-/// turn them into the strings Zarr v2 uses for such fill values (`"NaN"`, ...).
-fn sanitize_json(text: &[u8]) -> Bytes {
-    if !text.windows(3).any(|w| w == b"NaN") && !text.windows(8).any(|w| w == b"Infinity") {
-        return Bytes::copy_from_slice(text);
-    }
-    let mut out = Vec::with_capacity(text.len() + 16);
-    let (mut in_str, mut escaped, mut i) = (false, false, 0);
-    while i < text.len() {
-        let c = text[i];
-        if in_str {
-            out.push(c);
-            match (escaped, c) {
-                (true, _) => escaped = false,
-                (false, b'\\') => escaped = true,
-                (false, b'"') => in_str = false,
-                _ => {}
-            }
-            i += 1;
-            continue;
-        }
-        let token = [&b"-Infinity"[..], b"Infinity", b"NaN"]
-            .into_iter()
-            .find(|t| text[i..].starts_with(t));
-        match (c, token) {
-            (b'"', _) => {
-                in_str = true;
-                out.push(c);
-                i += 1;
-            }
-            (_, Some(t)) => {
-                out.push(b'"');
-                out.extend_from_slice(t);
-                out.push(b'"');
-                i += t.len();
-            }
-            _ => {
-                out.push(c);
-                i += 1;
-            }
-        }
-    }
-    Bytes::from(out)
-}
-
-/// Rewrite Zarr v2 array metadata that `zarrs` cannot open but that means the same thing.
-///
-/// kerchunk describes HDF5 pipelines as `"compressor": null, "filters": [..., {"id": "blosc"}]`,
-/// and zarrs refuses blosc as a v2 filter. With no compressor, the last filter is decoded first,
-/// exactly as a compressor would be, so it is moved into `compressor`.
-/// [`normalize_zarray`] applied to every array of consolidated metadata (`.zmetadata`).
-fn normalize_zmetadata(bytes: &Bytes) -> Bytes {
-    let Ok(mut zm) = serde_json::from_slice::<Value>(bytes) else {
-        return bytes.clone();
-    };
-    let Some(meta) = zm.get_mut("metadata").and_then(Value::as_object_mut) else {
-        return bytes.clone();
-    };
-    for (key, value) in meta.iter_mut() {
-        if key.ends_with("/.zarray") {
-            let raw = match &*value {
-                Value::String(s) => Bytes::from(s.clone().into_bytes()),
-                other => Bytes::from(other.to_string().into_bytes()),
-            };
-            if let Ok(v) = serde_json::from_slice(&normalize_zarray(&raw)) {
-                *value = v;
-            }
-        }
-    }
-    Bytes::from(zm.to_string().into_bytes())
-}
-
-fn normalize_zarray(bytes: &Bytes) -> Bytes {
-    let Ok(Value::Object(mut meta)) = serde_json::from_slice::<Value>(bytes) else {
-        return bytes.clone();
-    };
-    let compressor_null = meta.get("compressor").is_none_or(Value::is_null);
-    let last_is_blosc = meta
-        .get("filters")
-        .and_then(Value::as_array)
-        .and_then(|f| f.last())
-        .and_then(|f| f.get("id"))
-        .and_then(Value::as_str)
-        == Some("blosc");
-    if !(compressor_null && last_is_blosc) {
-        return bytes.clone();
-    }
-    if let Some(Value::Array(filters)) = meta.get_mut("filters") {
-        let blosc = filters.pop().unwrap_or(Value::Null);
-        let empty = filters.is_empty();
-        meta.insert("compressor".into(), blosc);
-        if empty {
-            meta.insert("filters".into(), Value::Null);
-        }
-    }
-    Bytes::from(Value::Object(meta).to_string().into_bytes())
 }
 
 /// Turn one JSON reference value into a [`Ref`].
@@ -793,7 +702,7 @@ pub fn open_source(path: &str) -> crate::error::Result<super::zarr::ZarrSource> 
     let store = KerchunkStore::open(Path::new(path)).map_err(|e| match e {
         KerchunkError::Remote(_) => Error::new(ErrorCode::NotImplemented, e.to_string())
             .with("path", path)
-            .with_hint("remote references come with a later version; use local references"),
+            .with_hint("references may point to local files, http(s):// or s3:// objects"),
         _ => Error::bad_data(format!("cannot open kerchunk references '{path}': {e}"))
             .with("path", path),
     })?;

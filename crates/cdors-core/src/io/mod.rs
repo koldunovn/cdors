@@ -16,6 +16,8 @@ pub mod multifile;
 pub mod netcdf4;
 pub mod netcdf4_index;
 pub mod netcdf_fallback;
+pub mod normalize;
+pub mod remote;
 pub mod write_netcdf;
 pub mod write_zarr;
 pub mod zarr;
@@ -204,6 +206,8 @@ fn is_hdf5(path: &str) -> bool {
 }
 
 /// Opens an input (lazily: metadata only):
+/// - an `http(s)://` or `s3://` URL: a remote Zarr store, or kerchunk JSON references if the
+///   URL ends in `.json` ([`remote::open`]);
 /// - a glob pattern that is not an existing path: the matching files, sorted, concatenated
 ///   along time ([`multifile::MultiFileSource`]);
 /// - kerchunk references (Parquet directory or JSON file, see [`kerchunk::is_kerchunk`]): a Zarr
@@ -213,12 +217,8 @@ fn is_hdf5(path: &str) -> bool {
 ///   index ([`netcdf4::Nc4Source`]), unless `CDORS_NC4=netcdf`;
 /// - anything else (NetCDF-3 classic / 64-bit offset / CDF5): netCDF-C.
 pub fn open(path: &str) -> Result<Arc<dyn ChunkSource>> {
-    if path.starts_with("http://") || path.starts_with("https://") || path.starts_with("s3://") {
-        return Err(Error::new(
-            ErrorCode::NotImplemented,
-            format!("remote input '{path}' is not supported yet"),
-        )
-        .with_hint("remote Zarr stores come with a later version; use a local path"));
+    if remote::is_url(path) {
+        return Ok(Arc::new(remote::open(path)?));
     }
     if !Path::new(path).exists() {
         if multifile::is_glob(path) {
