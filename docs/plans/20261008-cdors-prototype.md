@@ -429,13 +429,17 @@ cached. Rows needing `cdo` are skipped with a notice where it isn't available.
       index in `$CDORS_CACHE/nc4index/` keyed by path, size and modification time, then read and decode chunks in
       parallel (deflate, shuffle, fletcher32 and the HDF5 blosc filter used by the EERIE files); fall back to
       netCDF-C for filters we can't decode
-- [ ] (multi-file source `io/multifile.rs` and glob inputs done; the `mergetime` operator itself is not wired yet) `mergetime` over many files or a glob pattern as one virtual dataset (consistent grids checked)
-- [ ] harness: NetCDF-4 rows also run with the netCDF-C fallback disabled; one kerchunk fixture if a reference
+- [x] `mergetime` over many files or a glob pattern as one virtual dataset (consistent grids checked)
+- [x] harness: NetCDF-4 rows also run with the netCDF-C fallback disabled; one kerchunk fixture if a reference
       generator is available in mambaforge, otherwise kerchunk is covered by the benchmarks only; a `mergetime` row
-- [ ] run `tests/run_cases.sh` — must pass
-- [ ] ➕ one process-wide HDF5 lock shared by every `netcdf` crate call (fallback reader, NetCDF writer, SCRIP weights
+- [x] run `tests/run_cases.sh` — must pass
+- [x] ➕ one process-wide HDF5 lock shared by every `netcdf` crate call (fallback reader, NetCDF writer, SCRIP weights
       reader, Nc4Source metadata) and every `hdf5-metno` call (chunk indexing): the spack HDF5 is not thread-safe and
       the two crates' internal locks do not exclude each other (found by the Task 5 agent)
+- ⚠️ 2026-10-09: merged engine hardening. zarrs read coordinates through rayon's global pool, which started one thread
+      per core (256) per process and panicked at the per-user limit (2048); pools are now sized to the work with
+      graceful fallback. `mergetime`/`cat` are wired (overlapping or backwards times refused, logged in deviations).
+      Harness: 157 rows pass on both read paths at 8 parallel jobs in ≈ 20 s.
 
 ### Task 11: Remote reads
 
