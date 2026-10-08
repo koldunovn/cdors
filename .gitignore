@@ -1,3 +1,4 @@
 target/
 *.tar.gz
 .claude/
+__pycache__/
