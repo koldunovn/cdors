@@ -73,6 +73,21 @@ is BSD-3-Clause too). CDO 2.6.5: 719 operators in 217 modules, about 170k lines 
   `https://eerie.cloud.dkrz.de/datasets/<id>/zarr`); `dkrz_ngc3` is nextGEMS Cycle 3
   (`https://data.nextgems-h2020.eu/catalog.yaml`, HEALPix Zarr).
 - AWI data under `/work/bm1344/AWI` (`EERIE`, `DestinE`, `Cycle3`, …).
+- **Survey results (2026-10-08, details in `bench/datasets.md`):**
+  - EERIE kerchunk references are **Parquet** (e.g. `.../Kerchunk/erc2002/.../atm_2d_1d_mean_remap025.parq`), not JSON.
+  - The raw ICON-ESM-ER NetCDF-4 files use the **HDF5 blosc filter** (id 32001), one field per chunk. cdo 2.6.0 links
+    netCDF-C 4.10.0 + HDF5 1.14.6 and reads them; our spack netCDF-C 4.9.3-rc1 + HDF5 1.14.3 may lack the plugin.
+  - The EERIE cloud serves datasets at `https://eerie.cloud.dkrz.de/datasets/<id>/kerchunk`; `/zarr` returns 403 and
+    `intake.yaml` 404.
+  - cdo reads the nextGEMS Zarr stores only through single-variable views (`bench/make_view.py`, symlinks); on the
+    full 111-variable store it is unusably slow. It reports the HEALPix grid as `gridtype=projection`.
+  - Benchmarks: W1 = `/work/kd1453/rechunked_ngc4008/ngc4008_P1D_9.zarr` `tas` (HEALPix zoom 9, chunks 30×65536,
+    blosc-lz4; one decade = 45.9 GB decoded); W2 = ICON-ESM-ER control-1950 daily `pr` 0.25° (raw NetCDF-4 + Parquet
+    refs + cloud); W3 = the same model's daily ocean `to` at 1 m on a regular 0.25° grid; W4 =
+    `ngc4008_PT3H_9.zarr` `tas` (chunks 248×16384, 1.1 TB decoded; `ngc4008_PT15M_9.zarr` at 13.2 TB is the
+    stress option).
+  - Login-node indications: cdo reaches ≈ 0.95 GB/s decoded on W1 (read share 76–84 %, `-P 8` does not help) and
+    0.1–0.2 GB/s on W2–W4 (read share ≈ 95 %).
 
 **Rust dependencies.**
 - `zarrs` 0.23.x: Zarr v3 and the v3-compatible subset of v2, sharding. gzip, zstd and blosc are stable;
@@ -377,11 +392,12 @@ cached. Rows needing `cdo` are skipped with a notice where it isn't available.
 - Modify: `crates/cdors-core/src/ops/files.rs`
 - Modify: `tests/make_fixtures.sh`, `tests/run_cases.sh`, `tests/cases.txt`
 
-- [ ] kerchunk reference store: support the format actually used in `/work/bm1344/DKRZ/kerchunks` first (JSON or
-      Parquet), the other only if needed; chunk keys map to (file, offset, length) or inline data
+- [ ] kerchunk reference store: Parquet first (the format EERIE uses), JSON as well; chunk keys map to
+      (file, offset, length) or inline data
 - [ ] NetCDF-4: list chunk byte ranges once via HDF5 (`hdf5-metno`, `chunk_info`, same HDF5 as netCDF-C), cache the
       index in `$CDORS_CACHE/nc4index/` keyed by path, size and modification time, then read and decode chunks in
-      parallel; fall back to netCDF-C for filters we can't decode
+      parallel (deflate, shuffle, fletcher32 and the HDF5 blosc filter used by the EERIE files); fall back to
+      netCDF-C for filters we can't decode
 - [ ] `mergetime` over many files or a glob pattern as one virtual dataset (consistent grids checked)
 - [ ] harness: NetCDF-4 rows also run with the netCDF-C fallback disabled; one kerchunk fixture if a reference
       generator is available in mambaforge, otherwise kerchunk is covered by the benchmarks only; a `mergetime` row
@@ -396,7 +412,8 @@ cached. Rows needing `cdo` are skipped with a notice where it isn't available.
 - [ ] HTTPS and S3 through `object_store`: about 64 requests in flight, adjacent byte ranges merged, retries with
       backoff on timeouts and server errors, consolidated metadata used when present
 - [ ] retryable failures map to exit code 3 with the failing chunk key in the error
-- [ ] smoke check against the W2 dataset in the EERIE cloud (`sinfo --json`, a one-month `fldmean`); no network rows
+- [ ] smoke check against the W2 dataset in the EERIE cloud (its `/kerchunk` endpoint; `sinfo --json`, a one-month
+      `fldmean`); no network rows
       in the harness, so the suite stays fast and offline
 
 ### Task 12: Behaviour for agents — plan output, operator listing, limits, progress, usage docs
