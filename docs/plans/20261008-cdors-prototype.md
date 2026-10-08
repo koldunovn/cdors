@@ -203,7 +203,7 @@ cached. Rows needing `cdo` are skipped with a notice where it isn't available.
 - Create: `crates/cdors-core/examples/read_probe.rs`
 - Create: `docs/baseline.md`
 
-- [ ] choose and record datasets in `bench/datasets.md`:
+- [x] choose and record datasets in `bench/datasets.md`:
       W1 a daily 2D variable on HEALPix in a **genuine Zarr store on Lustre** (nextGEMS Cycle 3), a decade, and check
       that cdo can read it through NCZarr (if not, the cdo baseline uses the original files of the same data);
       W2 a daily or hourly 2D variable available both in the EERIE cloud and as raw files on Lustre (read through
@@ -212,7 +212,7 @@ cached. Rows needing `cdo` are skipped with a notice where it isn't available.
       W4 a multi-TB variable in a store **chunked in space**, so that percentile passes read disjoint chunks
 - [ ] write `read_probe.rs`: read and decode every chunk of one variable through `zarrs` with N threads, from the
       filesystem (W1) and over HTTPS (W2 in the EERIE cloud); report compressed and decoded GB/s
-- [ ] write `baseline.sbatch`: on one exclusive compute node, run cdo for W1–W4 under `/usr/bin/time -v`; for the
+- [x] write `baseline.sbatch`: on one exclusive compute node, run cdo for W1–W4 under `/usr/bin/time -v`; for the
       read-time share, run each workload's single operator again with `-P 1 -T` (cdo's timers need one process and one
       thread); then `read_probe` on W1 (local) and W2 (cloud)
 - [ ] **ask Nikolay before submitting** (about 1–2 node-hours); submit, report the job id, end the turn
