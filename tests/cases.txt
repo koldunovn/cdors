@@ -30,3 +30,35 @@ exact    | -setgrid,{in2} {in}                         | r36x18_std hpz2_noleap 
 exact    | -selname,tas -seltimestep,5/40 -sellonlatbox,0,120,-20,50 -mulc,2 {in} | r36x18_std hpz2_noleap unst_360
 err:unknown_operator | -yearmeans {in}                 | r36x18_std
 err:output_exists    | -addc,1 {in} {in} {noout}       | r36x18_std
+#
+# Task 6: time statistics by period and over multi-year groups
+ulp      | -timmean {in}                               | r36x18_std hpz2_noleap unst_360
+ulp      | -hourmean {in}                              | r36x18_std hpz2_noleap unst_360
+ulp      | -daymean {in}                               | r36x18_std hpz2_noleap unst_360
+ulp      | -monmean {in}                               | r36x18_std hpz2_noleap unst_360
+ulp      | -seasmean {in}                              | r36x18_std hpz2_noleap unst_360
+ulp      | -yearmean {in}                              | r36x18_std hpz2_noleap unst_360
+ulp      | -ymonmean {in}                              | r36x18_std hpz2_noleap unst_360
+ulp      | -ydaymean {in}                              | r36x18_std hpz2_noleap unst_360
+ulp      | -yseasmean {in}                             | r36x18_std hpz2_noleap unst_360
+ulp      | -timavg {in}                                | hpz2_noleap
+exact    | -timmin {in}                                | hpz2_noleap
+exact    | -timmax {in}                                | hpz2_noleap
+ulp      | -timsum {in}                                | hpz2_noleap
+exact    | -timrange {in}                              | hpz2_noleap
+ulp      | -timstd {in}                                | hpz2_noleap
+ulp      | -timstd1 {in}                               | hpz2_noleap
+ulp      | -timvar {in}                                | hpz2_noleap
+ulp      | -timvar1 {in}                               | hpz2_noleap
+ulp      | -monavg {in}                                | hpz2_noleap
+exact    | -monmin {in}                                | hpz2_noleap
+exact    | -monmax {in}                                | hpz2_noleap
+ulp      | -monsum {in}                                | hpz2_noleap
+exact    | -monrange {in}                              | hpz2_noleap
+ulp      | -monstd {in}                                | hpz2_noleap
+ulp      | -monstd1 {in}                               | hpz2_noleap
+ulp      | -monvar {in}                                | hpz2_noleap
+ulp      | -monvar1 {in}                               | hpz2_noleap
+ulp      | --timestat_date first -ymonmean {in}        | hpz2_noleap
+ulp      | --timestat_date last -seasmean {in}         | r36x18_std
+ulp      | -yearmean -selyear,2001/2002 -selname,tas -mulc,2 {in} | r36x18_std hpz2_noleap unst_360

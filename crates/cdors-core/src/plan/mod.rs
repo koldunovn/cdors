@@ -541,6 +541,16 @@ pub struct Desc {
     pub grids: Vec<GridDesc>,
     pub zaxes: Vec<ZDesc>,
     pub time: Option<TimeDesc>,
+    /// Set by a reduction: the description is the output of `kernel` folding the tiles of
+    /// `input` (one stage). Variables keep their order and index between input and output.
+    pub fold: Option<Fold>,
+}
+
+/// A pending reduction (see [`Desc::fold`]).
+#[derive(Clone)]
+pub struct Fold {
+    pub input: Box<Desc>,
+    pub kernel: Arc<dyn stage::FoldKernel>,
 }
 
 impl Desc {
@@ -566,11 +576,14 @@ const ENCODING_ATTRS: &[&str] = &[
 /// Default missing value of cdo.
 pub const CDO_MISSVAL: f64 = -9.0e33;
 
-/// The opened inputs of a plan (one per distinct path).
+/// The opened inputs of a plan (one per distinct path), and the global options operators need
+/// while describing.
 #[derive(Default)]
 pub struct Sources {
     pub paths: Vec<String>,
     pub srcs: Vec<Arc<dyn ChunkSource>>,
+    /// `--timestat_date` as given on the command line.
+    pub timestat_date: Option<crate::model::timegroup::TimestatDate>,
 }
 
 impl Sources {
@@ -680,6 +693,7 @@ pub fn describe_source(srcs: &Sources, si: usize) -> Result<Desc> {
         grids,
         zaxes,
         time,
+        fold: None,
     })
 }
 
@@ -741,8 +755,20 @@ pub fn build(cmd: &Command) -> Result<Plan> {
         .first()
         .cloned()
         .ok_or_else(|| Error::bad_arguments("no output file given"))?;
-    let mut srcs = Sources::default();
-    let desc = describe_tree(&cmd.root, &mut srcs)?;
+    let mut srcs = Sources {
+        timestat_date: cmd.options.timestat_date.map(|t| {
+            use crate::chain::TimestatDate as C;
+            use crate::model::timegroup::TimestatDate as T;
+            match t {
+                C::First => T::First,
+                C::Middle => T::Middle,
+                C::Midhigh => T::MidHigh,
+                C::Last => T::Last,
+            }
+        }),
+        ..Sources::default()
+    };
+    let mut desc = describe_tree(&cmd.root, &mut srcs)?;
     for v in &desc.vars {
         if let Some(d) = v.dims.iter().find(|d| d.role == DimRole::Other) {
             return Err(Error::new(
@@ -759,7 +785,13 @@ pub fn build(cmd: &Command) -> Result<Plan> {
     if desc.vars.is_empty() {
         return Err(Error::bad_arguments("no variables to write"));
     }
-    let stages = vec![stage::Stage::map(&desc, &srcs.srcs)?];
+    let stages = vec![match desc.fold.take() {
+        Some(f) => stage::Stage {
+            kernel: Some(f.kernel),
+            ..stage::Stage::map(&f.input, &srcs.srcs)?
+        },
+        None => stage::Stage::map(&desc, &srcs.srcs)?,
+    }];
     Ok(Plan {
         sources: srcs.srcs,
         desc,

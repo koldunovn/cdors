@@ -16,6 +16,7 @@ pub mod arith;
 pub mod files;
 pub mod info;
 pub mod select;
+pub mod timstat;
 
 use crate::chain::OpNode;
 use crate::error::{Error, ErrorCode, Result};
@@ -542,19 +543,23 @@ fn build_registry() -> Vec<OpSpec> {
     }
     let periods = [
         ("tim", "over all timesteps"),
+        ("hour", "per hour"),
         ("day", "per day"),
         ("mon", "per month"),
         ("seas", "per season"),
         ("year", "per year"),
         ("ymon", "per calendar month over all years"),
         ("yday", "per day of year over all years"),
+        ("yseas", "per season over all years"),
     ];
     for (p, pd) in periods {
         for (s, sd) in [
             ("mean", "Mean"),
+            ("avg", "Average (missing if any value is missing)"),
             ("min", "Minimum"),
             ("max", "Maximum"),
             ("sum", "Sum"),
+            ("range", "Range (maximum - minimum)"),
             ("std", "Standard deviation (n)"),
             ("std1", "Standard deviation (n-1)"),
             ("var", "Variance (n)"),
@@ -572,7 +577,7 @@ fn build_registry() -> Vec<OpSpec> {
         }
     }
     for o in &mut r {
-        if IMPLEMENTED.contains(&o.name.as_str()) {
+        if IMPLEMENTED.contains(&o.name.as_str()) || timstat::parse(&o.name).is_some() {
             o.implemented = true;
         }
         if o.name == "showname" {
@@ -667,6 +672,17 @@ pub fn require_implemented(node: &OpNode) -> Result<&'static OpSpec> {
 /// Output description of a data operator from the descriptions of its inputs (no data read).
 pub fn describe(node: &OpNode, inputs: Vec<Desc>, srcs: &mut Sources) -> Result<Desc> {
     let spec = require_implemented(node)?;
+    if inputs.iter().any(|d| d.fold.is_some()) {
+        return Err(Error::new(
+            ErrorCode::NotImplemented,
+            format!(
+                "operator '{}' cannot take the output of a statistic as input yet",
+                node.name
+            ),
+        )
+        .with("operator", node.name.clone())
+        .with_hint("put selections inside the statistic (-yearmean -selname,tas in.nc), or run two commands"));
+    }
     match spec.class {
         AccessClass::Selection => select::describe(node, inputs),
         AccessClass::Pointwise => match node.name.as_str() {
@@ -677,6 +693,9 @@ pub fn describe(node: &OpNode, inputs: Vec<Desc>, srcs: &mut Sources) -> Result<
             "'{}' prints information and cannot be the input of another operator",
             node.name
         ))),
+        AccessClass::Reduction if timstat::parse(&node.name).is_some() => {
+            timstat::describe(node, inputs, srcs)
+        }
         AccessClass::Reduction | AccessClass::WholeExtent => Err(Error::new(
             ErrorCode::NotImplemented,
             format!("operator '{}' is not implemented yet", node.name),

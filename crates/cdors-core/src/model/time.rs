@@ -389,6 +389,27 @@ impl TimeUnits {
         }
     }
 
+    /// Encodes a date-time as a value in these units, the inverse of [`Self::decode`]. `None` for
+    /// months and years, which CDI encodes with its own month-length rules (not reproduced).
+    pub fn encode(&self, t: &CalDateTime, cal: Calendar) -> Option<f64> {
+        match self {
+            Self::AbsoluteDay => {
+                let date = t.year as f64 * 10_000.0 + (t.month * 100 + t.day) as f64;
+                Some(date + t.second_of_day() as f64 / 86_400.0)
+            }
+            Self::Relative { unit, reference } => {
+                let secs = t.seconds_since(reference, cal) as f64;
+                match unit {
+                    TimeUnit::Second => Some(secs),
+                    TimeUnit::Minute => Some(secs / 60.0),
+                    TimeUnit::Hour => Some(secs / 3600.0),
+                    TimeUnit::Day => Some(secs / 86_400.0),
+                    TimeUnit::Month | TimeUnit::Year => None,
+                }
+            }
+        }
+    }
+
     /// Decodes one time value into a date-time (CDI's rules, see the module docs).
     pub fn decode(&self, value: f64, cal: Calendar) -> Result<CalDateTime> {
         if !value.is_finite() {

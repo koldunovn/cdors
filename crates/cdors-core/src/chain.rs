@@ -94,7 +94,8 @@ pub struct Options {
     pub max_read: Option<u64>,
     /// `--chunks <spec>`: output chunking, `dim=n[,dim=n...]`.
     pub chunks: Option<Vec<(String, usize)>>,
-    pub timestat_date: TimestatDate,
+    /// `--timestat_date` (None: the environment, then the operator's default).
+    pub timestat_date: Option<TimestatDate>,
     /// `--percentile <method>` (cdo's names).
     pub percentile: Option<String>,
     /// `--no_history`.
