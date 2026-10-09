@@ -400,7 +400,9 @@ fn describe_level(node: &OpNode, mut d: Desc) -> Result<Desc> {
 
 fn to_degrees(vals: &mut [f64], units: &str) {
     if units.trim().starts_with("radian") {
-        vals.iter_mut().for_each(|x| *x = x.to_degrees());
+        // cdo's RAD2DEG multiplication (`f64::to_degrees` can differ in the last bit)
+        vals.iter_mut()
+            .for_each(|x| *x = crate::model::hpcoords::rad2deg(*x));
     }
 }
 

@@ -307,6 +307,9 @@ pub fn schedule(
         ));
     }
     let fold_role = kernel.fold_dim();
+    // largest wave state of long-lived lanes; largest lane state and largest total state of
+    // short-lived lanes
+    let (mut long_state, mut short_lane, mut short_all) = (0u64, 0u64, 0u64);
     for sv in &stage.vars {
         let nd = sv.dims.len();
         let segs = &sv.tiling.segments;
@@ -468,6 +471,13 @@ pub fn schedule(
         } else {
             live.min(wave_state)
         });
+        if long_lived {
+            long_state = long_state.max(wave_state);
+        } else {
+            let lane_max = lane_state.iter().max().copied().unwrap_or(0);
+            short_lane = short_lane.max(lane_max);
+            short_all = short_all.max(wave_state);
+        }
         // reads: every tile is read once per wave that has lanes in it
         let ntiles = sv.tiling.num_tiles();
         vs.tile_reads = ntiles as u64;
@@ -488,6 +498,35 @@ pub fn schedule(
         s.lanes += nlanes;
         s.waves = s.waves.max(vs.waves.len());
         s.vars.push(vs);
+    }
+    // Short-lived lanes are open about one per tile in flight, so their states grow with the
+    // window: when the estimate exceeds the budget, fewer tiles are kept in flight (at least
+    // two); if even that does not fit, planning fails before anything is read.
+    let peak_at =
+        |w: u64| w * tile_bytes + long_state.max((short_lane * w).min(short_all)) + out_hold;
+    if peak_at(window) > budget {
+        let Some(w) = (2..window).rev().find(|&w| peak_at(w) <= budget) else {
+            return Err(too_small(
+                format!(
+                    "the memory budget ({}) does not hold two tiles in flight ({} each) with \
+                     the running states of their lanes ({} each){}",
+                    human(budget),
+                    human(tile_bytes),
+                    human(short_lane),
+                    if out_hold > 0 {
+                        format!(" and the intermediate output ({})", human(out_hold))
+                    } else {
+                        String::new()
+                    }
+                ),
+                peak_at(2),
+                budget,
+            ));
+        };
+        s.window = w as usize;
+        s.state_bytes = long_state.max((short_lane * w).min(short_all));
+        s.peak_bytes = peak_at(w);
+        return Ok(s);
     }
     s.peak_bytes = window_bytes + s.state_bytes + out_hold;
     Ok(s)

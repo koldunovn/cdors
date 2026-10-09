@@ -85,8 +85,12 @@ fn run(cmd: &Command) -> Result<()> {
 /// zeroed pages: millions of minor page faults and more system than user time. Raising the mmap
 /// threshold to its maximum (32 MiB on 64-bit) and not trimming keeps freed blocks in the
 /// arenas for reuse. Peak memory is still bounded by the tile window; memory freed after the
-/// peak is not handed back to the system before the process ends. Environment settings
-/// (`MALLOC_MMAP_THRESHOLD_`, `MALLOC_TRIM_THRESHOLD_`) take precedence.
+/// peak is not handed back to the system before the process ends. Since a freed block is reused
+/// only by threads of the same arena, the default of one arena per thread (8 per core) lets
+/// every one of the ~80 compute and I/O threads keep its own high-water mark: a run planned for
+/// `--mem 400M` reached 1.3 GB RSS. Four arenas keep the RSS near the budget at the same speed.
+/// Environment settings (`MALLOC_MMAP_THRESHOLD_`, `MALLOC_TRIM_THRESHOLD_`,
+/// `MALLOC_ARENA_MAX`) take precedence.
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
 fn tune_malloc() {
     let set = |var: &str| std::env::var_os(var).is_some();
@@ -98,6 +102,9 @@ fn tune_malloc() {
         }
         if !set("MALLOC_TRIM_THRESHOLD_") {
             libc::mallopt(libc::M_TRIM_THRESHOLD, i32::MAX);
+        }
+        if !set("MALLOC_ARENA_MAX") {
+            libc::mallopt(libc::M_ARENA_MAX, 4);
         }
     }
 }

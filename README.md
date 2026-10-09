@@ -18,6 +18,7 @@ source env.sh                 # Rust toolchain, build dir, caches, netCDF-C/HDF5
 cargo build --release         # binary: $CARGO_TARGET_DIR/release/cdors
 tests/make_fixtures.sh        # tiny test inputs (once)
 tests/run_cases.sh            # compare cdors with cdo, row by row (tests/cases.txt)
+bench/realdata_check.sh       # report only: real-data chains vs cdo/numpy, status table + timings
 ```
 
 `env.sh` keeps the toolchain, the build tree and all caches under `/work`, not in `$HOME`.

@@ -471,9 +471,13 @@ fn gridsize(v: &plan::VarDesc) -> usize {
     v.hdims().iter().map(|&d| v.dims[d].size).product()
 }
 
-/// cdo's parameter ID of a NetCDF variable: `-(position among the data variables + 1)` of the
-/// first input; position in the output otherwise.
-fn param_ids(plan: &Plan) -> Vec<i64> {
+/// Parameter ID and code of every output variable, as CDI derives them for NetCDF input
+/// (`stream_cdf_i.c`: `vlistDefVar`, the `param`, `code` and `table` attributes,
+/// `cdf_define_code_and_param`; `vlist_var.c:vlistInqVarCode`; `cdi_util.c:cdiParamToString`).
+/// Without attributes the ID is `-(position among the data variables of the first input + 1)`;
+/// a `param = "52.1.0"` attribute gives that ID, and the code of such a GRIB2-style parameter is
+/// `-(position in the output + 1)`.
+fn param_ids(plan: &Plan) -> Vec<ParamId> {
     let ims: Vec<usize> = plan.intermediates.iter().map(|i| i.src).collect();
     let names: Vec<String> = (0..plan.sources.len())
         .find(|i| !ims.contains(i))
@@ -489,8 +493,135 @@ fn param_ids(plan: &Plan) -> Vec<i64> {
         .vars
         .iter()
         .enumerate()
-        .map(|(k, v)| -(names.iter().position(|n| *n == v.name).unwrap_or(k) as i64 + 1))
+        .map(|(k, v)| {
+            let pos = names.iter().position(|n| *n == v.name).unwrap_or(k) as i32;
+            ParamId::cdi(pos, k as i32, &v.name, &v.attrs)
+        })
         .collect()
+}
+
+/// A CDI parameter: the encoded `param` and the code `vlistInqVarCode` reports.
+#[derive(Debug, Clone, PartialEq)]
+struct ParamId {
+    param: i32,
+    code: i64,
+}
+
+impl ParamId {
+    /// `cdiEncodeParam`.
+    fn encode(pnum: i32, pcat: i32, pdis: i32) -> i32 {
+        let pcat = if (0..=255).contains(&pcat) { pcat } else { 255 };
+        let pdis = if (0..=255).contains(&pdis) { pdis } else { 255 };
+        let upnum = if pnum < 0 {
+            0x8000u32.wrapping_sub(pnum as u32)
+        } else {
+            pnum as u32
+        };
+        ((upnum << 16) | ((pcat as u32) << 8) | pdis as u32) as i32
+    }
+
+    /// `cdiDecodeParam`: (number, category, discipline).
+    fn decode(param: i32) -> (i32, i32, i32) {
+        let u = param as u32;
+        let mut upnum = 0xffff & (u >> 16);
+        if upnum > 0x7fff {
+            upnum = 0x8000u32.wrapping_sub(upnum);
+        }
+        (upnum as i32, (0xff & (u >> 8)) as i32, (0xff & u) as i32)
+    }
+
+    /// `sscanf(s, "%d.%d.%d", ...)`: the numbers that parse, left to right.
+    fn scan(s: &str) -> Vec<i32> {
+        let mut out = Vec::new();
+        let mut rest = s;
+        loop {
+            let t = rest.trim_start();
+            let sign = t.starts_with(['-', '+']) as usize;
+            let digits = t[sign..].bytes().take_while(u8::is_ascii_digit).count();
+            if digits == 0 {
+                break;
+            }
+            let Ok(n) = t[..sign + digits].parse::<i64>() else {
+                break;
+            };
+            out.push(n as i32);
+            rest = &t[sign + digits..];
+            if out.len() == 3 {
+                break;
+            }
+            match rest.strip_prefix('.') {
+                Some(r) => rest = r,
+                None => break,
+            }
+        }
+        out
+    }
+
+    /// The parameter of the variable at `pos` among the input's data variables, written at
+    /// `out_pos` in the output.
+    fn cdi(pos: i32, out_pos: i32, name: &str, attrs: &crate::model::Attrs) -> Self {
+        let mut param = Self::encode(-(pos + 1), 255, 255);
+        if let Some(s) = attrs.get_str("param") {
+            let n = Self::scan(s);
+            let get = |i: usize, d: i32| n.get(i).copied().unwrap_or(d);
+            param = Self::encode(get(0, 0), get(1, 255), get(2, 255));
+        }
+        let numeric = |a: &str| {
+            attrs
+                .get(a)
+                .filter(|v| !matches!(v, crate::model::AttrValue::Text(_)))
+                .and_then(|v| v.as_f64())
+                .map(|x| x as i32)
+        };
+        if let Some(code) = numeric("code") {
+            let tabnum = numeric("table").filter(|&t| t > 0).unwrap_or(0);
+            param = Self::encode(code, tabnum, 255);
+        }
+        // vlistInqVarCode (without a parameter table)
+        let inq_code = |param: i32, var_id: i32| {
+            let (pnum, _, pdis) = Self::decode(param);
+            if pdis != 255 { -var_id - 1 } else { pnum }
+        };
+        // cdf_define_code_and_param: names var<N>, code<N>, param<N> when the code is the default
+        if inq_code(param, pos) == -pos - 1 {
+            let b = name.as_bytes();
+            let digit_at = |i: usize| b.len() > i && b[i].is_ascii_digit();
+            let atoi = |s: &str| Self::scan(s).first().copied().unwrap_or(0);
+            if digit_at(3) {
+                if let Some(r) = name.strip_prefix("var") {
+                    let (_, c, d) = Self::decode(param);
+                    param = Self::encode(atoi(r), c, d);
+                }
+            } else if digit_at(4) {
+                if let Some(r) = name.strip_prefix("code") {
+                    let (_, c, d) = Self::decode(param);
+                    param = Self::encode(atoi(r), c, d);
+                }
+            } else if digit_at(5)
+                && let Some(r) = name.strip_prefix("param")
+            {
+                let n = Self::scan(r);
+                let get = |i: usize, d: i32| n.get(i).copied().unwrap_or(d);
+                param = Self::encode(get(0, -1), get(1, 255), get(2, 255));
+            }
+        }
+        Self {
+            param,
+            code: inq_code(param, out_pos) as i64,
+        }
+    }
+
+    /// `cdiParamToString`.
+    fn text(&self) -> String {
+        let (num, cat, dis) = Self::decode(self.param);
+        if dis == 255 && (cat == 255 || cat == 0) {
+            num.to_string()
+        } else if dis == 255 {
+            format!("{num}.{cat}")
+        } else {
+            format!("{num}.{cat}.{dis}")
+        }
+    }
 }
 
 /// Number of values (for `info`/`infon`: fields) the operator would print.
@@ -648,7 +779,7 @@ pub fn run(cmd: &Command) -> Result<String> {
 
 struct Ctx<'a> {
     plan: &'a Plan,
-    params: Vec<i64>,
+    params: Vec<ParamId>,
     fields: HashMap<(usize, usize, usize), Field>,
     points: HashMap<usize, Points>,
     name: &'a str,
@@ -779,7 +910,7 @@ impl Ctx<'_> {
                     let tag = if *names {
                         var.name.clone()
                     } else {
-                        self.params[v].to_string()
+                        self.params[v].text()
                     };
                     out.push_str(&format!(
                         "{:6} :{} {} {} {:8} {:7} :{} : {:<14}\n",
@@ -829,7 +960,7 @@ impl Ctx<'_> {
                     let w = self.when(t);
                     let level = self.level(v, z);
                     let pts = var.grid.and_then(|g| self.points.get(&g));
-                    let param = self.params[v].to_string();
+                    let param = self.params[v].text();
                     for (i, &x) in self.values((v, t, z))?.iter().enumerate() {
                         let x = if x.is_nan() { var.missval } else { x };
                         for ((_, key, wd), f) in keys.iter().zip(&fmts) {
@@ -844,7 +975,7 @@ impl Ctx<'_> {
                                 Key::Lat => f.fmt(p(|p| &p.lat)),
                                 Key::Lev | Key::Bin => f.fmt(level),
                                 Key::Param => pad(&param, *wd),
-                                Key::Code => pad(&self.params[v].to_string(), *wd),
+                                Key::Code => pad(&self.params[v].code.to_string(), *wd),
                                 Key::Name => pad(&var.name, *wd),
                                 Key::Xind => pad(
                                     &(pts.map_or(i, |p| p.xind.get(i).copied().unwrap_or(i)) + 1)
@@ -886,7 +1017,7 @@ impl Ctx<'_> {
                     "name": v.name,
                     "units": v.attrs.get_str("units"),
                     "long_name": v.attrs.get_str("long_name"),
-                    "param": self.params[k].to_string(),
+                    "param": self.params[k].text(),
                     "dtype": if v.dtype == DType::F32 { "float32" } else { "float64" },
                     "gridsize": gridsize(v),
                     "levels": v.dim_of(DimRole::Vertical).map_or(1, |d| v.dims[d].size),
@@ -915,7 +1046,7 @@ impl Ctx<'_> {
                         "timestep": t + 1,
                         "date": self.when(t).iso,
                         "name": var.name,
-                        "param": self.params[v].to_string(),
+                        "param": self.params[v].text(),
                         "level": self.level(v, z),
                         "gridsize": gridsize(var),
                         "missing": s.nmiss,
@@ -963,8 +1094,8 @@ impl Ctx<'_> {
                                 Key::Lon => coord(|p| &p.lon, i),
                                 Key::Lat => coord(|p| &p.lat, i),
                                 Key::Lev | Key::Bin => json!(level),
-                                Key::Param => json!(self.params[v].to_string()),
-                                Key::Code => json!(self.params[v]),
+                                Key::Param => json!(self.params[v].text()),
+                                Key::Code => json!(self.params[v].code),
                                 Key::Name => json!(var.name),
                                 Key::Xind => json!(
                                     pts.map_or(i, |p| p.xind.get(i).copied().unwrap_or(i)) + 1
@@ -996,5 +1127,47 @@ impl Ctx<'_> {
             o["keys"] = json!(keys.iter().map(|k| k.0).collect::<Vec<_>>());
         }
         Ok(o)
+    }
+}
+
+#[cfg(test)]
+mod param_tests {
+    use super::ParamId;
+    use crate::model::{AttrValue, Attrs};
+
+    fn attrs(list: Vec<(&str, AttrValue)>) -> Attrs {
+        Attrs(list.into_iter().map(|(k, v)| (k.to_owned(), v)).collect())
+    }
+
+    #[test]
+    fn cdi_parameter_rules() {
+        let none = Attrs::default();
+        let p = ParamId::cdi(4, 0, "tas", &none);
+        assert_eq!((p.text(), p.code), ("-5".into(), -5));
+        let g2 = attrs(vec![("param", AttrValue::Text("18.4.10".into()))]);
+        let p = ParamId::cdi(4, 0, "to", &g2);
+        assert_eq!((p.text(), p.code), ("18.4.10".into(), -1));
+        let p = ParamId::cdi(0, 2, "x", &g2);
+        assert_eq!(p.code, -3);
+        let c = attrs(vec![("code", AttrValue::Ints(vec![167]))]);
+        let p = ParamId::cdi(3, 0, "t2m", &c);
+        assert_eq!((p.text(), p.code), ("167".into(), 167));
+        let ct = attrs(vec![
+            ("code", AttrValue::Ints(vec![130])),
+            ("table", AttrValue::Ints(vec![128])),
+        ]);
+        let p = ParamId::cdi(0, 0, "t", &ct);
+        assert_eq!((p.text(), p.code), ("130.128".into(), 130));
+        let p = ParamId::cdi(1, 1, "var130", &none);
+        assert_eq!((p.text(), p.code), ("130".into(), 130));
+        let p = ParamId::cdi(1, 1, "param52.1.0", &none);
+        assert_eq!((p.text(), p.code), ("52.1.0".into(), -2));
+        let p = ParamId::cdi(
+            0,
+            0,
+            "x",
+            &attrs(vec![("param", AttrValue::Text("130".into()))]),
+        );
+        assert_eq!((p.text(), p.code), ("130".into(), 130));
     }
 }

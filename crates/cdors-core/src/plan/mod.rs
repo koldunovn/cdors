@@ -440,7 +440,8 @@ impl GridDesc {
     }
 }
 
-/// HEALPix cell centres (radians) of `cells` in the given order.
+/// HEALPix cell centres (radians) of `cells` in the given order, computed as cdo computes them
+/// (`model::hpcoords`), so that centres on a box edge select like cdo's.
 pub fn healpix_centers(nside: u64, order: HealpixOrder, cells: &[u64]) -> (Vec<f64>, Vec<f64>) {
     let depth = nside.trailing_zeros() as u8;
     let layer = cdshealpix::nested::get(depth);
@@ -451,7 +452,7 @@ pub fn healpix_centers(nside: u64, order: HealpixOrder, cells: &[u64]) -> (Vec<f
             HealpixOrder::Nested => c,
             HealpixOrder::Ring => layer.from_ring(c),
         };
-        let (lon, lat) = layer.center(h);
+        let (lon, lat) = crate::model::hpcoords::center_nested(nside, h);
         xs.push(lon);
         ys.push(lat);
     }

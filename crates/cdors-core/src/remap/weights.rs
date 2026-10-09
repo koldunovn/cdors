@@ -23,10 +23,14 @@
 //!   Rule: **missing if any linked source is missing.** Exception: on regular (2-D) source grids a
 //!   destination point outside the square search (near the poles) uses CDO's fallback, a
 //!   distance-based average of the valid corners (`num_src_points` zeroes masked corners, then
-//!   `renormalize_weights`), which is a renormalisation over the valid links. cdors flags rows as
-//!   fallback rows when the destination latitude lies outside the range of source centre latitudes
-//!   (the case in which `grid_search_square_reg2d` fails); rows failing the search for other
-//!   reasons (non-cyclic regional source grids, longitude out of range) are not detected.
+//!   `renormalize_weights`), which is a renormalisation over the valid links. The same holds on
+//!   curvilinear source grids, where the fallback takes the four nearest source points
+//!   (`grid_search_square_curv2d`). cdors recognises such rows in the unmasked weight file
+//!   (`bilinear_fallback_rows`): destination latitude outside the source centre latitudes, four
+//!   links that are not one quad of the source index space, or weights that are not of the
+//!   bilinear form. Not detected: a fallback whose four nearest points form a quad and whose
+//!   distances are symmetric enough for the weights to look bilinear, and destinations for which
+//!   cdo's search fails only because the mask changes the nearest source point.
 //! * con/ycon (`src/remap_conserv.cc:470-500`): masked source cells are removed from the overlap
 //!   list (`remove_unmask_weights`) and, with `normalization = "fracarea"` (the default), the
 //!   overlap areas are divided by the sum of the remaining ones. Rule for fracarea:
@@ -255,7 +259,7 @@ impl RemapWeights {
         };
 
         let fallback_rows = if method == MapMethod::Bilinear {
-            bilinear_fallback_rows(&file, dst_size).map_err(nc_err)?
+            bilinear_fallback_rows(&file, dst_size, &row_ptr, &col, &w).map_err(nc_err)?
         } else {
             Vec::new()
         };
@@ -453,33 +457,105 @@ impl RemapWeights {
     }
 }
 
-/// Bilinear rows whose destination latitude lies outside the source centre latitudes of a 2-D
-/// source grid: there cdo's square search fails and it uses a renormalising distance average.
+/// Bilinear rows for which cdo used its fallback, a distance-based average that renormalises
+/// over the valid corners, instead of bilinear weights (2-D source grids only; HEALPix sources
+/// have no fallback). A row is a fallback row when
+/// - its destination latitude lies outside the source centre latitudes (where
+///   `grid_search_square_reg2d` fails), or
+/// - its four links are not one quad `(i, j), (i+1, j), (i+1, j+1), (i, j+1)` of the source
+///   index space (`point_in_quad`; i+1 cyclic): the curvilinear fallback takes the four nearest
+///   source points (`grid_search_square_curv2d`), e.g. two pairs of a tripolar grid's fold row, or
+/// - its weights are not bilinear: bilinear weights `(1-x)(1-y), x(1-y), xy, (1-x)y` satisfy
+///   `w0·w2 = w1·w3` for the diagonal pairing (to rounding), distance or latitude weights
+///   (`renormalize_weights`, also used when `remap_find_weights` does not converge) do not.
 fn bilinear_fallback_rows(
     file: &netcdf::File,
     dst_size: usize,
+    row_ptr: &[usize],
+    col: &[u32],
+    w: &[f64],
 ) -> Result<Vec<bool>, netcdf::Error> {
     let rank = file.dimension("src_grid_rank").map_or(1, |d| d.len());
-    let (Some(src_lat), Some(dst_lat)) = (
-        file.variable("src_grid_center_lat"),
-        file.variable("dst_grid_center_lat"),
-    ) else {
-        return Ok(Vec::new());
-    };
     if rank != 2 {
         return Ok(Vec::new());
     }
-    let s: Vec<f64> = src_lat.get_values(..)?;
-    let d: Vec<f64> = dst_lat.get_values(..)?;
-    let (lo, hi) = s
-        .iter()
-        .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), &v| {
-            (lo.min(v), hi.max(v))
-        });
-    // Both arrays carry the same units (radians or degrees) in a cdo-written file.
     let mut rows = vec![false; dst_size];
-    for (r, &v) in rows.iter_mut().zip(&d) {
-        *r = v < lo || v > hi;
+    if let (Some(src_lat), Some(dst_lat)) = (
+        file.variable("src_grid_center_lat"),
+        file.variable("dst_grid_center_lat"),
+    ) {
+        let s: Vec<f64> = src_lat.get_values(..)?;
+        let d: Vec<f64> = dst_lat.get_values(..)?;
+        let (lo, hi) = s
+            .iter()
+            .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), &v| {
+                (lo.min(v), hi.max(v))
+            });
+        // Both arrays carry the same units (radians or degrees) in a cdo-written file.
+        for (r, &v) in rows.iter_mut().zip(&d) {
+            *r = v < lo || v > hi;
+        }
+    }
+    let nx = match file.variable("src_grid_dims") {
+        Some(v) => v.get_values::<i64, _>(..)?.first().copied().unwrap_or(0) as usize,
+        None => 0,
+    };
+    if nx < 2 {
+        return Ok(rows);
+    }
+    for (i, r) in rows.iter_mut().enumerate() {
+        let (a, b) = (row_ptr[i], row_ptr[i + 1]);
+        if *r || b - a != 4 {
+            continue;
+        }
+        *r = !is_quad(&col[a..b], nx) || !bilinear_form(&w[a..b]);
     }
     Ok(rows)
+}
+
+/// Whether four source indices are the corners of one quad of an `nx`-wide 2-D index space.
+fn is_quad(idx: &[u32], nx: usize) -> bool {
+    let mut p: Vec<(usize, usize)> = idx
+        .iter()
+        .map(|&c| (c as usize / nx, c as usize % nx))
+        .collect();
+    p.sort_unstable();
+    let (j0, j1) = (p[0].0, p[2].0);
+    if p[1].0 != j0 || p[3].0 != j1 || j1 != j0 + 1 {
+        return false;
+    }
+    let (i0, i1) = (p[0].1, p[1].1);
+    if (p[2].1, p[3].1) != (i0, i1) {
+        return false;
+    }
+    i1 == i0 + 1 || (i0 == 0 && i1 == nx - 1)
+}
+
+/// Whether four weights (in any order) are bilinear weights of one point: for one of the three
+/// pairings into two pairs the products agree to rounding.
+fn bilinear_form(w: &[f64]) -> bool {
+    let (a, b, c, d) = (w[0], w[1], w[2], w[3]);
+    [(a * c, b * d), (a * b, c * d), (a * d, b * c)]
+        .iter()
+        .any(|&(x, y)| (x - y).abs() <= 1e-9 * x.abs().max(y.abs()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{bilinear_form, is_quad};
+
+    #[test]
+    fn fallback_row_shapes() {
+        // ORCA1 (nx = 360): a quad, a cyclic quad, and two pairs on the fold row
+        assert!(is_quad(&[1000, 1001, 1360, 1361], 360));
+        assert!(is_quad(&[1080, 1439, 1440, 1799], 360));
+        assert!(!is_quad(&[118575, 118576, 118663, 118664], 360));
+        let (x, y) = (0.3, 0.8);
+        let bil = [(1.0 - x) * (1.0 - y), x * (1.0 - y), x * y, (1.0 - x) * y];
+        assert!(bilinear_form(&[bil[2], bil[0], bil[3], bil[1]]));
+        // inverse-distance weights of four unequal distances
+        let inv = [1.0 / 0.3, 1.0 / 0.5, 1.0 / 0.7, 1.0 / 1.1];
+        let s: f64 = inv.iter().sum();
+        assert!(!bilinear_form(&inv.map(|v| v / s)));
+    }
 }
