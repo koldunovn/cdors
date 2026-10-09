@@ -50,12 +50,14 @@ Deliberate and observed differences from cdo: `docs/deviations.md` (including fo
 | HEALPix `timpctl,95` on a box, 1 year (realdata check) | 0.37 s | 9.9 s | identical to exact xarray |
 | ICON R2B8 native `fldmean` (realdata check) | 1.9 s | 3.7 s | identical; planning 4.3 → 0.7 s after fixes |
 | Raw read ceiling (probe) | 9.6 GB/s cold, 64 reads in flight | cdo ≈ 0.95 GB/s | `docs/baseline.md` |
+| Same on a compute node (baseline job, W1 decade, 46 GB) | 16–17 GB/s cold, 128–256 reads in flight | cdo 0.13 GB/s cold (360 s), 0.93 warm | gate passed |
 | EERIE cloud over HTTPS | ≈ 0.19 GB/s | cdo cannot read it | server-side cap, independent of concurrency |
 
 ## Waiting for your decision
 
-1. **Day-1 baseline job** (the plan's gate on a compute node): `sbatch bench/baseline.sbatch` —
-   ≈ 0.4–0.6 node-hours (limit 1.5 h). Build first: `source env.sh && cargo build --release --example read_probe`.
+1. ~~Day-1 baseline job~~ — **done** 2026-10-09 (job 27994857, 29 min, 0.5 node-hours). **Gate passed:** on
+   cold W1 data the read probe reaches 16–17 GB/s decoded, cdo 0.13 GB/s cold and 0.93 GB/s warm (≈ 130× / 18×);
+   W4 10.1 against 0.19 GB/s. Details and what follows from them: `docs/baseline.md`, last section.
 2. **Benchmarks W1–W4**: `sbatch bench/bench.sbatch` — ≈ 5–6 node-hours, at most 8 (mostly cdo's 2 h timeouts on
    the full 1.1 TB W4); a cheaper first pass is `WORKLOADS="W1 W2 W3 W4Y"` ≈ 1–1.5 node-hours.
 3. **Agent check**: pilot one session first, `RUN=1 TASKS=T5 ARMS=A bash bench/agent_check.sh`, then re-estimate;
@@ -65,9 +67,14 @@ Deliberate and observed differences from cdo: `docs/deviations.md` (including fo
 
 - **Remote pass mark.** The EERIE cloud endpoint delivers ≈ 0.19 GB/s whatever the client does, so "remote ≥ half of
   local throughput" cannot be met against it. Proposal: compare cdors and xarray on the same endpoint and report
-  throughput relative to the server's cap.
+  throughput relative to the server's cap. The baseline job saw the same cap from a compute node (0.15–0.17 GB/s
+  compressed, no faster at 64 requests than at 16); cdo reads the raw files of the same data at 0.15 GB/s.
 - **W4 size.** 1.1 TB (PT3H) is set up; the 13.2 TB PT15M store is the stress option.
 - **cdo timeout on full W4** (2 h each for `timpctl` and `ydaymean`); "did not finish" is recorded as a result.
+  From the baseline year (×30): `ydaymean` ≈ 1.6 h (should just finish), `timpctl,95` ≥ 5.3 h (cannot finish).
+  Skipping cdo's full-W4 `timpctl` and quoting the extrapolation would save up to 2 node-hours.
+- **Reads in flight on compute nodes.** One node saturates Lustre at about 120 reads in flight; cdors' default is
+  64. Proposal: 128 inside Slurm jobs, checked by one extra W1 run in the benchmark.
 - **Agent-check task T3**: its global mean barely depends on the remapping (skipping the remap misses the tolerance
   by only ≈ 2×). Keep, or ask for a regional value instead?
 

@@ -230,11 +230,17 @@ cached. Rows needing `cdo` are skipped with a notice where it isn't available.
 - [x] write `baseline.sbatch`: on one exclusive compute node, run cdo for W1–W4 under `/usr/bin/time -v`; for the
       read-time share, run each workload's single operator again with `-P 1 -T` (cdo's timers need one process and one
       thread); then `read_probe` on W1 (local) and W2 (cloud)
-- [ ] **ask Nikolay before submitting** (about 1–2 node-hours); submit, report the job id, end the turn
-- [ ] write `docs/baseline.md`: wall time, CPU time, peak memory, cdo's read-time share, probe throughput
-- [ ] **gate:** if the probe's parallel read-and-decode throughput on W1 is not clearly above cdo's effective
+- [x] **ask Nikolay before submitting** (about 1–2 node-hours); submit, report the job id, end the turn
+      (approved 2026-10-09; job 27994857, 29 min, 0.5 node-hours)
+- [x] write `docs/baseline.md`: wall time, CPU time, peak memory, cdo's read-time share, probe throughput
+- [x] **gate:** if the probe's parallel read-and-decode throughput on W1 is not clearly above cdo's effective
       throughput (target at least 5×), stop and discuss before Task 3 (fallbacks: a Rust reader inside CDO, or a
       narrower scope); revisit the pass marks in Task 13 with these numbers
+      — **passed**: on cold W1 decades the probe reads 16.4–17.2 GB/s decoded, cdo 0.13 GB/s cold and 0.93 GB/s
+      warm (≈ 130× and 18×); W4 10.1 against 0.19 GB/s (≈ 50×)
+- ➕ for Task 13: 128 reads in flight by default inside Slurm jobs (one node saturates at about 120; the default
+      of 64 gives about half of that), checked by one extra W1 run; cdo on the full W4 extrapolates to ≈ 1.6 h for
+      `ydaymean` and ≥ 5.3 h for `timpctl,95`; the EERIE cloud cap (0.15–0.2 GB/s) holds from a compute node too
 - ⚠️ preliminary login-node probe (2026-10-09, `docs/baseline.md`): W1 cold 9.6 GB/s decoded with 64 reads in
       flight vs cdo ≈ 0.95 GB/s (≈ 10×; only ≈ 3× with 16 synchronous threads); W4 8.9 vs 0.18 GB/s. I/O concurrency
       must be a separate, larger knob than the decode pool. The EERIE cloud `/kerchunk` endpoint stays at ≈ 0.19 GB/s

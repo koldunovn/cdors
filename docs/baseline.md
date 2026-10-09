@@ -1,7 +1,9 @@
 # Baseline: cdo 2.6.0 on W1–W4 and raw read throughput (Task 2)
 
-Status (2026-10-09): datasets chosen, short login-node indications taken for cdo and for the read probe
-(`crates/cdors-core/examples/read_probe.rs`), `bench/baseline.sbatch` written and **not submitted**. The section "Baseline results (compute node)" is filled in after Nikolay approves the job.
+Status (2026-10-09): datasets chosen, login-node indications taken for cdo and for the read probe
+(`crates/cdors-core/examples/read_probe.rs`), and the compute-node job run (job 27994857, 29 min). **The gate is
+passed**: see "Baseline results (compute node)" at the end. The login-node sections below are kept as they were
+written; where they disagree with the compute node (cdo's cold rate above all), the compute node counts.
 
 ## Datasets
 
@@ -191,4 +193,77 @@ Before submitting:
 
 ## Baseline results (compute node)
 
-*(empty — to be filled after the job has run)*
+Job 27994857, 2026-10-09 08:18–08:47 (29 min, 0.5 node-hours), node l50327 (2 × AMD EPYC 7763, 128 cores,
+251 GB), exclusive. All 27 runs exited 0, and cdo's outputs have the expected number of steps (`yearmean` 10,
+`ydaymean` 366, the 5-year remaps 1826; `-P 1` and `-P 16` `yearmean` agree). Outputs:
+`/scratch/a/a270088/cdors-bench/baseline-27994857/` (`summary.tsv`, `probe.jsonl`, one `.log` and `.time` per
+run). Decoded GB/s = decoded float32 bytes / wall time. "Cold" = chunk files that no earlier run on this node had
+read; "warm" = read earlier in the job and still in the node's page cache.
+
+### cdo 2.6.0
+
+| Run | Data (decoded) | Wall | Decoded GB/s | Read share (`-T`) | User + sys | Max RSS | Cache |
+|---|---|---|---|---|---|---|---|
+| W1 `-P 1 -T yearmean` | decade 1, 3652 days (45.9 GB) | 360 s | **0.13** | 97 % | 28 + 12 s | 0.52 GB | cold |
+| W1 `-P 16 yearmean` | same | 49.3 s | 0.93 | – | 245 + 11 s | 0.52 GB | warm |
+| W1 `-P 1 -T fldmean` | same | 54.0 s | 0.85 | 60 % | 38 + 8 s | 0.47 GB | warm |
+| W4 `-P 1 -T ydaymean` | 2020, 2928 3-hourly steps (36.8 GB) | 191 s | 0.19 | 91 % | 29 + 16 s | 11.6 GB | cold |
+| W4 `-P 16 timpctl,95 in -timmin in -timmax in` | same, read 3 times | 632 s | 0.06 per pass (0.17 for all 3) | – | 892 + 24 s | 9.7 GB | warm |
+| W2 `-P 16 fldmean -sellonlatbox -select,name=pr` | 240 raw files, decade (15.2 GB) | 101 s | 0.15 | – | 10 + 14 s | 0.09 GB | cold |
+| W2 `-P 1 -T fldmean`, 4 raw months, all 21 variables | 2.4–2.6 GB each | 19–21 s each | 0.12–0.13 | 92–93 % | 2 + 1 s | 0.08 GB | cold |
+| W3 `genbil,r360x180` | 1 field | 0.8 s | – | – | – | 0.22 GB | – |
+| W3 `-P 16 remapbil,r360x180 -select,name=to` | 120 raw files, 5 years (7.6 GB) | 48.8 s | 0.16 | – | 216 + 6 s | 0.16 GB | cold |
+| W3 `-P 16 remap,r360x180,<weights>` | same | 18.9 s | 0.40 | – | 200 + 4 s | 0.15 GB | warm |
+| W3 `-P 1 -T remapbil`, 3 raw months, all variables | | 22–30 s each | – | 92–94 % | 4 + 1 s | 0.32 GB | cold |
+
+### Read probe (zarrs 0.23.14)
+
+| Store, chunk rows | Chunks, decoded / encoded | Mode | Threads / reads in flight (mean) | Time | Decoded GB/s | Encoded GB/s | Cache |
+|---|---|---|---|---|---|---|---|
+| W1 122:244 (decade 2) | 5856, 46.1 / 25.6 GB | pipelined | 128 / 256 (245) | 2.68 s | **17.2** | 9.5 | cold |
+| W1 244:366 (decade 3) | 5856, 46.1 / 25.4 GB | fused | 128 / 128 (116) | 2.81 s | **16.4** | 9.0 | cold |
+| W1 0:122 (decade 1) | 5856, 46.1 / 25.6 GB | fused | 1 / 1 | 20.9 s | 2.2 | 1.2 | warm |
+| W1 0:122 | | fused | 16 / 16 | 1.73 s | 26.6 | 14.8 | warm |
+| W1 0:122 | | fused | 64 / 64 | 1.22 s | 37.8 | 21.0 | warm |
+| W1 0:122 | | fused | 128 / 128 | 1.33 s | 34.6 | 19.3 | warm |
+| W1 0:122 | | pipelined | 128 / 256 | 2.66 s | 17.3 | 9.6 | warm |
+| W4 12:18 (Jan–Jun 2021) | 1152, 18.7 / 10.5 GB | pipelined | 128 / 256 (191) | 1.86 s | **10.1** | 5.7 | cold |
+| W4 0:6 (Jan–Jun 2020) | 1152, 18.7 / 10.5 GB | pipelined | 128 / 256 (242) | 2.21 s | 8.5 | 4.8 | warm (read by cdo) |
+| W2 EERIE cloud `/kerchunk` `pr`, rows 10000: | 2000, 8.3 / 7.2 GB | async HTTP | 16 / 64 | 47.5 s | 0.175 | 0.152 | – |
+| W2 EERIE cloud, rows 20000: | 2000, 8.3 / 7.2 GB | async HTTP | 16 / 16 | 41.5 s | 0.200 | 0.174 | – |
+
+### Gate: passed
+
+- **W1:** cdo's effective throughput is 0.13 GB/s decoded on cold data and 0.85–0.93 GB/s when the decade is in
+  the page cache. `-P 16` does not raise it, because cdo's reads are serial: on cold data 97 % of its time is in
+  `read`, one 4.4 MB chunk file every 60 ms (≈ 73 MB/s). The probe reads and decodes the cold decades at
+  16.4–17.2 GB/s: **about 130× cdo on cold data and 18× cdo on warm data**, against a target of 5×. Warm against
+  warm it is 37.8 against 0.93 GB/s, about 40×.
+- **W4:** 10.1 GB/s cold against cdo's 0.19 GB/s, about 50×.
+- **Raw NetCDF-4 (W2, W3):** cdo reaches 0.12–0.16 GB/s cold and spends 91–94 % of its time reading.
+- Decision: continue as planned. Tasks 3–12 were built on this assumption and need no change.
+
+### What else the numbers say
+
+- **One node reads about 9–9.5 GB/s of W1 chunk files from Lustre.** 128 fused threads (116 reads in flight on
+  average) and 256 pipelined reads reach the same rate. A single cold read runs at about 40–80 MB/s, as fast as
+  cdo's serial reader, so throughput is reads in flight × per-read rate until the node saturates at roughly
+  120 reads in flight.
+- **cdors' default of 64 reads in flight (`exec::default_io_threads`) is probably too low on a compute node.** At
+  ≈ 78 MB/s per read it gives about 5 GB/s encoded (≈ 9 GB/s decoded, as on the login node), against about 9 GB/s
+  encoded (≈ 16 GB/s decoded) with 128. Not measured directly: the job ran no cold probe at 64. Proposal: 128
+  reads in flight by default inside Slurm jobs, 64 on login nodes, checked in the benchmark by one extra W1 run.
+- **Too many threads slow warm reads.** 128 decode threads plus 256 readers on 128 cores reach 17 GB/s warm
+  against 35–38 GB/s with 64–128 fused threads (sys time 166 s against 24–35 s). More than about 128 reads in flight
+  does not pay.
+- **Cache state decides cdo's speed:** 360 s cold against 49–54 s warm on the same W1 decade (7×). The
+  login-node cdo rates above (≈ 0.95 GB/s) were warm or helped by Lustre server caches. In the benchmark cdors reads
+  first (cold) and cdo second (warm), which favours cdo.
+- **cdo on the full W4 (1.1 TB, 30 × the year above), extrapolated:** `ydaymean` ≈ 30 × 191 s ≈ 1.6 h, just inside
+  `bench.sbatch`'s 2 h timeout. `timpctl,95` ≥ 30 × 632 s ≈ 5.3 h, so it times out; cold it would be slower still,
+  because the 620 GB of chunk files do not fit in the page cache.
+- **The EERIE cloud gives 0.15–0.17 GB/s compressed (0.18–0.20 decoded) from a compute node too**, and 64
+  requests in flight are no faster than 16. The cap seen from the login node is the server's. cdo reads the raw
+  files of the same data at 0.15 GB/s, so cdors on the cloud runs about as fast as cdo on Lustre.
+- cdo's memory: 0.5 GB for W1, 11.6 GB for W4 `ydaymean` (366 day-of-year sums in double precision), 9.7 GB for
+  `timpctl`.
