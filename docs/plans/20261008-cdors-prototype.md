@@ -544,9 +544,12 @@ cached. Rows needing `cdo` are skipped with a notice where it isn't available.
       remap, W4 ydaymean, EERIE cloud vs local, native ICON R2B8 and FESOM with -setgrid, HadGEM3 ORCA1 — values
       and timestamps identical to cdo (or exact xarray) in all but three cases; cdors 5–170× faster where reads
       dominate (W4 ydaymean 0.8 s vs cdo 139 s), slower than cdo on ICON R2B8/FESOM because of planning time
-- [ ] (running) fixes: HEALPix sellonlatbox edge cells (cdo's centre formula), `param` attribute in
+- [x] fixes: HEALPix sellonlatbox edge cells (cdo's centre formula), `param` attribute in
       info/outputtab, curvilinear remapbil fallback cell (fix or document), planning time on large unstructured
-      grids, memory-budget enforcement when the estimate exceeds --mem, re-runnable bench/realdata_check.sh
+      grids, memory-budget enforcement when the estimate exceeds --mem, re-runnable bench/realdata_check.sh.
+      Merged 2026-10-09: cell counts now equal cdo on all boxes; param IDs as CDI; curvilinear fallback rows
+      detected (HadGEM3 missing patterns identical); ICON R2B8/FESOM planning 4.3/3.6 s → 0.9 s (cell areas in
+      parallel); memory budget enforced (window shrinks or memory_limit), glibc arenas capped at 4
 
 ### Task 13: Benchmarks W1–W4
 
