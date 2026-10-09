@@ -316,19 +316,7 @@ impl GridDesc {
         };
         match (b.kind, self.kind) {
             (GridKind::Healpix, GridKind::Unstructured) => {
-                let hp = b.healpix.as_ref().expect("healpix grid");
-                let cells: Vec<u64> = match &hp.index_var {
-                    Some(iv) => {
-                        let idx = self.src.read_var(iv)?;
-                        self.sel[0]
-                            .to_vec()
-                            .iter()
-                            .map(|&i| idx[i] as u64)
-                            .collect()
-                    }
-                    None => self.sel[0].to_vec().iter().map(|&i| i as u64).collect(),
-                };
-                let (xs, ys) = healpix_centers(hp.nside, hp.order, &cells);
+                let (xs, ys) = self.healpix_cell_centers()?;
                 Ok(Some(GridCoords {
                     xvals: xs,
                     yvals: ys,
@@ -432,6 +420,23 @@ impl GridDesc {
                 }))
             }
         }
+    }
+
+    /// Centres (radians) of the written cells of a grid based on a HEALPix grid, in output order.
+    pub fn healpix_cell_centers(&self) -> Result<(Vec<f64>, Vec<f64>)> {
+        let hp = self.base.healpix.as_ref().expect("healpix grid");
+        let cells: Vec<u64> = match &hp.index_var {
+            Some(iv) => {
+                let idx = self.src.read_var(iv)?;
+                self.sel[0]
+                    .to_vec()
+                    .iter()
+                    .map(|&i| idx[i] as u64)
+                    .collect()
+            }
+            None => self.sel[0].to_vec().iter().map(|&i| i as u64).collect(),
+        };
+        Ok(healpix_centers(hp.nside, hp.order, &cells))
     }
 
     /// Whether the written grid keeps the HEALPix grid mapping.
@@ -774,6 +779,8 @@ pub struct Plan {
     pub io_threads: usize,
     /// Planned without something a run needs from cdo (see [`Sources::deferred`]).
     pub deferred: bool,
+    /// `--lonlat`: write cell-centre coordinates for HEALPix grids too.
+    pub lonlat: bool,
 }
 
 impl Plan {
@@ -795,6 +802,7 @@ impl Plan {
             threads: 1,
             io_threads: 1,
             deferred: false,
+            lonlat: false,
         }
     }
 
@@ -985,5 +993,6 @@ pub fn build(cmd: &Command, cdo: CdoUse) -> Result<Plan> {
         threads,
         io_threads,
         deferred: srcs.deferred,
+        lonlat: cmd.options.lonlat,
     })
 }

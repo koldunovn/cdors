@@ -116,6 +116,13 @@ cdors infon tas_ymonmean.nc
 ```
 
 The output is ordinary CF NetCDF, with `time_bnds` and `cell_methods = "time: mean"`. cdo and xarray read it.
+Like the input, it describes the HEALPix grid by its grid mapping only. To look at it with ushow, which needs
+explicit coordinates, add `--lonlat`: cdors then also writes the cell centres (8 bytes per cell, 25 MB here):
+
+```bash
+cdors --lonlat -ymonmean -selyear,2020/2029 -selname,tas $D tas_ymonmean.nc
+ushow tas_ymonmean.nc
+```
 
 `info`, `infon`, `output`, `outputf` and `outputtab` print the result of any chain, in cdo's format. To keep a run
 from flooding your terminal, cdors refuses to print more than a million values (`--max-values`).

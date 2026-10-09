@@ -27,6 +27,7 @@ exact    | -divc,3 {in}                                | r36x18_std hpz2_noleap 
 exact    | -ifthen -selname,pr {in} {in2}              | r36x18_std hpz2_noleap unst_360
 exact    | -copy {in}                                  | r36x18_std hpz2_noleap unst_360
 exact    | -f nc -copy {in}                            | r36x18_std hpz2_noleap unst_360   # 64-bit offset NetCDF
+exact    | {cdors:--lonlat} -seltimestep,1/5 {in}      | hpz2_noleap   # adds HEALPix cell centres (cdo then reads an unstructured grid)
 exact    | -setgrid,{in2} {in}                         | r36x18_std hpz2_noleap unst_360
 exact    | -selname,tas -seltimestep,5/40 -sellonlatbox,0,120,-20,50 -mulc,2 {in} | r36x18_std hpz2_noleap unst_360
 err:unknown_operator | -yearmeans {in}                 | r36x18_std

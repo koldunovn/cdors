@@ -30,6 +30,9 @@
 #                     from the base run, so the planner check also checks thread-count invariance)
 #
 # err rows: the output "$dir/out.nc" is appended unless the arguments contain {noout} (removed).
+# {cdors:OPT} passes OPT to cdors only (options cdo does not have, e.g. {cdors:--lonlat}); such rows
+# compare values on cdo's grid (cdo -setgrid,<cdo output>), since the option may change how cdo
+# reads the grid.
 # text rows of showname compare the names order-insensitively on the Zarr and tiny variants
 # (Zarr stores have no variable order); values of these variants are compared variable by variable.
 #
@@ -71,18 +74,23 @@ run_job() {
   have "$CDORS" || skip "cdors not found ($CDORS)"
   [[ $tag == err:* || $tag == json ]] || have "$CDO" || skip "cdo not found ($CDO)"
 
-  args_for() {  # args_for IN1 IN2 -> fills array A
+  args_for() {  # args_for IN1 IN2 -> fills arrays A (cdo) and R (cdors: with the {cdors:...} options)
     local a=${args//\{in\}/$1}; a=${a//\{in2\}/$2}; a=${a//\{fix\}/$CDORS_FIXTURES}; a=${a//\{fx\}/$CDORS_FIXTURES}
-    read -ra A <<< "$a"
+    local -a all; read -ra all <<< "$a"
+    A=(); R=()
+    local t
+    for t in "${all[@]}"; do
+      if [[ $t == '{cdors:'*'}' ]]; then t=${t#\{cdors:}; R+=("${t%\}}"); else A+=("$t"); R+=("$t"); fi
+    done
   }
-  local A; args_for "$in1" "$in2"
+  local -a A R; args_for "$in1" "$in2"
   local -a T; read -ra T <<< "$CDORS_THREADS"
 
   case $tag in
   err:*)
     local code=${tag#err:} noout=0 a
     local -a O=()
-    for a in "${A[@]}"; do [[ $a == '{noout}' ]] && noout=1 || O+=("$a"); done
+    for a in "${R[@]}"; do [[ $a == '{noout}' ]] && noout=1 || O+=("$a"); done
     ((noout)) || O+=("$dir/out.nc")
     "$CDORS" "${T[@]}" --json "${O[@]}" > "$dir/out.json" 2> "$dir/err.json"
     local rc=$?
@@ -91,7 +99,7 @@ run_job() {
     grep -qE "\"error\" *: *\"$code\"" "$dir/out.json" "$dir/err.json" || fail "no \"error\": \"$code\" in JSON output"
     pass ;;
   json)
-    "$CDORS" "${T[@]}" "${A[@]}" > "$dir/out.json" 2>> "$log" || fail "cdors failed"
+    "$CDORS" "${T[@]}" "${R[@]}" > "$dir/out.json" 2>> "$log" || fail "cdors failed"
     python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "$dir/out.json" 2>> "$log" || fail "output is not valid JSON"
     pass ;;
   exact|ulp|bin|text) ;;
@@ -158,10 +166,10 @@ run_job() {
     IFS='|' read -r name ri1 ri2 extra <<< "$r"
     args_for "$ri1" "$ri2"
     local -a X=(); [[ -n $extra ]] && read -ra X <<< "$extra"
-    echo "== $name: $CDORS ${X[*]} ${A[*]}" >> "$log"
+    echo "== $name: $CDORS ${X[*]} ${R[*]}" >> "$log"
     if [[ $tag == text ]]; then
       local out=$dir/out_$name.txt
-      "$CDORS" "${X[@]}" "${A[@]}" > "$out" 2>> "$log" || fail "cdors failed ($name)"
+      "$CDORS" "${X[@]}" "${R[@]}" > "$out" 2>> "$log" || fail "cdors failed ($name)"
       local want=$ref; [[ $name == tiny || $name == mem ]] && want=$base_out
       if [[ $name != base && ${A[0]} == showname ]]; then
         diff -u <(tr -s ' \n' '\n\n' < "$want" | sort) <(tr -s ' \n' '\n\n' < "$out" | sort) >> "$log" || fail "names differ ($name)"
@@ -170,20 +178,22 @@ run_job() {
       fi
     else
       local out=$dir/out_$name.nc
-      "$CDORS" --no_history "${X[@]}" "${A[@]}" "$out" >> "$log" 2>&1 || fail "cdors failed ($name)"
+      "$CDORS" --no_history "${X[@]}" "${R[@]}" "$out" >> "$log" 2>&1 || fail "cdors failed ($name)"
       local want=$ref lim=$abslim wantts=$CDORS_REF/$key.ts
       if [[ $name == tiny || $name == mem ]]; then
         want=$base_out lim=0 wantts=$dir/ts_base
       fi
+      local -a og=()  # rows with cdors-only options: values on cdo's grid
+      [[ $args == *'{cdors:'* && $name != tiny && $name != mem ]] && og=(-setgrid,"$want")
       if [[ $name == base ]]; then
-        "$CDO" --pedantic diffn,abslim="$lim" "$want" "$out" >> "$log" 2>&1 || fail "values differ ($name, abslim=$lim)"
+        "$CDO" --pedantic diffn,abslim="$lim" "$want" "${og[@]}" "$out" >> "$log" 2>&1 || fail "values differ ($name, abslim=$lim)"
       else  # Zarr inputs have no variable order: same names, then each variable by name
         local wn on v
         wn=$("$CDO" -s showname "$want" 2>> "$log" | tr -s ' ' '\n' | sed '/^$/d' | sort)
         on=$("$CDO" -s showname "$out" 2>> "$log" | tr -s ' ' '\n' | sed '/^$/d' | sort)
         [[ $wn == "$on" ]] || { echo "names: want [$wn] got [$on]" >> "$log"; fail "variables differ ($name)"; }
         for v in $wn; do
-          "$CDO" --pedantic diffn,abslim="$lim" -selname,"$v" "$want" -selname,"$v" "$out" >> "$log" 2>&1 || fail "values differ ($name, $v, abslim=$lim)"
+          "$CDO" --pedantic diffn,abslim="$lim" -selname,"$v" "$want" -selname,"$v" "${og[@]}" "$out" >> "$log" 2>&1 || fail "values differ ($name, $v, abslim=$lim)"
         done
       fi
       "$CDO" -s showtimestamp "$out" > "$dir/ts_$name" 2>> "$log"

@@ -37,6 +37,8 @@ options:
   --timestat_date <first|middle|midhigh|last>
   --percentile <method>
   --no_history        do not write the history attribute
+  --lonlat            also write cell-centre lon/lat (degrees) for HEALPix grids, which are
+                      otherwise stored with their grid mapping only (for viewers like ushow)
   --progress json     progress lines on stderr about once per second, and a summary line
   -v, -L, --force     accepted for cdo compatibility; no effect (cdo's other options, such
                       as -z, -k, -r, are refused)

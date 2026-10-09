@@ -105,6 +105,9 @@ pub struct Options {
     pub percentile: Option<String>,
     /// `--no_history`.
     pub no_history: bool,
+    /// `--lonlat`: also write cell-centre longitudes and latitudes for grids stored without them
+    /// (HEALPix), for viewers that need explicit coordinates.
+    pub lonlat: bool,
     /// `--progress json`.
     pub progress_json: bool,
 }

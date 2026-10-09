@@ -38,6 +38,7 @@ const OPTIONS: &[&str] = &[
     "--timestat_date",
     "--percentile",
     "--no_history",
+    "--lonlat",
     "--progress",
     "--io-threads",
     "--force",
@@ -187,6 +188,7 @@ fn parse_options(args: &[String]) -> Result<(Options, usize)> {
             "--json" => o.json = true,
             "--plan" => o.plan = true,
             "--no_history" | "--no-history" => o.no_history = true,
+            "--lonlat" => o.lonlat = true,
             "-P" => {
                 let v = take(&mut i)?;
                 let n: usize = v.parse().ok().filter(|&n| n >= 1).ok_or_else(|| {

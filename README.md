@@ -58,7 +58,10 @@ variables are written as float32, all others as float64 (`-b F32|F64`). NetCDF o
 uncompressed (`-z` is refused), one chunk per field (all horizontal points of one level and
 step); Zarr chunks hold about 4 MiB. When a statistic runs in lane waves (`--plan`: `waves` >
 1), output chunks end at wave boundaries and are otherwise as large as these defaults;
-`--chunks dim=n,...` sets them explicitly.
+`--chunks dim=n,...` sets them explicitly. HEALPix grids are written as they are stored, with
+their grid mapping and without coordinates; `--lonlat` also writes the cell centres (`lon`,
+`lat` in degrees, float32, and `coordinates = "lat lon"` on the variables) for viewers such as
+ushow that need explicit coordinates. cdo then reads the file as an unstructured grid.
 
 **Outputs never replace anything by accident.** An existing output (also a dangling symlink) is
 refused (`output_exists`) unless `-O` is given, and the refusal is atomic: a file is published

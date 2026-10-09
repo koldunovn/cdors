@@ -549,6 +549,7 @@ pub fn out_meta(plan: &Plan, lay: &[OutVar], history: Option<&str>) -> Result<Ou
     }
     // grids
     let mut var_attrs: Vec<Attrs> = desc.vars.iter().map(|v| v.attrs.clone()).collect();
+    let healpix_grids = desc.grids.iter().filter(|g| g.is_healpix()).count();
     for (gi, g) in desc.grids.iter().enumerate() {
         let users: Vec<usize> = (0..desc.vars.len())
             .filter(|&i| desc.vars[i].grid == Some(gi))
@@ -583,6 +584,48 @@ pub fn out_meta(plan: &Plan, lay: &[OutVar], history: Option<&str>) -> Result<Ou
                     },
                 );
                 extra.push(("grid_mapping".into(), text(&m.var)));
+            }
+            if plan.lonlat {
+                // `--lonlat`: cell centres for viewers that need explicit coordinates; the grid
+                // mapping stays, so the output is still a HEALPix dataset
+                let name = |base: &str| {
+                    let n = if healpix_grids > 1 {
+                        format!("{base}_{gi}")
+                    } else {
+                        base.to_owned()
+                    };
+                    if desc.vars.iter().any(|v| v.name == n) || coords.iter().any(|c| c.name == n) {
+                        format!("{n}_cell")
+                    } else {
+                        n
+                    }
+                };
+                let (xname, yname) = (name("lon"), name("lat"));
+                let (xs, ys) = g.healpix_cell_centers()?;
+                let deg = |v: Vec<f64>| -> Vec<f64> {
+                    v.into_iter().map(crate::model::hpcoords::rad2deg).collect()
+                };
+                for (cn, vals, std, units) in [
+                    (&xname, deg(xs), "longitude", "degrees_east"),
+                    (&yname, deg(ys), "latitude", "degrees_north"),
+                ] {
+                    let mut a = Attrs::default();
+                    set_attr(&mut a, "standard_name", text(std));
+                    set_attr(&mut a, "long_name", text(std));
+                    set_attr(&mut a, "units", text(units));
+                    push(
+                        &mut coords,
+                        OutCoord {
+                            name: cn.clone(),
+                            dims: vec![hd[0].clone()],
+                            shape: vec![vals.len()],
+                            dtype: DType::F32,
+                            values: vals,
+                            attrs: a,
+                        },
+                    );
+                }
+                extra.push(("coordinates".into(), text(&format!("{yname} {xname}"))));
             }
         } else if let Some(c) = g.coords()? {
             let (xname, yname, xa, ya, f32c) = if g.base.kind == crate::model::GridKind::Healpix {
