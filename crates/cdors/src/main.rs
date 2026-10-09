@@ -20,7 +20,7 @@ options:
   --io-threads <n>    blocking reads in flight (default: 64)
   -f <fmt>            output format: nc4, nc4c, nc, zarr, zarr2
   -b <F32|F64>        output precision
-  -s                  silent
+  -s                  as cdo -s for showtimestamp (one line); warnings are still printed
   --json              machine-readable output and errors (one JSON object on stderr on failure)
   --plan              print what will be read (chunks, bytes, memory, weights) and stop;
                       the output file may be left out; with --json as JSON
@@ -34,10 +34,15 @@ options:
   --percentile <method>
   --no_history        do not write the history attribute
   --progress json     progress lines on stderr about once per second, and a summary line
+  -v, -L, -w, --force accepted for cdo compatibility; no effect
 
-exit codes: 0 success, 1 usage (unknown operator, bad arguments, not implemented),
-            2 data (coordinates, grid, dimension), 3 I/O (worth retrying),
-            4 refused (--max-read or --max-values limit, existing output without -O)";
+exit codes: 0 success
+            1 usage: unknown operator, not implemented, bad arguments, missing input,
+              permission denied, no space
+            2 data: bad data, coordinates, grid, dimension, memory limit, intermediate
+              too large, I/O failure not known to be transient, internal error
+            3 I/O error worth retrying (timeouts, connection errors, HTTP 5xx/429)
+            4 refused: --max-read or --max-values limit, existing output without -O";
 
 fn write_stdout(s: &str) -> Result<()> {
     let mut out = std::io::stdout().lock();

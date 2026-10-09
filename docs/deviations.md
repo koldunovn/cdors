@@ -1,7 +1,9 @@
 # Deliberate deviations from cdo
 
 cdors follows cdo 2.6.0 (the reference build on Levante; source references are to CDO 2.6.5)
-except for the points below. Each entry says what cdo does, what cdors does, and why.
+except for the points below. Each entry says what cdo does, what cdors does, and why. The notes
+that `cdors help <op>` and `cdors ops --json` print name their entry here as `[section: entry]`.
+Bugs of cdo that cdors does not reproduce are listed in the last section.
 
 ## Files and outputs
 
@@ -10,7 +12,7 @@ except for the points below. Each entry says what cdo does, what cdors does, and
   (`src/operators/Cat.cc:128`). cdors refuses an existing output (`output_exists`, exit code 4)
   unless `-O` is given, and never appends.
 - **`-O` never deletes an existing Zarr directory.** `-O` replaces files only; an existing store
-  must be removed by the user.
+  must be removed by the user (`output_exists`).
 - **An output that is also an input is refused**, also with `-O` (`bad_arguments`): the same
   file (symlinks resolved), a path inside an input Zarr store, or a name matched by an input glob
   pattern. cdo has no such check (a NetCDF-4 input it reads happens to be protected by the HDF5
@@ -22,10 +24,23 @@ except for the points below. Each entry says what cdo does, what cdors does, and
   virtual dataset without copying them: `mergetime` orders the inputs by their first timestep,
   `cat` keeps the argument order, and both refuse inputs whose times overlap, repeat or go
   backwards (`bad_data`), because the downstream operators assume a monotonic time axis. Their
-  inputs must be files or stores (or one glob pattern), not the output of other operators.
-- **Read limit on login nodes.** cdo has none. cdors refuses a run that would decode more than
-  `--max-read` (default 64 GB outside Slurm jobs, no limit inside them) with `read_limit`, exit
-  code 4, before any output is created; `--max-read none` removes the limit.
+  inputs must be files or stores (or one glob pattern), not the output of other operators
+  (`not_implemented`).
+
+## Limits
+
+cdo has none of these limits; cdors checks them on the plan, before any data is read or any
+output is created.
+
+- **Read limit on login nodes.** cdors refuses a run that would decode more than `--max-read`
+  (default 64 GB outside Slurm jobs, no limit inside them) with `read_limit`, exit code 4;
+  `--max-read none` removes the limit.
+- **Memory budget.** cdo allocates what a run needs. cdors plans every run within `--mem`
+  (default 60 % of the Slurm allocation, on login nodes a quarter of the available memory, at most
+  4 GiB) and refuses a run that cannot fit: `memory_limit` when the state of a single lane or two
+  tiles in flight do not fit, `intermediate_too_large` when the inner results of a chain alive at
+  the same time exceed half of the budget (exit code 2).
+- **Printed values** are limited by `--max-values` (see "Printing values: Flood guard").
 
 ## Statistics
 
@@ -38,9 +53,6 @@ except for the points below. Each entry says what cdo does, what cdors does, and
   error in cdo) is accepted too.
 - **Percentiles of double-precision input.** cdo stores the values of a group as float32 before
   computing percentiles (`percentiles_hist.cc:histAddValue`); cdors keeps double precision.
-- **Percentile methods `hazen`, `weibull`, `median_unbiased`, `normal_unbiased` near p = 100.**
-  cdo reads `x[n]`, one element past its buffer (zeroed memory), and returns `(1−h)·x[n−1]`;
-  cdors returns `x[n−1]`.
 - **Variance and standard deviation** (`*var`, `*var1`, `*std`, `*std1`). cdo accumulates Σx and
   Σx² and computes `(Σx² − (Σx)²/n) / (n − d)` at the end (`src/field2.cc:field2_var`,
   `fieldc_var`), clamping results in (−1e-5, 0) to 0 and setting negative results to missing. This
@@ -58,6 +70,17 @@ except for the points below. Each entry says what cdo does, what cdors does, and
 - **Climatology arithmetic pairs variables by name** (`ymonsub` & co.) when both inputs have the
   same variable names; cdo pairs them by position. Zarr stores have no variable order, so pairing
   by position would combine the wrong variables.
+
+## Space statistics
+
+- **`cell_methods` on space statistics.** cdors adds `area: mean` (and the analogous
+  `longitude: …` and vertical-coordinate entries) to `fld*`, `zon*` and `vert*` output; cdo does
+  not.
+- **HEALPix `zon*` summation order.** cdors sums each ring in stored (nested) order, cdo in ring
+  order, so the last bits can differ. The ring latitudes cdors writes differ from cdo's in the
+  15th significant digit.
+- **`vert*` accumulates in double precision.** cdo accumulates vertical statistics in float32;
+  cdors accumulates in f64 and rounds once on output.
 
 ## Time axis
 
@@ -77,9 +100,11 @@ except for the points below. Each entry says what cdo does, what cdors does, and
   existing timesteps at once; cdo expands the range into a list first. Ranges of more than 1000
   members are reported as one "not found" warning instead of one per member.
 - **An empty time selection is an error.** cdo warns and writes an output without timesteps;
-  cdors fails, so that a mistyped date range is not silently accepted.
+  cdors fails (`bad_arguments`), so that a mistyped date range is not silently accepted.
+- **Time values beyond about 100 million years** from the reference (typically an unmasked fill
+  value such as 9.97e36) are `bad_data`, not dates.
 
-## Values
+## Reading values
 
 - **`_Unsigned = "true"`.** CDI honours it for byte variables only (and a byte variable with
   `valid_range = 0, 255`) and does not mask the `_FillValue` of such variables (a fill value of -1
@@ -100,22 +125,9 @@ except for the points below. Each entry says what cdo does, what cdors does, and
   (`healpix_order`, or CF's `indexing_scheme`) and fails with `bad_data` otherwise, and also for
   an nside (`healpix_nside`, or CF's `refinement_level`) that is not positive, too large for the
   dimension, or not a power of two for nested order.
-- **Time values beyond about 100 million years** from the reference (typically an unmasked fill
-  value such as 9.97e36) are `bad_data`, not dates.
 - **NaN is the internal missing value.** cdo carries the variable's missing value (default
   −9e33) through its computations; cdors uses NaN inside the engine and writes the variable's
   `_FillValue` on output. Results are the same unless an input contains NaN as a valid value.
-
-## Space statistics
-
-- **`cell_methods` on space statistics.** cdors adds `area: mean` (and the analogous
-  `longitude: …` / `latitude: …` / vertical-coordinate entries) to `fld*`, `zon*`, `mer*` and
-  `vert*` output; cdo does not.
-- **HEALPix `zon*` summation order.** cdors sums each ring in stored (nested) order, cdo in ring
-  order, so the last bits can differ. The ring latitudes cdors writes differ from cdo's in the
-  15th significant digit.
-- **`vert*` accumulates in double precision.** cdo accumulates vertical statistics in float32;
-  cdors accumulates in f64 and rounds once on output.
 
 ## Remapping
 
@@ -137,16 +149,19 @@ except for the points below. Each entry says what cdo does, what cdors does, and
 - **`hpdegrade,zoom=0`.** cdo 2.6.0 ignores `zoom=0` and keeps the input resolution; cdors
   follows cdo 2.6.5 and degrades to nside 1.
 - **`--force` is accepted and ignored.** cdo needs it for `remapcon` from or to HEALPix grids;
-  cdors always passes it to `cdo gencon`.
+  cdors always passes it to `cdo gencon` and `cdo genycon`.
 
 ## Printing values (`info`, `infon`, `output`, `outputf`, `outputtab`)
 
 - **Flood guard.** cdo prints whatever it is asked to. cdors refuses, before reading, to print
   more than `--max-values` values (default 1,000,000; for `info`/`infon` the limit counts
   fields, one line each) with `too_many_values`, exit code 4; `--max-values none` removes it.
-- **`--json`.** cdo has no structured form; cdors prints one JSON object (README, "Print
-  values"). Values of float32 variables appear there in their shortest float32 form, also the
-  `info` mean (cdo's text shows 5 significant digits of the double mean).
+- **Any chain as input.** The printing operators take the output of any operator chain, as in
+  cdo; the other information operators (`sinfo`, `showname`, `showtimestamp`, `griddes`) take
+  files or stores only (`not_implemented` otherwise).
+- **`--json`.** cdo has no structured form; cdors prints one JSON object (README, "Read values").
+  Values of float32 variables appear there in their shortest float32 form, also the `info` mean
+  (cdo's text shows 5 significant digits of the double mean).
 - **Parameter IDs** (`info`, `outputtab` keys `param` and `code`). cdors derives them as CDI
   does: a `param` attribute (`"52.1.0"`), a numeric `code` (with `table`) attribute, or a name
   `var<N>`/`code<N>`/`param<N>` give the ID; the code of a GRIB2-style parameter
@@ -164,9 +179,9 @@ except for the points below. Each entry says what cdo does, what cdors does, and
 
 ## cdo bugs observed (cdors does not reproduce them)
 
-- **Percentiles near p = 100.** For the methods hazen, weibull, median_unbiased and
-  normal_unbiased, cdo computes `j == n` and reads `x[n]` past its buffer (zeroed memory),
-  returning `(1−h)·x[n−1]`; cdors returns `x[n−1]`.
+- **Percentiles near p = 100.** For the methods `hazen`, `weibull`, `median_unbiased` and
+  `normal_unbiased`, cdo computes `j == n` and reads `x[n]`, one element past its buffer (zeroed
+  memory), returning `(1−h)·x[n−1]`; cdors returns `x[n−1]`.
 - **Partial last chunk of a Zarr store read through NCZarr.** On a single-variable view of the
   nextGEMS W1 store with 731 timesteps (the last time chunk partial), cdo returned wrong values for
   11 timesteps (up to 0.21 K); cdors and xarray agree with each other.
