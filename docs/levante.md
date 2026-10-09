@@ -37,6 +37,7 @@ Documentation next to the program, in `/work/ab0995/a270088/cdors/`:
 | `doc/reference.md` | all options, JSON output, error codes, caches |
 | `doc/deviations.md` | every known difference from cdo |
 | `doc/bench-results.md`, `doc/criteria.md` | benchmarks against cdo and what the prototype has shown |
+| `doc/LICENSE-CDO` | the license of CDO, from which cdors takes operator help texts and numerical routines |
 
 ## The rules in one minute
 
@@ -377,3 +378,6 @@ next to it, and `bin/cdors` will point at the newest one.
 
 This is a prototype, and reports help. Send wrong numbers, confusing errors and slow commands to Nikolay Koldunov
 (Levante user a270088), with the command and the output of `cdors --version`.
+
+cdors contains operator help texts and numerical routines derived from CDO, © 2002–2026 MPI für Meteorologie,
+under the BSD 3-Clause license (`doc/LICENSE-CDO` next to the program).

@@ -4,6 +4,9 @@ These files are extracted from the CDO 2.6.5 source tree and embedded into cdors
 `crates/cdors-core/src/ops/catalog.rs` (`include_str!`). They serve `cdors ops` (the cdo operators
 cdors does not implement, by name), `cdors help <op>` and did-you-mean hints.
 
+They are © 2002–2026 MPI für Meteorologie and distributed under CDO's BSD 3-Clause license
+([LICENSE-CDO](../../../LICENSE-CDO)).
+
 | File | Content | From |
 |---|---|---|
 | `cdo_operators.tsv` | name, section, module, number of input and output streams, help key, one-line description; 722 operators | `OPERATORS`, `src/operators/*.cc` (`CdoModule module = {...}`) |

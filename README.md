@@ -287,3 +287,10 @@ is accepted; the min/max inputs are not read.
   grids runs cdo, later runs read the cache.
 - Bit-identical agreement with cdo is not a goal; results agree within a few float32 units in the
   last place (see [docs/deviations.md](docs/deviations.md)).
+
+## License
+
+cdors is released under the BSD 3-Clause license ([LICENSE](LICENSE)). It contains operator help
+texts and numerical routines derived from CDO, © 2002–2026 MPI für Meteorologie, under the BSD
+3-Clause license ([LICENSE-CDO](LICENSE-CDO)). cdors is an independent prototype, not affiliated
+with or endorsed by the CDO developers at MPI-M.
