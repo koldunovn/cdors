@@ -85,7 +85,7 @@ pub fn ops(json: bool) -> String {
                     })).collect::<Vec<_>>(),
                     "class": class_name(o.class),
                     "description": o.description,
-                    "cdo_section": catalog::cdo_operator(&o.name).map(|c| c.section),
+                    "section": catalog::cdo_operator(&o.name).map(|c| c.section),
                     "notes": notes(&o.name),
                 })
             })
@@ -270,7 +270,7 @@ pub fn help(name: &str, json: bool) -> Result<String> {
                 ),
             )
             .with("operator", name)
-            .with("cdo_section", c.section)
+            .with("section", c.section)
             .with("description", c.description)
             .with_hint("list the implemented operators with `cdors ops`; run this step with cdo"));
         }

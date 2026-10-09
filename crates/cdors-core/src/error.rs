@@ -50,6 +50,9 @@ pub enum ErrorCode {
     NoSpace,
     /// A malformed or unsupported file (corrupt metadata, unsupported data type or codec).
     BadData,
+    /// cdo is needed (to generate remapping weights or a target-grid template) but neither
+    /// `$CDO` is set nor `cdo` found on `PATH`, or it cannot be run.
+    CdoNotFound,
     /// A bug in cdors.
     Internal,
 }
@@ -75,6 +78,7 @@ impl ErrorCode {
             Self::PermissionDenied => "permission_denied",
             Self::NoSpace => "no_space",
             Self::BadData => "bad_data",
+            Self::CdoNotFound => "cdo_not_found",
             Self::Internal => "internal",
         }
     }
@@ -87,7 +91,8 @@ impl ErrorCode {
             | Self::BadArguments
             | Self::MissingInput
             | Self::PermissionDenied
-            | Self::NoSpace => 1,
+            | Self::NoSpace
+            | Self::CdoNotFound => 1,
             Self::NoCoordinates
             | Self::UnsupportedGrid
             | Self::UnsupportedDimension

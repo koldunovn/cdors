@@ -18,6 +18,7 @@ use std::time::Duration;
 
 static JSON: AtomicBool = AtomicBool::new(false);
 static WARNED: AtomicBool = AtomicBool::new(false);
+static NO_WARNINGS: AtomicBool = AtomicBool::new(false);
 
 /// Pauses before retrying with a single thread: the limit is shared with other processes,
 /// which may end in the meantime.
@@ -28,8 +29,17 @@ pub fn set_json(json: bool) {
     JSON.store(json, Ordering::Relaxed);
 }
 
-/// Prints a warning on stderr: `cdors: warning: ...`, or one line of JSON under `--json`.
+/// Drops all warnings (`-w`, cdo's `--disable_warnings`).
+pub fn set_no_warnings(off: bool) {
+    NO_WARNINGS.store(off, Ordering::Relaxed);
+}
+
+/// Prints a warning on stderr: `cdors: warning: ...`, or one line of JSON under `--json`;
+/// nothing under `-w`.
 pub fn warn(kind: &str, message: &str) {
+    if NO_WARNINGS.load(Ordering::Relaxed) {
+        return;
+    }
     if JSON.load(Ordering::Relaxed) {
         let v = serde_json::json!({"warning": kind, "message": message});
         eprintln!("{v}");

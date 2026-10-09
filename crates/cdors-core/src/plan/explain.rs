@@ -9,7 +9,8 @@
 //! that JSON for humans. There is no wall-time estimate.
 //!
 //! The JSON is the stable interface for agents (`"cdors_plan": 1` is its schema version):
-//! top-level `output`, `format`, `inputs`, `stages[]` (`operators`, `fold_kernel`, `passes`,
+//! top-level `output`, `format`, `inputs` (every file read, at most 100),
+//! `inputs_count`, `inputs_truncated`, `stages[]` (`operators`, `ignored_operators`, `fold_kernel`, `passes`,
 //! `tiles`, `chunks_read`, `bytes_decoded`, `bytes_compressed`, `variables[].leaves[]`), `totals`,
 //! `memory`, `remap_weights`, `settings` and `read_limit`. Byte counts are plain integers.
 
@@ -25,6 +26,8 @@ use std::ops::Range;
 
 /// Schema version of the `--plan --json` output.
 pub const SCHEMA: u32 = 1;
+/// Input files listed by `--plan --json` (`inputs`); `inputs_count` gives the total.
+const MAX_LISTED_INPUTS: usize = 100;
 /// `--max-read` default outside Slurm jobs (shared login nodes): 64 GB.
 pub const LOGIN_NODE_MAX_READ: u64 = 64_000_000_000;
 /// Chunks per leaf whose stored size is looked up for the compressed-bytes estimate.
@@ -240,35 +243,96 @@ pub fn fmt_bytes(b: u64) -> String {
     }
 }
 
-/// Operator tokens (`selname,tas`) of the tree in execution order (inputs first), split into
-/// stages: a reduction or whole-extent operator ends a stage.
-fn stage_operators(root: &OpNode, nstages: usize) -> Vec<Vec<String>> {
-    fn walk(n: &OpNode, out: &mut Vec<(String, bool)>) {
-        for i in &n.inputs {
+/// `selname,tas`: an operator with its arguments, as on the command line.
+fn op_token(n: &OpNode) -> String {
+    if n.args.is_empty() {
+        n.name.clone()
+    } else {
+        format!("{},{}", n.name, n.args.join(","))
+    }
+}
+
+/// Whether the result of `n` is a pending fold, which its consumer reads back as an
+/// intermediate (`plan::intermediate::materialize`): it ends a stage.
+fn ends_stage(n: &OpNode) -> bool {
+    ops::lookup(&n.name)
+        .is_some_and(|s| matches!(s.class, AccessClass::Reduction | AccessClass::WholeExtent))
+}
+
+/// Operators of one stage in execution order, and the operators of inputs that an operator of
+/// the stage ignores (the min/max inputs of `timpctl,p in -timmin in -timmax in`).
+#[derive(Default, Clone)]
+struct StageOps {
+    ops: Vec<String>,
+    ignored: Vec<String>,
+}
+
+/// All operator tokens of a subtree, inputs first.
+fn subtree_ops(n: &OpNode, out: &mut Vec<String>) {
+    for i in &n.inputs {
+        if let Input::Op(o) = i {
+            subtree_ops(o, out);
+        }
+    }
+    out.push(op_token(n));
+}
+
+/// Operator tokens (`selname,tas`) of the tree, split into stages in the order the planner
+/// makes them: an operator whose result is a fold ends the stage of its subtree, which becomes
+/// an intermediate when its consumer is described (after all inputs of that consumer). Each
+/// operator is listed once, in the stage that runs it; operators of ignored inputs are listed
+/// separately. Falls back to splitting in tree order when this does not give `nstages` stages.
+fn stage_operators(root: &OpNode, nstages: usize) -> Vec<StageOps> {
+    fn walk(n: &OpNode, cur: &mut StageOps, stages: &mut Vec<StageOps>) {
+        let used = ops::used_inputs(n).min(n.inputs.len());
+        let mut pending = Vec::new();
+        for i in &n.inputs[..used] {
             if let Input::Op(o) = i {
-                walk(o, out);
+                if ends_stage(o) {
+                    let mut st = StageOps::default();
+                    walk(o, &mut st, stages);
+                    pending.push(st);
+                } else {
+                    walk(o, cur, stages);
+                }
             }
         }
-        let ends = ops::lookup(&n.name)
-            .is_some_and(|s| matches!(s.class, AccessClass::Reduction | AccessClass::WholeExtent));
-        let tok = if n.args.is_empty() {
-            n.name.clone()
-        } else {
-            format!("{},{}", n.name, n.args.join(","))
-        };
-        out.push((tok, ends));
+        stages.extend(pending);
+        for i in &n.inputs[used..] {
+            if let Input::Op(o) = i {
+                subtree_ops(o, &mut cur.ignored);
+            }
+        }
+        cur.ops.push(op_token(n));
     }
-    let mut flat = Vec::new();
-    walk(root, &mut flat);
-    let mut stages = vec![Vec::new()];
-    for (tok, ends) in flat {
-        stages.last_mut().expect("one stage").push(tok);
-        if ends && stages.len() < nstages {
-            stages.push(Vec::new());
+    let nstages = nstages.max(1);
+    let mut stages = Vec::new();
+    let mut last = StageOps::default();
+    walk(root, &mut last, &mut stages);
+    stages.push(last);
+    if stages.len() == nstages {
+        return stages;
+    }
+    // fallback: tree order, a new stage after each fold
+    fn flat(n: &OpNode, out: &mut Vec<(String, bool)>) {
+        for i in &n.inputs {
+            if let Input::Op(o) = i {
+                flat(o, out);
+            }
+        }
+        out.push((op_token(n), ends_stage(n)));
+    }
+    let mut toks = Vec::new();
+    flat(root, &mut toks);
+    let mut out = vec![StageOps::default()];
+    for (tok, ends) in toks {
+        out.last_mut().expect("one stage").ops.push(tok);
+        if ends && out.len() < nstages {
+            out.push(StageOps::default());
         }
     }
-    stages.resize(nstages.max(1), Vec::new());
-    stages
+    out.resize(nstages, StageOps::default());
+    out
 }
 
 /// `--plan --json`.
@@ -363,7 +427,8 @@ pub fn to_json(plan: &Plan, cmd: &Command, threads: usize, io_threads: usize) ->
             weights.extend(w.iter().cloned());
         }
         let fold_dim = stage.kernel.as_ref().map(|k| k.fold_dim());
-        let ops = &ops_per_stage[si];
+        let ops = &ops_per_stage[si].ops;
+        let ignored = &ops_per_stage[si].ignored;
         let sch = &stage.sched;
         let intermediate = plan.intermediates.get(si).map(|im| {
             json!({
@@ -376,6 +441,7 @@ pub fn to_json(plan: &Plan, cmd: &Command, threads: usize, io_threads: usize) ->
             "index": si,
             "kind": if stage.kernel.is_some() { "fold" } else { "map" },
             "operators": ops,
+            "ignored_operators": ignored,
             "fold_kernel": stage.kernel.as_ref().and_then(|_| ops.last().map(|o| o.split(',').next().unwrap_or(o).to_owned())),
             "fold_dim": fold_dim.map(|d| match d {
                 DimRole::Time => "time",
@@ -422,12 +488,26 @@ pub fn to_json(plan: &Plan, cmd: &Command, threads: usize, io_threads: usize) ->
     let lim = read_limit(cmd);
     let total_dec: u64 = stats.iter().map(|s| s.bytes_decoded).sum();
     let src_dec = source_bytes(plan, &stats);
+    // one entry per file or store read (the files of a glob pattern or `mergetime` each), at
+    // most MAX_LISTED_INPUTS of them; `inputs_count` counts all
+    let all_inputs: Vec<String> = plan
+        .sources
+        .iter()
+        .flat_map(|s| {
+            s.member_paths()
+                .unwrap_or_else(|| vec![s.dataset().source.clone()])
+        })
+        .collect();
+    let inputs_count = all_inputs.len();
+    let inputs: Vec<String> = all_inputs.into_iter().take(MAX_LISTED_INPUTS).collect();
     json!({
         "cdors_plan": SCHEMA,
         // null when no output file was given (`--plan` needs none)
         "output": (!plan.output.is_empty()).then_some(&plan.output),
         "format": format!("{:?}", plan.out_kind).to_ascii_lowercase(),
-        "inputs": plan.sources.iter().map(|s| s.dataset().source.clone()).collect::<Vec<_>>(),
+        "inputs": inputs,
+        "inputs_count": inputs_count,
+        "inputs_truncated": inputs_count > inputs.len(),
         "stages": stages,
         "totals": {
             "stages": plan.stages.len(),
@@ -477,7 +557,23 @@ pub fn to_text(p: &Value) -> String {
         .as_array()
         .map(|a| a.iter().filter_map(Value::as_str).collect())
         .unwrap_or_default();
-    let _ = writeln!(s, "inputs: {}", inputs.join(", "));
+    let count = p["inputs_count"]
+        .as_u64()
+        .map_or(inputs.len(), |n| n as usize);
+    if count > 6 && inputs.len() > 3 {
+        let _ = writeln!(
+            s,
+            "inputs ({count}): {}, ..., {}",
+            inputs[..3].join(", "),
+            if count == inputs.len() {
+                inputs[inputs.len() - 1]
+            } else {
+                "..."
+            }
+        );
+    } else {
+        let _ = writeln!(s, "inputs: {}", inputs.join(", "));
+    }
     let out = p["output"].as_str().unwrap_or("");
     let _ = writeln!(
         s,
@@ -506,9 +602,24 @@ pub fn to_text(p: &Value) -> String {
             Some(n) => format!(", result kept in memory ({})", fmt_bytes(n)),
             None => String::new(),
         };
+        let ignored: Vec<&str> = st["ignored_operators"]
+            .as_array()
+            .map(|a| a.iter().filter_map(Value::as_str).collect())
+            .unwrap_or_default();
+        let ignored = if ignored.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "; ignored (min/max inputs of {}, not read): {}",
+                st["fold_kernel"]
+                    .as_str()
+                    .unwrap_or("the percentile operator"),
+                ignored.join(", ")
+            )
+        };
         let _ = writeln!(
             s,
-            "stage {} of {nst}: {}{kernel}, {} pass(es){waves}{inter}",
+            "stage {} of {nst}: {}{kernel}, {} pass(es){waves}{inter}{ignored}",
             st["index"].as_u64().unwrap_or(0) + 1,
             ops.join(" -> "),
             st["passes"]

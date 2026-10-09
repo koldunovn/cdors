@@ -59,18 +59,39 @@ pub fn handles(name: &str) -> bool {
     )
 }
 
+/// Hint when cdo is needed for weights but cannot be found.
+const CDO_MISSING_HINT: &str = "load or install cdo (set $CDO to the executable or put `cdo` on \
+     PATH), or pass precomputed weights with remap,<grid>,<weights.nc>";
+
+/// Hint when `remap,<grid>,<weights.nc>` needs cdo's template of the target grid.
+const CDO_MISSING_TEMPLATE_HINT: &str = "load or install cdo (set $CDO to the executable or put \
+     `cdo` on PATH), or give the target grid as r<nx>x<ny>, global_<inc>, hpz<zoom>, hp<nside>, \
+     lon=<x>_lat=<y>, a grid description file or a dataset on that grid, which cdors reads itself";
+
 /// cdors error for a failure of the remapping core.
 fn rerr(op: &str, e: RemapError) -> Error {
     let code = match &e {
         RemapError::Netcdf { .. } | RemapError::Format { .. } => ErrorCode::BadData,
         RemapError::Io { .. } => ErrorCode::IoError,
+        RemapError::CdoMissing { .. } => ErrorCode::CdoNotFound,
         RemapError::CdoFailed { hint, .. } if *hint == TEMPLATE_HINT => ErrorCode::BadArguments,
         _ => ErrorCode::UnsupportedGrid,
     };
     let (msg, hint) = match &e {
-        RemapError::CdoMissing { reason, hint } => {
-            (format!("cdo not available ({reason})"), Some(*hint))
-        }
+        RemapError::CdoMissing { reason, .. } if op == "remap" => (
+            format!(
+                "{op}: cdo is not available ({reason}); it is needed to make the template of \
+                 a target grid that cdors cannot describe itself"
+            ),
+            Some(CDO_MISSING_TEMPLATE_HINT),
+        ),
+        RemapError::CdoMissing { reason, .. } => (
+            format!(
+                "{op}: cdo is not available ({reason}); it is needed to generate the remapping \
+                 weights (cdo gen*)"
+            ),
+            Some(CDO_MISSING_HINT),
+        ),
         RemapError::CdoFailed {
             command,
             stderr,
@@ -615,18 +636,26 @@ impl FieldMap for RemapMap {
 /// The weight cache, required: a run that makes a template or weights with cdo keeps them there.
 fn need_cache(op: &str) -> Result<WeightCache> {
     WeightCache::from_env().map_err(|_| {
+        let (what, hint) = if op == "remap" {
+            (
+                "cdo's template of a target grid that cdors cannot describe itself",
+                "set CDORS_CACHE to a writable directory (source env.sh), or give the target grid \
+                 as r<nx>x<ny>, global_<inc>, hpz<zoom>, hp<nside>, lon=<x>_lat=<y>, a grid \
+                 description file or a dataset on that grid, which cdors reads itself",
+            )
+        } else {
+            (
+                "the grids and weights cdo makes for remapping",
+                "set CDORS_CACHE to a writable directory (source env.sh), or pass precomputed \
+                 weights with remap,<grid>,<weights.nc>, which needs no cache",
+            )
+        };
         Error::new(
             ErrorCode::BadArguments,
-            format!(
-                "{op}: CDORS_CACHE is not set; cdors keeps the grids and weights cdo makes for \
-                 remapping there"
-            ),
+            format!("{op}: CDORS_CACHE is not set; cdors keeps {what} there"),
         )
         .with("operator", op.to_owned())
-        .with_hint(
-            "set CDORS_CACHE to a writable directory (source env.sh), or pass precomputed weights \
-             with remap,<grid>,<weights.nc>",
-        )
+        .with_hint(hint)
     })
 }
 
@@ -664,7 +693,17 @@ fn first_grid(src: &Arc<dyn ChunkSource>, what: &str) -> Result<(GridDesc, Vec<V
 /// written as such a template by cdors first). Otherwise a cached template is read if there is
 /// one, else cdors describes the grid itself (`crate::remap::target`): no cdo, nothing written.
 /// A grid cdors cannot describe is an error under `--plan` and made by cdo in a run's first pass.
-fn target_grid(op: &str, cache: Option<&WeightCache>, target: &str, cdo: CdoUse) -> Result<Target> {
+///
+/// With given weights (`remap,<grid>,<weights.nc>`, `weights_given`) a run's final pass takes
+/// cdo's template only when it is cached or cdo and `$CDORS_CACHE` are both at hand; otherwise
+/// it uses cdors's own description, so that neither cdo nor the cache is needed.
+fn target_grid(
+    op: &str,
+    cache: Option<&WeightCache>,
+    target: &str,
+    cdo: CdoUse,
+    weights_given: bool,
+) -> Result<Target> {
     let open_template = |path: &Path, gen_target: String| -> Result<Target> {
         let src = crate::io::open(&path.to_string_lossy())?;
         let (grid, hdims) = first_grid(&src, &format!("grid template {}", path.display()))?;
@@ -679,6 +718,15 @@ fn target_grid(op: &str, cache: Option<&WeightCache>, target: &str, cdo: CdoUse)
         let src = crate::io::open(target)?;
         let (g, hd) = first_grid(&src, &format!("target dataset '{target}'"))?;
         let key = format!("tgt-{}", hash_hex(&grid_identity(&g)?));
+        if cdo == CdoUse::Now && weights_given && cache.is_none() {
+            // no weights to generate: the dataset's own grid is the output grid
+            return Ok(Target {
+                grid: g,
+                hdims: hd,
+                gen_target: target.to_owned(),
+                native: false,
+            });
+        }
         if cdo == CdoUse::Now {
             let cache = need_cache(op)?;
             let p = write_grid_file(&cache, &g, &hd, &key)?;
@@ -695,6 +743,32 @@ fn target_grid(op: &str, cache: Option<&WeightCache>, target: &str, cdo: CdoUse)
                 .map_or_else(|| target.to_owned(), |p| p.to_string_lossy().into_owned()),
             native: true,
         });
+    }
+    if cdo == CdoUse::Now && weights_given {
+        if let Some(c) = cache {
+            if let Ok((_, path)) = c.template_path(target)
+                && path.is_file()
+            {
+                return open_template(&path, target.to_owned());
+            }
+            if c.has_cdo() {
+                let path = c.grid_template(target).map_err(|e| rerr(op, e))?;
+                return open_template(&path, target.to_owned());
+            }
+        }
+        if let Some(src) = crate::remap::target::describe(target)? {
+            let (grid, hdims) = first_grid(&src, &format!("target grid '{target}'"))?;
+            return Ok(Target {
+                grid,
+                hdims,
+                gen_target: target.to_owned(),
+                native: false,
+            });
+        }
+        // a grid only cdo knows: needs its template (cache and cdo)
+        let cache = need_cache(op)?;
+        let path = cache.grid_template(target).map_err(|e| rerr(op, e))?;
+        return open_template(&path, target.to_owned());
     }
     if cdo == CdoUse::Now {
         let cache = need_cache(op)?;
@@ -788,7 +862,7 @@ pub fn describe(node: &OpNode, mut inputs: Vec<Desc>, srcs: &mut Sources) -> Res
         hdims: thdims,
         gen_target,
         native,
-    } = target_grid(op, cache.as_ref(), target, cdo)?;
+    } = target_grid(op, cache.as_ref(), target, cdo, op == "remap")?;
     if native {
         srcs.deferred = true;
     }
