@@ -9,8 +9,9 @@
 use super::{Expr, IndexMap, Leaf, VarDesc};
 use crate::error::{Error, Result};
 use crate::io::{ChunkGrid, ChunkSource, DecodedChunk, Values};
+use std::collections::HashMap;
 use std::ops::Range;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 /// A box in the output index space of one variable: one range per output dimension.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -49,6 +50,16 @@ fn segments(map: &IndexMap, chunk: usize) -> Vec<Range<usize>> {
         return std::iter::once(0..n).collect();
     }
     let c = chunk.max(1);
+    if let IndexMap::Range { start, .. } = map {
+        // chunk boundaries directly, without visiting every index
+        let mut a = 0;
+        while a < n {
+            let b = (a + c - (start + a) % c).min(n);
+            out.push(a..b);
+            a = b;
+        }
+        return out;
+    }
     let mut start = 0;
     let mut cur = map.get(0) / c;
     for i in 1..n {
@@ -118,12 +129,21 @@ impl VarTiling {
     }
 }
 
+/// Chunk set and positions of one stored dimension for one range of output indices, through an
+/// explicit index list (cached per leaf: computing them is linear in the range).
+type ListRead = Arc<(Vec<u64>, Vec<(u32, u32)>)>;
+/// [`ListRead`]s by (stored dimension, range start, range end).
+type ListReads = HashMap<(usize, usize, usize), ListRead>;
+
 /// A leaf with the chunk grid of its stored variable.
 #[derive(Clone)]
 pub struct LeafInfo {
     pub leaf: Leaf,
     pub grid: ChunkGrid,
     pub src: Arc<dyn ChunkSource>,
+    /// [`ListRead`]s by (stored dimension, range start, range end): tiles of a variable share
+    /// their segments, so a tile is built in O(1) after the first one of each segment.
+    list_reads: Arc<Mutex<ListReads>>,
 }
 
 impl LeafInfo {
@@ -142,6 +162,7 @@ impl LeafInfo {
             leaf: leaf.clone(),
             grid,
             src,
+            list_reads: Arc::default(),
         })
     }
 
@@ -151,6 +172,93 @@ impl LeafInfo {
             .into_iter()
             .map(|l| Self::new(l, sources))
             .collect()
+    }
+
+    /// Chunk set and positions of stored dimension `k` for the output indices `r` of an
+    /// explicit index list.
+    fn list_read(&self, k: usize, r: &Range<usize>) -> ListRead {
+        let key = (k, r.start, r.end);
+        if let Some(v) = self.list_reads.lock().expect("read cache").get(&key) {
+            return v.clone();
+        }
+        let map = &self.leaf.maps[k].1;
+        let c = self.grid.chunk_shape[k].max(1);
+        let idx: Vec<usize> = r.clone().map(|i| map.get(i)).collect();
+        let mut set: Vec<u64> = idx.iter().map(|&s| (s / c) as u64).collect();
+        set.sort_unstable();
+        set.dedup();
+        let p = idx
+            .iter()
+            .map(|&s| {
+                let ci = (s / c) as u64;
+                let slot = set.binary_search(&ci).expect("chunk in set") as u32;
+                (slot, (s - ci as usize * c) as u32)
+            })
+            .collect();
+        let v = Arc::new((set, p));
+        self.list_reads
+            .lock()
+            .expect("read cache")
+            .insert(key, v.clone());
+        v
+    }
+}
+
+/// Where the local indices of one stored dimension of a tile lie: (slot in the dimension's
+/// chunk set, offset within the chunk).
+#[derive(Debug, Clone)]
+pub enum DimPos {
+    /// Local index `i` reads stored index `first + i`; slot `(first + i) / c - lo`.
+    Affine { first: usize, c: usize, lo: usize },
+    /// Every local index reads offset `off` of the only chunk.
+    Const { off: usize },
+    /// Explicit (slot, offset) per local index.
+    List(ListRead),
+}
+
+impl DimPos {
+    /// (slot, offset) of local index `i`.
+    #[inline]
+    pub fn at(&self, i: usize) -> (usize, usize) {
+        match self {
+            Self::Affine { first, c, lo } => {
+                let s = first + i;
+                (s / c - lo, s % c)
+            }
+            Self::Const { off } => (0, *off),
+            Self::List(l) => {
+                let (s, o) = l.1[i];
+                (s as usize, o as usize)
+            }
+        }
+    }
+
+    /// Length (at most `max`) of the run of local indices from `i` on that read consecutive
+    /// offsets of one chunk.
+    #[inline]
+    fn run(&self, i: usize, max: usize) -> usize {
+        match self {
+            Self::Affine { first, c, .. } => (c - (first + i) % c).min(max),
+            Self::Const { .. } => 1,
+            Self::List(l) => {
+                let p = &l.1[i..i + max];
+                let mut j = 1;
+                while j < max && p[j].0 == p[0].0 && p[j].1 == p[j - 1].1 + 1 {
+                    j += 1;
+                }
+                j
+            }
+        }
+    }
+
+    /// Whether the `n` local indices read offsets `0..n` of the only chunk, of extent `ext`.
+    fn is_whole(&self, n: usize, ext: usize) -> bool {
+        n == ext
+            && match self {
+                Self::Affine { first, c, .. } => first % c == 0,
+                Self::Const { off } => n == 1 && *off == 0,
+                Self::List(l) => l.1.iter().enumerate().all(|(i, &(_, o))| o as usize == i),
+            }
     }
 }
 
@@ -162,12 +270,13 @@ pub struct LeafRead {
     pub chunk_sets: Vec<Vec<u64>>,
     /// Per stored dimension: for each local index along its output dimension,
     /// (position in `chunk_sets[k]`, offset within the chunk).
-    pub pos: Vec<Vec<(u32, u32)>>,
+    pub pos: Vec<DimPos>,
     /// Output dimension followed by each stored dimension.
     pub out_dims: Vec<usize>,
 }
 
 impl LeafRead {
+    /// O(1) for ranges and broadcasts; explicit index lists are computed once per range.
     pub fn new(li: &LeafInfo, tile: &TileBox) -> Self {
         let mut chunk_sets = Vec::with_capacity(li.leaf.maps.len());
         let mut pos = Vec::with_capacity(li.leaf.maps.len());
@@ -175,20 +284,27 @@ impl LeafRead {
         for (k, (d, map)) in li.leaf.maps.iter().enumerate() {
             let c = li.grid.chunk_shape[k].max(1);
             let r = &tile.ranges[*d];
-            let idx: Vec<usize> = r.clone().map(|i| map.get(i)).collect();
-            let mut set: Vec<u64> = idx.iter().map(|&s| (s / c) as u64).collect();
-            set.sort_unstable();
-            set.dedup();
-            let p = idx
-                .iter()
-                .map(|&s| {
-                    let ci = (s / c) as u64;
-                    let slot = set.binary_search(&ci).expect("chunk in set") as u32;
-                    (slot, (s - ci as usize * c) as u32)
-                })
-                .collect();
-            chunk_sets.push(set);
-            pos.push(p);
+            match map {
+                _ if r.is_empty() => {
+                    chunk_sets.push(Vec::new());
+                    pos.push(DimPos::Const { off: 0 });
+                }
+                IndexMap::Range { start, .. } => {
+                    let first = start + r.start;
+                    let (lo, hi) = (first / c, (first + r.len() - 1) / c);
+                    chunk_sets.push((lo as u64..=hi as u64).collect());
+                    pos.push(DimPos::Affine { first, c, lo });
+                }
+                IndexMap::Const { idx, .. } => {
+                    chunk_sets.push(vec![(idx / c) as u64]);
+                    pos.push(DimPos::Const { off: idx % c });
+                }
+                IndexMap::List(_) => {
+                    let l = li.list_read(k, r);
+                    chunk_sets.push(l.0.clone());
+                    pos.push(DimPos::List(l));
+                }
+            }
             out_dims.push(*d);
         }
         Self {
@@ -226,9 +342,12 @@ impl LeafRead {
         if chunks.len() == 1
             && self.out_dims.len() == tile_shape.len()
             && self.out_dims.iter().enumerate().all(|(k, &d)| d == k)
-            && self.pos.iter().zip(&chunks[0].shape).all(|(p, &ext)| {
-                p.len() == ext && p.iter().enumerate().all(|(i, &(_, o))| o as usize == i)
-            })
+            && self
+                .pos
+                .iter()
+                .zip(&chunks[0].shape)
+                .zip(tile_shape)
+                .all(|((p, &ext), &n)| p.is_whole(n, ext))
         {
             return chunks.into_iter().next().expect("one chunk").values;
         }
@@ -295,9 +414,9 @@ impl LeafRead {
             let mut ks: Vec<(usize, usize)> = Vec::with_capacity(ns); // (stored dim, local offset)
             for (d, fk) in follow.iter().enumerate().take(last) {
                 for &k in fk {
-                    let (s, off) = self.pos[k][idx[d]];
-                    slot0 += s as usize * sstride[k];
-                    ks.push((k, off as usize));
+                    let (s, off) = self.pos[k].at(idx[d]);
+                    slot0 += s * sstride[k];
+                    ks.push((k, off));
                 }
             }
             match last_k {
@@ -305,16 +424,13 @@ impl LeafRead {
                     let p = &self.pos[lk];
                     let mut i = 0;
                     while i < row {
-                        let (s, off) = p[i];
-                        let slot = slot0 + s as usize * sstride[lk];
+                        let (s, off) = p.at(i);
+                        let slot = slot0 + s * sstride[lk];
                         let cs = &cstride[slot];
                         let base: usize = ks.iter().map(|&(k, off)| off * cs[k]).sum();
                         // run of consecutive offsets within the same chunk
-                        let mut j = i + 1;
-                        while j < row && p[j].0 == s && p[j].1 == p[j - 1].1 + 1 {
-                            j += 1;
-                        }
-                        let st = base + off as usize * cs[lk];
+                        let j = i + p.run(i, row - i);
+                        let st = base + off * cs[lk];
                         out[o + i..o + j].copy_from_slice(&data[slot][st..st + (j - i)]);
                         i = j;
                     }
@@ -324,9 +440,9 @@ impl LeafRead {
                         let mut slot = slot0;
                         let mut kk = ks.clone();
                         for &k in &follow[last] {
-                            let (s, off) = self.pos[k][i];
-                            slot += s as usize * sstride[k];
-                            kk.push((k, off as usize));
+                            let (s, off) = self.pos[k].at(i);
+                            slot += s * sstride[k];
+                            kk.push((k, off));
                         }
                         let cs = &cstride[slot];
                         let off: usize = kk.iter().map(|&(k, off)| off * cs[k]).sum();

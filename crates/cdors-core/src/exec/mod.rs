@@ -52,6 +52,24 @@ pub trait Writer: Send + Sync {
     fn ordered(&self) -> bool;
     fn write(&self, var: usize, origin: &[usize], shape: &[usize], data: Values) -> Result<()>;
     fn finish(&self) -> Result<()>;
+    /// The value that missing values (NaN) of variable `var` become in the file, if the writer
+    /// replaces them (NetCDF: the variable's missing value). The pipeline replaces them while
+    /// it assembles output chunks on the compute threads and hands the chunks to
+    /// [`Writer::write_ready`].
+    fn missing_as(&self, _var: usize) -> Option<f64> {
+        None
+    }
+    /// `write` for a chunk whose missing values are already replaced (see
+    /// [`Writer::missing_as`]).
+    fn write_ready(
+        &self,
+        var: usize,
+        origin: &[usize],
+        shape: &[usize],
+        data: Values,
+    ) -> Result<()> {
+        self.write(var, origin, shape, data)
+    }
 }
 
 /// Compute threads: `-P`, else all cores of the allocation, capped at 16 outside Slurm jobs

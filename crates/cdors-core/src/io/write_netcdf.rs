@@ -7,7 +7,9 @@
 //! engine) become the variable's `_FillValue`, which is also written as `missing_value`.
 //!
 //! Every netCDF-C call goes through the `netcdf` crate's global lock (the spack HDF5 is not
-//! thread-safe), and the pipeline writes chunks one at a time in canonical order.
+//! thread-safe), and the pipeline writes chunks one at a time in canonical order. The pipeline
+//! replaces NaN by the missing value while it assembles the chunks on its compute threads
+//! (`missing_as`, `write_ready`), so the writer thread only calls HDF5.
 
 use crate::error::{Error, Result};
 use crate::exec::{OutMeta, OutVar, Writer, out_meta};
@@ -155,7 +157,29 @@ impl Writer for NcWriter {
         true
     }
 
-    fn write(&self, var: usize, origin: &[usize], shape: &[usize], data: Values) -> Result<()> {
+    fn missing_as(&self, var: usize) -> Option<f64> {
+        self.vars.get(var).map(|v| v.missval)
+    }
+
+    fn write(&self, var: usize, origin: &[usize], shape: &[usize], mut data: Values) -> Result<()> {
+        let mv = self.vars[var].missval;
+        match &mut data {
+            Values::F32(x) => {
+                let mv = mv as f32;
+                x.iter_mut().filter(|y| y.is_nan()).for_each(|y| *y = mv);
+            }
+            Values::F64(x) => x.iter_mut().filter(|y| y.is_nan()).for_each(|y| *y = mv),
+        }
+        self.write_ready(var, origin, shape, data)
+    }
+
+    fn write_ready(
+        &self,
+        var: usize,
+        origin: &[usize],
+        shape: &[usize],
+        data: Values,
+    ) -> Result<()> {
         let ov = &self.vars[var];
         let _hdf5 = super::hdf5_lock();
         let mut g = self
@@ -170,17 +194,8 @@ impl Writer for NcWriter {
             .ok_or_else(|| Error::internal(format!("variable '{}' vanished", ov.name)))?;
         let ext = extents(origin, shape);
         match data {
-            Values::F32(mut x) => {
-                let mv = ov.missval as f32;
-                x.iter_mut().filter(|y| y.is_nan()).for_each(|y| *y = mv);
-                v.put_values(&x, ext)?;
-            }
-            Values::F64(mut x) => {
-                x.iter_mut()
-                    .filter(|y| y.is_nan())
-                    .for_each(|y| *y = ov.missval);
-                v.put_values(&x, ext)?;
-            }
+            Values::F32(x) => v.put_values(&x, ext)?,
+            Values::F64(x) => v.put_values(&x, ext)?,
         }
         Ok(())
     }
