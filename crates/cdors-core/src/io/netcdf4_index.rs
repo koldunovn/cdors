@@ -295,6 +295,10 @@ pub struct Nc4Index {
     #[serde(default)]
     pub ctime_ns: i128,
     pub variables: Vec<Nc4Variable>,
+    /// The file's netCDF-C header (`NetcdfSource`, `netcdf4.rs`), added the first time the
+    /// file is opened after the index exists; absent in older index files.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub header: Option<serde_json::Value>,
 }
 
 impl Nc4Index {
@@ -323,20 +327,29 @@ impl Nc4Index {
             && index.mtime_ns == id.mtime_ns
             && index.ctime_ns == id.ctime_ns
         {
-            // A cache that cannot be written only costs a rebuild next time.
-            let data = serde_json::to_vec(&index).unwrap_or_default();
-            let mut held = HELD
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            match held.as_mut() {
-                Some(h) => h.push((cache.clone(), data)),
-                None => {
-                    drop(held);
-                    let _ = write_atomic(cache, &data);
-                }
-            }
+            cache_write(cache, &index);
         }
         Ok(index)
+    }
+
+    /// Rewrites this index's cache file (after adding the header), if the file still is the
+    /// one the index describes and is not being written to.
+    pub fn store(&self) {
+        let Ok(id) = file_identity(&self.path) else {
+            return;
+        };
+        if id.recent()
+            || id.canon != self.path
+            || id.size != self.file_size
+            || id.mtime_ns != self.mtime_ns
+            || id.inode != self.inode
+            || id.ctime_ns != self.ctime_ns
+        {
+            return;
+        }
+        if let Some(cache) = cache_path(&id) {
+            cache_write(&cache, self);
+        }
     }
 
     /// Build the index through HDF5 (no cache), under [`super::hdf5_lock`] from opening the file
@@ -368,6 +381,7 @@ impl Nc4Index {
             inode: id.inode,
             ctime_ns: id.ctime_ns,
             variables,
+            header: None,
         })
     }
 
@@ -565,6 +579,22 @@ fn file_identity(path: &Path) -> Result<Identity, Nc4Error> {
 type Held = Vec<(PathBuf, Vec<u8>)>;
 static HELD: std::sync::Mutex<Option<Held>> = std::sync::Mutex::new(None);
 
+/// Writes an index file now, or queues it while cache writes are held. A cache that cannot be
+/// written only costs a rebuild next time.
+fn cache_write(cache: &Path, index: &Nc4Index) {
+    let data = serde_json::to_vec(index).unwrap_or_default();
+    let mut held = HELD
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    match held.as_mut() {
+        Some(h) => h.push((cache.to_path_buf(), data)),
+        None => {
+            drop(held);
+            let _ = write_atomic(cache, &data);
+        }
+    }
+}
+
 /// Holds back index files from `$CDORS_CACHE` until [`release_cache_writes`]: `--plan` and the
 /// checks that may refuse a run leave the cache untouched.
 pub fn hold_cache_writes() {
@@ -586,9 +616,9 @@ pub fn release_cache_writes(write: bool) {
     }
 }
 
-/// `$CDORS_CACHE/nc4index/<fnv1a64>.json`, `None` without `CDORS_CACHE`.
+/// `$CDORS_CACHE/nc4index/<fnv1a64>.json`, `None` if `CDORS_CACHE` is unset or empty.
 fn cache_path(id: &Identity) -> Option<PathBuf> {
-    let dir = std::env::var_os("CDORS_CACHE")?;
+    let dir = std::env::var_os("CDORS_CACHE").filter(|d| !d.is_empty())?;
     let key = format!(
         "{INDEX_FORMAT}\0{}\0{}\0{}\0{}\0{}",
         id.canon.to_string_lossy(),

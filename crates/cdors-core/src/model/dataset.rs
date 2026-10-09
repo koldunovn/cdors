@@ -3,7 +3,7 @@
 use super::grid::Grid;
 use super::time::TimeAxis;
 use super::zaxis::ZAxis;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// An attribute value. Integers and floats are kept as vectors (CF attributes may be arrays).
@@ -119,7 +119,7 @@ impl Attrs {
 }
 
 /// Stored data type of a variable.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum DType {
     I8,

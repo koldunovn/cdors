@@ -12,12 +12,12 @@
 #     W2  cdors x3 (Parquet, raw, cloud), cdo, xarray x2 (Lustre, cloud); the cloud is capped at
 #         ~0.19 GB/s, so each cloud run reads 13.2 GB in ~70 s or more  ~10-20 min
 #     W3  genbil, cdors x2, cdo on 7.6 GB                             ~5 min
-#     W4Y (2020 only, 37 GB) cdors x3, cdo timpctl (632 s in Task 2) and ydaymean  ~20-30 min
-#     W4  (1.1 TB) cdors timpctl and ydaymean under --mem 32G        ~10-60 min
+#     W4Y (2976 steps, 37 GB) cdors x3, cdo timpctl (632 s in Task 2) and ydaymean  ~20-30 min
+#     W4  (87544 steps = 353 whole chunks, 1.1 TB) cdors timpctl and ydaymean under --mem 32G  ~10-60 min
 #         cdo ydaymean, 2 h timeout (Task 2: 191 s per year => ~1.6 h)  up to 2 h
 #         cdo timpctl is skipped (>= 5.3 h; CDO_W4_TIMPCTL=1 runs it with a 2 h timeout)
-#   Cheaper split, if wanted: WORKLOADS="W1 W2 W3 W4Y" (~1 node-hour; sbatch --time=02:00:00),
-#   W4 later on its own (~2.5 node-hours).
+#   Cheaper split, if wanted: WORKLOADS="W1 W2 W3 W4Y" (~1 node-hour; sbatch --time=02:00:00; job
+#   28000341 took 0.3), W4 later (~2.5 node-hours; with W2 W3 again ~0.1 more; --time=04:00:00).
 #
 # Before submitting (login node):
 #   1. build cdors:   source /home/a/a270088/cdo/env.sh && cargo build --release

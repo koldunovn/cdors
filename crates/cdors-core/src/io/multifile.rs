@@ -16,14 +16,16 @@
 //!
 //! Inputs: [`open_many`] takes a list of paths (the inputs of `mergetime`, or any operator given
 //! several files); [`expand_glob`] turns one argument with `*`, `?` or `[` into sorted paths, and
-//! [`super::open`] does that automatically for a pattern that is not an existing path.
+//! [`super::open`] does that automatically for a pattern that is not an existing path. The
+//! members are opened concurrently ([`OPEN_THREADS`]).
 
 use super::{ChunkDecoder, ChunkGrid, ChunkSource, DecodedChunk, EncodedChunk, RawChunk, Values};
 use crate::error::{Error, ErrorCode, Result};
 use crate::model::time::{TimeAxis, TimeStep, TimeUnit, TimeUnits};
 use crate::model::{Dataset, Variable};
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
 
 /// Whether `arg` contains glob metacharacters.
 pub fn is_glob(arg: &str) -> bool {
@@ -66,6 +68,42 @@ pub fn open_many(args: &[String]) -> Result<Arc<dyn ChunkSource>> {
         [one] => super::open(one),
         _ => Ok(Arc::new(MultiFileSource::open(&paths)?)),
     }
+}
+
+/// Inputs opened at once. Opening is mostly waiting for metadata reads (a NetCDF-4 file without a
+/// cached header still goes through netCDF-C, one file at a time).
+const OPEN_THREADS: usize = 16;
+
+/// Opens the inputs (each through [`super::open`]) on up to [`OPEN_THREADS`] threads; the results
+/// are in input order. URLs are opened one after another.
+fn open_all(paths: &[String]) -> Vec<Result<Arc<dyn ChunkSource>>> {
+    let threads = paths.len().min(OPEN_THREADS);
+    if threads < 2 || paths.iter().any(|p| super::remote::is_url(p)) {
+        return paths.iter().map(|p| super::open(p)).collect();
+    }
+    type Slot = Mutex<Option<Result<Arc<dyn ChunkSource>>>>;
+    let next = AtomicUsize::new(0);
+    let slots: Vec<Slot> = paths.iter().map(|_| Mutex::new(None)).collect();
+    std::thread::scope(|s| {
+        for _ in 0..threads {
+            s.spawn(|| {
+                loop {
+                    let i = next.fetch_add(1, Ordering::Relaxed);
+                    let Some(p) = paths.get(i) else { break };
+                    let r = super::open(p);
+                    *slots[i].lock().unwrap_or_else(PoisonError::into_inner) = Some(r);
+                }
+            });
+        }
+    });
+    slots
+        .into_iter()
+        .map(|m| {
+            m.into_inner()
+                .unwrap_or_else(PoisonError::into_inner)
+                .expect("every input was opened")
+        })
+        .collect()
 }
 
 /// Per-variable mapping of the virtual chunk grid onto the members.
@@ -146,8 +184,8 @@ impl MultiFileSource {
     /// to the next: overlapping, interleaved or repeated timesteps are refused.
     pub fn open_with(paths: &[String], sort: bool) -> Result<Self> {
         let mut members: Vec<(String, Arc<dyn ChunkSource>)> = Vec::with_capacity(paths.len());
-        for p in paths {
-            let src = super::open(p)?;
+        for (p, src) in paths.iter().zip(open_all(paths)) {
+            let src = src?;
             if src.dataset().time.as_ref().is_none_or(TimeAxis::is_empty) {
                 return Err(Error::bad_data(format!(
                     "'{p}' has no time axis; only inputs with timesteps can be concatenated"

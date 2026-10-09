@@ -215,8 +215,11 @@ hand when it is no longer needed. `--plan` and refused runs write nothing there.
   target or source grid comes from a dataset cdo cannot read (Zarr); `weights/tmp/`: files being
   generated.
 - `nc4index/<hash>.json`: chunk indexes of NetCDF-4 files, keyed by path, size, modification
-  time, inode and status-change time. Files changed less than 2 s ago are not cached (Lustre keeps
-  modification times to the second).
+  time, inode and status-change time, with the file's netCDF-C header (dimensions, variables,
+  attributes, coordinate values up to 262144) once a run has opened it: later runs describe the
+  file without netCDF-C, which on inputs of hundreds of files made planning several times
+  slower. Files changed less than 2 s ago are not cached (Lustre keeps modification times to the
+  second). `--plan` writes nothing here.
 
 **9. Typical chains.** Put selections innermost: they decide which chunks are read. A statistic
 can feed another operator (`-sub x -timmean x`, `-fldmean -yearmean`); the inner result is kept in

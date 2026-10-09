@@ -104,9 +104,11 @@ static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 impl WeightCache {
     /// `$CDORS_CACHE/weights`, cdo from `$CDO` or `cdo` on `PATH`.
     pub fn from_env() -> Result<Self, RemapError> {
-        let base = std::env::var_os("CDORS_CACHE").ok_or_else(|| {
-            RemapError::Unsupported("CDORS_CACHE is not set (source env.sh)".into())
-        })?;
+        let base = std::env::var_os("CDORS_CACHE")
+            .filter(|d| !d.is_empty())
+            .ok_or_else(|| {
+                RemapError::Unsupported("CDORS_CACHE is not set (source env.sh)".into())
+            })?;
         Ok(Self::new(Path::new(&base).join("weights"), find_cdo()))
     }
 

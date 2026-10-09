@@ -5,6 +5,11 @@
 //! chunks of NetCDF-4 variables; for contiguous storage (NetCDF-3 or unchunked NetCDF-4) a chunk
 //! is one step of the first dimension (one record) when the variable has two or more
 //! dimensions, otherwise the whole variable. Chunks come back already decoded.
+//!
+//! What opening reads through netCDF-C (dimensions, variables, attributes and the coordinate
+//! values `classify` asks for) is kept as an [`NcHeader`]. The NetCDF-4 reader caches it with the
+//! file's chunk index, and [`NetcdfSource::from_header`] rebuilds the source from it without
+//! netCDF-C: on many files, opening each through netCDF-C one after another dominated planning.
 
 use super::{ChunkGrid, ChunkSource, DecodedChunk, RawChunk, Values};
 use crate::error::{Error, Result};
@@ -13,14 +18,92 @@ use crate::model::{
 };
 use netcdf::AttributeValue;
 use netcdf::types::NcVariableType;
+use serde::{Deserialize, Serialize};
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::Mutex;
+
+/// Version of [`NcHeader`]; a cached header of another version is ignored.
+const HEADER_FORMAT: u32 = 1;
+
+/// Largest number of coordinate values kept in a header (regular and small curvilinear grids,
+/// time and bounds). Files with more (unstructured grids) open through netCDF-C every time.
+const HEADER_MAX_VALUES: usize = 1 << 18;
+
+/// What [`NetcdfSource::open`] reads through netCDF-C, enough to rebuild the source without the
+/// file. Floats are kept as bit patterns, so NaN and the exact values survive JSON.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NcHeader {
+    format: u32,
+    attrs: Vec<(String, HeaderAttr)>,
+    vars: Vec<HeaderVar>,
+    /// The variables `classify` read while opening, as f64 bit patterns.
+    values: Vec<(String, Vec<u64>)>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct HeaderVar {
+    name: String,
+    dtype: DType,
+    dims: Vec<(String, usize)>,
+    chunks: Vec<usize>,
+    attrs: Vec<(String, HeaderAttr)>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+enum HeaderAttr {
+    Text(String),
+    Ints(Vec<i64>),
+    F32s(Vec<u64>),
+    F64s(Vec<u64>),
+}
+
+fn to_header(attrs: &Attrs) -> Vec<(String, HeaderAttr)> {
+    let bits = |v: &[f64]| v.iter().map(|x| x.to_bits()).collect();
+    attrs
+        .iter()
+        .map(|(k, v)| {
+            let h = match v {
+                AttrValue::Text(s) => HeaderAttr::Text(s.clone()),
+                AttrValue::Ints(x) => HeaderAttr::Ints(x.clone()),
+                AttrValue::F32s(x) => HeaderAttr::F32s(bits(x)),
+                AttrValue::F64s(x) => HeaderAttr::F64s(bits(x)),
+            };
+            (k.clone(), h)
+        })
+        .collect()
+}
+
+fn from_header(attrs: &[(String, HeaderAttr)]) -> Attrs {
+    let floats = |v: &[u64]| v.iter().map(|&b| f64::from_bits(b)).collect();
+    Attrs(
+        attrs
+            .iter()
+            .map(|(k, h)| {
+                let v = match h {
+                    HeaderAttr::Text(s) => AttrValue::Text(s.clone()),
+                    HeaderAttr::Ints(x) => AttrValue::Ints(x.clone()),
+                    HeaderAttr::F32s(x) => AttrValue::F32s(floats(x)),
+                    HeaderAttr::F64s(x) => AttrValue::F64s(floats(x)),
+                };
+                (k.clone(), v)
+            })
+            .collect(),
+    )
+}
 
 /// A NetCDF file opened for reading.
 pub struct NetcdfSource {
     ds: Dataset,
-    file: Mutex<netcdf::File>,
+    path: String,
+    /// The open file; `None` until a read needs it when the source was rebuilt from a header.
+    file: Mutex<Option<netcdf::File>>,
     grids: HashMap<String, (ChunkGrid, DType, Encoding)>,
+    /// What opening read, for a cache (`None` when rebuilt from a header, or too large).
+    header: Option<NcHeader>,
+    /// Whole variables known without the file (rebuilt from a header): the coordinates and
+    /// time values `classify` read, which planning reads again.
+    known: HashMap<String, Vec<f64>>,
 }
 
 fn dtype_of(t: &NcVariableType) -> DType {
@@ -135,28 +218,12 @@ impl NetcdfSource {
                 .with("path", path)
                 .with_hint("cdors reads NetCDF files and Zarr stores (directories, *.zarr)")
         })?;
-        let attrs = read_attrs(file.attributes())?;
-        let mut dims: Vec<(String, usize)> = Vec::new();
+        let attrs = to_header(&read_attrs(file.attributes())?);
         let mut vars = Vec::new();
-        let mut grids = HashMap::new();
         for v in file.variables() {
-            let name = v.name();
-            let dtype = dtype_of(&v.vartype());
-            let vdims: Vec<VarDim> = v
-                .dimensions()
-                .iter()
-                .map(|d| VarDim {
-                    name: d.name(),
-                    size: d.len(),
-                    role: DimRole::Other,
-                })
-                .collect();
-            for d in &vdims {
-                if !dims.iter().any(|(n, _)| n == &d.name) {
-                    dims.push((d.name.clone(), d.size));
-                }
-            }
-            let shape: Vec<usize> = vdims.iter().map(|d| d.size).collect();
+            let dims: Vec<(String, usize)> =
+                v.dimensions().iter().map(|d| (d.name(), d.len())).collect();
+            let shape: Vec<usize> = dims.iter().map(|d| d.1).collect();
             let chunks = match v.chunking()? {
                 Some(c) if c.len() == shape.len() => c,
                 _ => shape
@@ -165,49 +232,129 @@ impl NetcdfSource {
                     .map(|(i, &n)| if i == 0 && shape.len() >= 2 { 1 } else { n })
                     .collect(),
             };
-            let attrs = read_attrs(v.attributes())?;
-            let encoding = super::encoding_from_attrs(&attrs, dtype, None);
+            vars.push(HeaderVar {
+                name: v.name(),
+                dtype: dtype_of(&v.vartype()),
+                dims,
+                chunks,
+                attrs: to_header(&read_attrs(v.attributes())?),
+            });
+        }
+        let mut src = Self::assemble(path, &attrs, &vars, Some(file));
+        // classify reads coordinates; the values go into the header
+        let read: RefCell<Vec<(String, Vec<u64>)>> = RefCell::new(Vec::new());
+        let mut ds = src.ds.clone();
+        model::classify(&mut ds, &|n| {
+            let v = src.read_var(n)?;
+            let mut r = read.borrow_mut();
+            if !r.iter().any(|(k, _)| k == n) {
+                r.push((n.to_owned(), v.iter().map(|x| x.to_bits()).collect()));
+            }
+            Ok(v)
+        })?;
+        src.ds = ds;
+        let values = read.into_inner();
+        if values.iter().map(|(_, v)| v.len()).sum::<usize>() <= HEADER_MAX_VALUES {
+            src.header = Some(NcHeader {
+                format: HEADER_FORMAT,
+                attrs,
+                vars,
+                values,
+            });
+        }
+        Ok(src)
+    }
+
+    /// Rebuilds the source from a header made by [`Self::open`] for this very file (the caller
+    /// checks that), without netCDF-C. The file is opened through netCDF-C only if something is
+    /// read later. `None` if the header has another format.
+    pub fn from_header(path: &str, header: &NcHeader) -> Result<Option<Self>> {
+        if header.format != HEADER_FORMAT {
+            return Ok(None);
+        }
+        let mut src = Self::assemble(path, &header.attrs, &header.vars, None);
+        src.known = header
+            .values
+            .iter()
+            .map(|(k, bits)| (k.clone(), bits.iter().map(|&b| f64::from_bits(b)).collect()))
+            .collect();
+        let mut ds = src.ds.clone();
+        model::classify(&mut ds, &|n| src.read_var(n))?;
+        src.ds = ds;
+        Ok(Some(src))
+    }
+
+    /// What opening read through netCDF-C (`None` if rebuilt from a header, or too large).
+    pub fn header(&self) -> Option<&NcHeader> {
+        self.header.as_ref()
+    }
+
+    /// The source before `classify`: dimensions, variables and chunk grids.
+    fn assemble(
+        path: &str,
+        attrs: &[(String, HeaderAttr)],
+        hvars: &[HeaderVar],
+        file: Option<netcdf::File>,
+    ) -> Self {
+        let mut dims: Vec<(String, usize)> = Vec::new();
+        let mut vars = Vec::new();
+        let mut grids = HashMap::new();
+        for hv in hvars {
+            for (n, s) in &hv.dims {
+                if !dims.iter().any(|(m, _)| m == n) {
+                    dims.push((n.clone(), *s));
+                }
+            }
+            let attrs = from_header(&hv.attrs);
+            let encoding = super::encoding_from_attrs(&attrs, hv.dtype, None);
             grids.insert(
-                name.clone(),
+                hv.name.clone(),
                 (
                     ChunkGrid {
-                        shape: shape.clone(),
-                        chunk_shape: chunks.iter().map(|&c| c.max(1)).collect(),
+                        shape: hv.dims.iter().map(|d| d.1).collect(),
+                        chunk_shape: hv.chunks.iter().map(|&c| c.max(1)).collect(),
                     },
-                    dtype,
+                    hv.dtype,
                     encoding.clone(),
                 ),
             );
             vars.push(Variable {
-                name,
+                name: hv.name.clone(),
                 kind: VarKind::Data,
-                dtype,
-                dims: vdims,
+                dtype: hv.dtype,
+                dims: hv
+                    .dims
+                    .iter()
+                    .map(|(n, s)| VarDim {
+                        name: n.clone(),
+                        size: *s,
+                        role: DimRole::Other,
+                    })
+                    .collect(),
                 attrs,
-                chunks,
+                chunks: hv.chunks.clone(),
                 encoding,
                 grid: None,
                 zaxis: None,
             });
         }
-        let mut src = Self {
+        Self {
             ds: Dataset {
                 source: path.to_owned(),
                 format: Format::NetCdf,
-                attrs,
+                attrs: from_header(attrs),
                 dims,
                 vars,
                 grids: Vec::new(),
                 zaxes: Vec::new(),
                 time: None,
             },
+            path: path.to_owned(),
             file: Mutex::new(file),
             grids,
-        };
-        let mut ds = src.ds.clone();
-        model::classify(&mut ds, &|n| src.read_var(n))?;
-        src.ds = ds;
-        Ok(src)
+            header: None,
+            known: HashMap::new(),
+        }
     }
 
     fn entry(&self, var: &str) -> Result<&(ChunkGrid, DType, Encoding)> {
@@ -222,12 +369,19 @@ impl NetcdfSource {
     fn read(&self, var: &str, origin: &[usize], shape: &[usize]) -> Result<Values> {
         let (_, dtype, enc) = self.entry(var)?;
         let _hdf5 = super::hdf5_lock();
-        let file = self
+        let mut file = self
             .file
             .lock()
             .map_err(|_| Error::internal("netCDF file lock poisoned"))?;
+        if file.is_none() {
+            let path = self.path.as_str();
+            *file = Some(netcdf::open(path).map_err(|e| {
+                Error::bad_data(format!("cannot open '{path}' as NetCDF: {e}")).with("path", path)
+            })?);
+        }
         let v = file
-            .variable(var)
+            .as_ref()
+            .and_then(|f| f.variable(var))
             .ok_or_else(|| Error::internal(format!("variable '{var}' vanished")))?;
         read_slab(&v, *dtype, enc, origin, shape)
     }
@@ -257,6 +411,9 @@ impl ChunkSource for NetcdfSource {
     }
 
     fn read_var(&self, var: &str) -> Result<Vec<f64>> {
+        if let Some(v) = self.known.get(var) {
+            return Ok(v.clone());
+        }
         let shape = self.entry(var)?.0.shape.clone();
         let origin = vec![0; shape.len()];
         Ok(self.read(var, &origin, &shape)?.to_f64())

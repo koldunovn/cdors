@@ -40,7 +40,8 @@
 #                               "did_not_finish" is the result), TMO_CDORS_W4=5400
 #   CDO_W4_TIMPCTL=0            skip cdo timpctl,95 on the full W4: by the Task 2 baseline it needs
 #                               >= 30 x 632 s = 5.3 h (docs/baseline.md); 1 runs it under TMO_CDO_W4
-#   WORKLOADS="W1 W2 W3 W4Y W4" subset to run (W4Y = W4 on its first year, 2020: cdo finishes there)
+#   WORKLOADS="W1 W2 W3 W4Y W4" subset to run (W4Y = W4's first 12 time chunks, 2020 to 2021-01-07:
+#                               cdo finishes there)
 #   OUT=/scratch/a/a270088/cdors-bench/bench-<jobid>   (fixture: .../fixture-<date>-<pid>)
 set -uo pipefail          # no -e: one failing run must not stop the others
 
@@ -346,6 +347,11 @@ REFS=/work/bm1344/k202193/Kerchunk/erc2002/control_1950/v20240618/atm_2d_1d_mean
 W2URL=https://eerie.cloud.dkrz.de/datasets/icon-esm-er.eerie-control-1950.v20240618.atmos.gr025.2d_daily_mean/kerchunk
 BOX=-30,40,30,75          # North Atlantic / Europe; the same box as the Task 2 baseline
 
+# cdo 2.6.0 returns the steps of a partial last time chunk of a HEALPix Zarr array rotated in time
+# (docs/deviations.md), so the W4 views end on a whole chunk (248 steps) and cdors reads the same
+# steps. W1's last chunk (days 3631-3652) lies inside 2029, where a yearly mean does not depend on
+# the order of the steps.
+
 # ---------------------------------------------------------------- W1: yearmean, HEALPix z9 Zarr, decade 2020-2029
 # 3652 daily steps (2020-01-02 .. 2029-12-31, stamped at the end of each day), 45.9 GB decoded.
 # cdo reads the single-variable view (bench/datasets.md); cdors and xarray read the 111-variable store.
@@ -379,7 +385,7 @@ if want W2; then
     D1=1950-01-01T00:00:00 D2=1960-01-01T23:59:59
     run w2_cdo_gridarea W2 cdo local "$O/w2_gridarea.nc" "$CDO" -f nc4 gridarea -sellonlatbox,$BOX -seltimestep,1 -select,name=pr "${W2FILES[0]}" "$O/w2_gridarea.nc"
     GB=15.17 NOTE="cold" run_cdors w2_cdors_parquet W2 local "$O/w2_cdors_parquet.nc" fldmean -sellonlatbox,$BOX -seldate,$D1,$D2 -selname,pr "$REFS"
-    GB=15.17 NOTE="same bytes as the Parquet run; includes building the NetCDF-4 chunk index unless cached" \
+    GB=15.17 NOTE="same bytes as the Parquet run; includes building the NetCDF-4 chunk index and header unless cached" \
         run_cdors w2_cdors_raw W2 local "$O/w2_cdors_raw.nc" fldmean -sellonlatbox,$BOX -selname,pr -mergetime "$G2A" "$G2B"
     GB=15.17 run_cdo w2_cdo_raw W2 local "$O/w2_cdo_raw.nc" fldmean -sellonlatbox,$BOX -select,name=pr "${W2FILES[@]}"
     GB=15.17 run_xr  w2_xr_parquet W2 local "$O/w2_xr_parquet.nc" w2 "$REFS" --var pr --box=$BOX --weights "$O/w2_gridarea.nc" \
@@ -413,17 +419,18 @@ if want W3; then
     compare W3 w3_cdo_remap w3_cdors_remapbil ulp 1
 fi
 
-# ---------------------------------------------------------------- W4Y: W4 on its first year (2020, 2928 3-hourly steps, 36.8 GB)
+# ---------------------------------------------------------------- W4Y: W4's first 12 time chunks (2020 to 2021-01-07, 2976 3-hourly steps, 37.4 GB)
 # cdo finishes here, so this is where values are checked and a cdo speed-up is measured.
+# (Job 28000341 ran 2928 steps, all of 2020: cdo's ydaymean was wrong on 26 days, see above.)
 if want W4Y; then
-    V4Y=$VIEWS/ngc4008_PT3H_9_tas_1y.zarr
-    make_view "$SRC4" "$V4Y" tas 2928
-    S="-seltimestep,1/2928 -selname,tas $SRC4"
-    GB=36.8 MEM=$CDORS_MEM TMO=$TMO_CDORS_W4 run_cdors w4y_cdors_timpctl  W4Y local "$O/w4y_cdors_timpctl.nc" timpctl,95 $S -timmin $S -timmax $S
-    GB=36.8 MEM=$CDORS_MEM TMO=$TMO_CDORS_W4 run_cdors w4y_cdors_ydaymean W4Y local "$O/w4y_cdors_ydaymean.nc" ydaymean $S
-    GB=36.8 MEM=$CDORS_MEM TMO=$TMO_CDORS_W4 cdors_range w4y_cdors W4Y local $S
-    GB=36.8 TMO=$TMO_CDO_W4 run_cdo w4y_cdo_timpctl  W4Y local "$O/w4y_cdo_timpctl.nc"  timpctl,95 "$(zarr "$V4Y")" -timmin "$(zarr "$V4Y")" -timmax "$(zarr "$V4Y")"
-    GB=36.8 TMO=$TMO_CDO_W4 run_cdo w4y_cdo_ydaymean W4Y local "$O/w4y_cdo_ydaymean.nc" ydaymean "$(zarr "$V4Y")"
+    V4Y=$VIEWS/ngc4008_PT3H_9_tas_2976.zarr
+    make_view "$SRC4" "$V4Y" tas 2976
+    S="-seltimestep,1/2976 -selname,tas $SRC4"
+    GB=37.4 MEM=$CDORS_MEM TMO=$TMO_CDORS_W4 run_cdors w4y_cdors_timpctl  W4Y local "$O/w4y_cdors_timpctl.nc" timpctl,95 $S -timmin $S -timmax $S
+    GB=37.4 MEM=$CDORS_MEM TMO=$TMO_CDORS_W4 run_cdors w4y_cdors_ydaymean W4Y local "$O/w4y_cdors_ydaymean.nc" ydaymean $S
+    GB=37.4 MEM=$CDORS_MEM TMO=$TMO_CDORS_W4 cdors_range w4y_cdors W4Y local $S
+    GB=37.4 TMO=$TMO_CDO_W4 run_cdo w4y_cdo_timpctl  W4Y local "$O/w4y_cdo_timpctl.nc"  timpctl,95 "$(zarr "$V4Y")" -timmin "$(zarr "$V4Y")" -timmax "$(zarr "$V4Y")"
+    GB=37.4 TMO=$TMO_CDO_W4 run_cdo w4y_cdo_ydaymean W4Y local "$O/w4y_cdo_ydaymean.nc" ydaymean "$(zarr "$V4Y")"
     if [[ ${STATUS[$RANGE]:-} != ok && ${STATUS[$RANGE]:-} != dry && ${STATUS[w4y_cdo_timpctl]:-} == ok ]]; then
         NOTE="bin width for the comparison (cdors range not available)" \
             run_cdo w4y_cdo_range W4Y local "$O/w4y_cdo_range.nc" sub -timmax "$(zarr "$V4Y")" -timmin "$(zarr "$V4Y")"
@@ -433,24 +440,25 @@ if want W4Y; then
     compare W4Y w4y_cdo_ydaymean w4y_cdors_ydaymean ulp 1
 fi
 
-# ---------------------------------------------------------------- W4: timpctl,95 and ydaymean, PT3H tas, 87664 steps, 1103 GB
-# cdors under --mem 32G (peak RSS from /usr/bin/time is the check); cdo through the full
+# ---------------------------------------------------------------- W4: timpctl,95 and ydaymean, PT3H tas, 87544 steps, 1101 GB
+# 353 whole time chunks: the store's last 120 steps (2049-12-17 to 2050-01-01) are left out, see above.
+# cdors under --mem 32G (peak RSS from /usr/bin/time is the check); cdo through the
 # single-variable view with a timeout: "did_not_finish" is a result. cdo runs last.
 if want W4; then
-    V4=$VIEWS/ngc4008_PT3H_9_tas_full.zarr
-    make_view "$SRC4" "$V4" tas
-    S="-selname,tas $SRC4"
-    GB=1103 MEM=$CDORS_MEM TMO=$TMO_CDORS_W4 run_cdors w4_cdors_timpctl  W4 local "$O/w4_cdors_timpctl.nc" timpctl,95 $S -timmin $S -timmax $S
-    GB=1103 MEM=$CDORS_MEM TMO=$TMO_CDORS_W4 run_cdors w4_cdors_ydaymean W4 local "$O/w4_cdors_ydaymean.nc" ydaymean $S
-    GB=1103 TMO=$TMO_CDO_W4 run_cdo w4_cdo_ydaymean W4 local "$O/w4_cdo_ydaymean.nc" ydaymean "$(zarr "$V4")"
+    V4=$VIEWS/ngc4008_PT3H_9_tas_87544.zarr
+    make_view "$SRC4" "$V4" tas 87544
+    S="-seltimestep,1/87544 -selname,tas $SRC4"
+    GB=1101 MEM=$CDORS_MEM TMO=$TMO_CDORS_W4 run_cdors w4_cdors_timpctl  W4 local "$O/w4_cdors_timpctl.nc" timpctl,95 $S -timmin $S -timmax $S
+    GB=1101 MEM=$CDORS_MEM TMO=$TMO_CDORS_W4 run_cdors w4_cdors_ydaymean W4 local "$O/w4_cdors_ydaymean.nc" ydaymean $S
+    GB=1101 TMO=$TMO_CDO_W4 run_cdo w4_cdo_ydaymean W4 local "$O/w4_cdo_ydaymean.nc" ydaymean "$(zarr "$V4")"
     if ((CDO_W4_TIMPCTL)); then
-        GB=1103 TMO=$TMO_CDO_W4 run_cdo w4_cdo_timpctl  W4 local "$O/w4_cdo_timpctl.nc"  timpctl,95 "$(zarr "$V4")" -timmin "$(zarr "$V4")" -timmax "$(zarr "$V4")"
+        GB=1101 TMO=$TMO_CDO_W4 run_cdo w4_cdo_timpctl  W4 local "$O/w4_cdo_timpctl.nc"  timpctl,95 "$(zarr "$V4")" -timmin "$(zarr "$V4")" -timmax "$(zarr "$V4")"
     else
         skip w4_cdo_timpctl W4 cdo local "not run: >= 5.3 h extrapolated (30 x 632 s for 2020 in the Task 2 baseline); CDO_W4_TIMPCTL=1 runs it"
     fi
     RANGE=none   # the bin width costs another pass over 1.1 TB: only when there is a cdo result to compare with
     if [[ ${STATUS[w4_cdo_timpctl]:-} == ok || ${STATUS[w4_cdo_timpctl]:-} == dry ]]; then
-        GB=1103 MEM=$CDORS_MEM TMO=$TMO_CDORS_W4 cdors_range w4_cdors W4 local $S
+        GB=1101 MEM=$CDORS_MEM TMO=$TMO_CDORS_W4 cdors_range w4_cdors W4 local $S
     fi
     compare W4 w4_cdo_timpctl w4_cdors_timpctl "bin:$(binwidth $RANGE)" 1
     compare W4 w4_cdo_ydaymean w4_cdors_ydaymean ulp 1

@@ -1,23 +1,24 @@
 //! NetCDF-4 (HDF5) files: metadata from netCDF-C, chunk data from the chunk index.
 //!
-//! [`Nc4Source::open`] first opens the file through netCDF-C ([`NetcdfSource`]) to build the
-//! dataset description, so it is identical to the serial netCDF path. It then loads (or builds
-//! once and caches) the file's [`Nc4Index`]. Every variable whose index entry is readable without
-//! HDF5 and whose chunk grid equals netCDF-C's is read directly: `read_chunk` returns the stored
-//! bytes (a positioned read, no HDF5, no lock) as [`RawChunk::Encoded`], and the filters
-//! (deflate, shuffle, fletcher32, blosc) are undone by the decoder on the compute pool. The other
-//! variables go through netCDF-C, serially.
+//! [`Nc4Source::open`] loads (or builds once and caches) the file's [`Nc4Index`], then builds the
+//! dataset description as the serial netCDF path does ([`NetcdfSource`]): through netCDF-C the
+//! first time, afterwards from the netCDF-C header cached with the index, without netCDF-C. Every
+//! variable whose index entry is readable without HDF5 and whose chunk grid equals netCDF-C's is
+//! read directly: `read_chunk` returns the stored bytes (a positioned read, no HDF5, no lock) as
+//! [`RawChunk::Encoded`], and the filters (deflate, shuffle, fletcher32, blosc) are undone by the
+//! decoder on the compute pool. The other variables go through netCDF-C, serially.
 //!
 //! Contiguous variables keep netCDF-C's chunk grid (one record per chunk, or the whole variable
 //! for 0-D and 1-D): their records are plain byte ranges in the file.
 //!
 //! `CDORS_NC4=netcdf` disables this reader; NetCDF-4 files are then read through netCDF-C only.
 
-use super::netcdf_fallback::NetcdfSource;
-use super::netcdf4_index::{Nc4File, Nc4Filter, Nc4Layout, Nc4Variable};
+use super::netcdf_fallback::{NcHeader, NetcdfSource};
+use super::netcdf4_index::{Nc4File, Nc4Filter, Nc4Index, Nc4Layout, Nc4Variable};
 use super::{ChunkDecoder, ChunkGrid, ChunkSource, DecodedChunk, EncodedChunk, RawChunk, Values};
 use crate::error::{Error, Result};
 use crate::model::{DType, Dataset, Encoding};
+use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
@@ -166,12 +167,31 @@ pub fn netcdf_only() -> bool {
 }
 
 impl Nc4Source {
-    /// Opens a NetCDF-4 file. Metadata comes from netCDF-C; the chunk index is loaded from
-    /// `$CDORS_CACHE/nc4index/` or built once through HDF5. If the index cannot be built, every
+    /// Opens a NetCDF-4 file. The chunk index is loaded from `$CDORS_CACHE/nc4index/` or built
+    /// once through HDF5; the metadata comes from the netCDF-C header cached with it, else from
+    /// netCDF-C (and the header is added to the cache). If the index cannot be built, every
     /// variable is read through netCDF-C (with a warning).
     pub fn open(path: &str) -> Result<Self> {
-        let nc = NetcdfSource::open(path)?;
-        let file = match Nc4File::open(Path::new(path)) {
+        let index = Nc4Index::open(Path::new(path));
+        let cached = index
+            .as_ref()
+            .ok()
+            .and_then(|i| i.header.as_ref())
+            .and_then(|h| NcHeader::deserialize(h).ok())
+            .and_then(|h| NetcdfSource::from_header(path, &h).ok().flatten());
+        let nc = match cached {
+            Some(nc) => nc,
+            None => NetcdfSource::open(path)?,
+        };
+        let file = match index.and_then(|mut i| {
+            if i.header.is_none()
+                && let Some(h) = nc.header()
+            {
+                i.header = serde_json::to_value(h).ok();
+                i.store();
+            }
+            Nc4File::with_index(i)
+        }) {
             Ok(f) => Arc::new(f),
             Err(e) => {
                 crate::exec::threads::warn(
