@@ -122,7 +122,18 @@ except for the points below. Each entry says what cdo does, what cdors does, and
 - **Weights are generated for the unmasked grid.** cdo regenerates weights whenever the
   missing-value mask of a field changes; cdors generates them once for the unmasked grid and
   reproduces cdo's per-method missing-value rules by renormalising (see `remap/weights.rs`).
-  Results agree with `cdo remap*` within 1 float32 ulp with identical missing patterns.
+  Results agree with `cdo remap*` within 1 float32 ulp. The missing patterns are identical
+  wherever cdors can tell from the unmasked weights which rule cdo applied. For `remapbil` from a
+  2-D (regular or curvilinear) source grid, cdo replaces the bilinear weights of a destination
+  whose search fails by a distance-weighted average of the valid neighbours (the "Bilinear
+  interpolation failed" warning), which cdors reproduces by renormalising; it recognises such
+  rows by a destination latitude outside the source latitudes, by four links that are not one
+  quad of the source index space, or by weights that are not bilinear. Two cases remain
+  undetected and give a missing value where cdo has one: a fallback whose four nearest source
+  points form a quad with distances symmetric enough to look bilinear, and a destination whose
+  search fails in cdo only because masked cells change the nearest source point. On the
+  HadGEM3-GC31-LL ORCA1 `tos` (curvilinear, 1950–59 and 2010–14, to r360x180, r144x72, n32) the
+  missing patterns are identical.
 - **`hpdegrade,zoom=0`.** cdo 2.6.0 ignores `zoom=0` and keeps the input resolution; cdors
   follows cdo 2.6.5 and degrades to nside 1.
 - **`--force` is accepted and ignored.** cdo needs it for `remapcon` from or to HEALPix grids;
@@ -136,10 +147,13 @@ except for the points below. Each entry says what cdo does, what cdors does, and
 - **`--json`.** cdo has no structured form; cdors prints one JSON object (README, "Print
   values"). Values of float32 variables appear there in their shortest float32 form, also the
   `info` mean (cdo's text shows 5 significant digits of the double mean).
-- **Parameter IDs** (`info`, `outputtab` keys `param` and `code`). cdo numbers NetCDF variables
-  −1, −2, … in file order (CDI). cdors uses the position among the data variables of the first
-  input, which matches cdo for NetCDF; Zarr stores have no variable order, so the IDs of Zarr
-  inputs follow the order in which cdors lists their variables.
+- **Parameter IDs** (`info`, `outputtab` keys `param` and `code`). cdors derives them as CDI
+  does: a `param` attribute (`"52.1.0"`), a numeric `code` (with `table`) attribute, or a name
+  `var<N>`/`code<N>`/`param<N>` give the ID; the code of a GRIB2-style parameter
+  (`num.cat.dis`) is −(position in the output + 1). Without these, cdo numbers NetCDF variables
+  −1, −2, … in file order; cdors uses the position among the data variables of the first input,
+  which matches cdo for NetCDF; Zarr stores have no variable order, so the IDs of Zarr inputs
+  without a `param` attribute follow the order in which cdors lists their variables.
 - **Several grids.** cdo's `output*` operators refuse a dataset whose variables are on different
   grids (`Output.cc`: "Too many different grids!"); cdors prints each variable on its own grid.
 - **`outputf` formats** must hold exactly one floating-point conversion (`%[flags][width]
@@ -156,6 +170,11 @@ except for the points below. Each entry says what cdo does, what cdors does, and
 - **Partial last chunk of a Zarr store read through NCZarr.** On a single-variable view of the
   nextGEMS W1 store with 731 timesteps (the last time chunk partial), cdo returned wrong values for
   11 timesteps (up to 0.21 K); cdors and xarray agree with each other.
+- **Time bounds of a time selection from a CMIP6 file.** On
+  `tos_Omon_HadGEM3-GC31-LL_historical_r1i1p1f3_gn_195001-201412.nc` (360_day calendar),
+  `cdo -selyear,2000` and `cdo -seltimestep,601/603` write the time bounds of the file's first
+  record (36000, 36030 days since 1850-01-01, i.e. January 1950) for every selected timestep; the
+  time values themselves are right. cdors writes each step's own bounds (54000–54030, …).
 - **`outputtab` with coordinate keys on a complete HEALPix grid.** cdo 2.6.0 ends with a
   segmentation fault on `outputtab,lon,lat,value -selname,tas hpz2_noleap.nc` (and with `x`,
   `y`); on a `sellonlatbox` subset it works. cdors prints the cell centres.

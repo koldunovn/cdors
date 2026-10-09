@@ -8,6 +8,7 @@
 pub mod area;
 pub mod dataset;
 pub mod grid;
+pub mod hpcoords;
 pub mod time;
 pub mod timegroup;
 pub mod zaxis;

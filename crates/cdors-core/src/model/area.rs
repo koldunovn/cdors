@@ -34,6 +34,7 @@
 
 use super::{Dataset, Grid, GridKind, HealpixOrder, ReadVar, Variable, ZAxis};
 use crate::error::{Error, ErrorCode, Result};
+use rayon::prelude::*;
 
 /// CDO's default planet radius in metres (`constants.h:14`, `C_EARTH_RADIUS`).
 pub const EARTH_RADIUS: f64 = 6_371_000.0;
@@ -479,7 +480,10 @@ fn gen_area_unstruct(ds: &Dataset, grid: &Grid, read: ReadVar<'_>) -> Result<Are
     if is_degrees(ya.units.as_deref()) {
         clat.iter_mut().chain(yc.iter_mut()).for_each(|v| *v *= d2r);
     }
+    // per-cell and independent: computed on the (small) global pool, the result is the same
+    // (20 M cells of an ICON R2B8 grid took about 1 s on one thread)
     let values = (0..n)
+        .into_par_iter()
         .map(|i| {
             let (lo, la) = (&clon[i * nv..(i + 1) * nv], &clat[i * nv..(i + 1) * nv]);
             if nv <= 4 {
