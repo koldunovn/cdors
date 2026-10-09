@@ -182,9 +182,20 @@ output is created.
 - **Percentiles near p = 100.** For the methods `hazen`, `weibull`, `median_unbiased` and
   `normal_unbiased`, cdo computes `j == n` and reads `x[n]`, one element past its buffer (zeroed
   memory), returning `(1−h)·x[n−1]`; cdors returns `x[n−1]`.
-- **Partial last chunk of a Zarr store read through NCZarr.** On a single-variable view of the
-  nextGEMS W1 store with 731 timesteps (the last time chunk partial), cdo returned wrong values for
-  11 timesteps (up to 0.21 K); cdors and xarray agree with each other.
+- **Partial last time chunk of a HEALPix Zarr array.** For a variable on a HEALPix grid
+  (`grid_mapping_name = "healpix"`), cdo 2.6.0 reads a whole time chunk per `nc_get_vara_float`
+  call and does not shorten the last call, where the array ends inside the chunk: on a 2928-step view
+  of the W4 store (chunks of 248 steps) it asks for start 2728, count 248. netCDF-C 4.10.0 rejects
+  that call. Asking cdo for one step there (`-seltimestep`, `outputf`) ends with `NetCDF:
+  Start+count exceeds dimension bound`. Reading through the input (`copy`, `daymean`, `ydaymean`,
+  `yearmean`) exits 0 without a message, but the steps of that chunk come out rotated in time: output
+  step 2728 holds step 2856, and the 200 steps are rotated by 128. Results that do not depend on the
+  order of the steps come out right, such as `timmean`, a whole-range `timpctl`, or a `yearmean`
+  whose year contains the whole chunk. On generic grids cdo reads one step per call and is not
+  affected. Seen on a 731-step view of the W1 store (11 steps wrong, up to 0.21 K in an earlier
+  check) and on the benchmark's W4Y `ydaymean`: 26 of 366 days wrong, by up to 46 K
+  (`docs/bench-results.md`). The full `ngc4008_PT3H_9.zarr` (87664 steps) ends inside a chunk too,
+  and cdo cannot read its last 120 steps. cdors and zarr-python agree to float32 rounding.
 - **Time bounds of a time selection from a CMIP6 file.** On
   `tos_Omon_HadGEM3-GC31-LL_historical_r1i1p1f3_gn_195001-201412.nc` (360_day calendar),
   `cdo -selyear,2000` and `cdo -seltimestep,601/603` write the time bounds of the file's first

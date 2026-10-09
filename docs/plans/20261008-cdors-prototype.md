@@ -579,9 +579,10 @@ cached. Rows needing `cdo` are skipped with a notice where it isn't available.
       `--mem 32G`; W2 both from Lustre (kerchunk) and from the EERIE cloud — the same-dataset local-versus-remote
       comparison — with xarray + dask + flox as the remote baseline; record wall time, peak memory
       (`/usr/bin/time -v`), bytes read and `cdo diffn` against cdo's result
-- [ ] **ask Nikolay before submitting** (about 10–20 node-hours); submit, report job ids, end the turn
-- [ ] write `docs/bench-results.md` against the pass marks, revised with the Task 2 numbers (proposed: at least 5× on
-      W1/W2, 3× on W3, W4 within 32 GB, remote throughput at least half of local)
+- [x] **ask Nikolay before submitting** (about 10–20 node-hours); submit, report job ids, end the turn
+- [x] write `docs/bench-results.md` against the pass marks, revised with the Task 2 numbers (proposed: at least 5× on
+      W1/W2, 3× on W3, W4 within 32 GB, remote throughput at least half of local) — W1–W3 and W4Y; the full W4 is
+      still open
 - ⚠️ 2026-10-09: scripts merged and smoke-tested (DRY, FIXTURE, PLAN_ONLY modes); `bench/bench.sbatch` estimate
       ≈ 5–6 node-hours, ≤ 8 (mostly cdo's 2 h timeouts on full W4); `WORKLOADS="W1 W2 W3 W4Y"` ≈ 1–1.5 node-hours.
       Python env for the xarray baseline: mambaforge `envs/hk25` (the only one with flox). Waits for Nikolay.
@@ -592,6 +593,18 @@ cached. Rows needing `cdo` are skipped with a notice where it isn't available.
       the job's plan check would have stopped the job). Submitted `WORKLOADS="W1 W2 W3 W4Y"` as job 28000341
       (limit 2 h, node l50327 excluded so the baseline's page cache cannot make cold runs warm). The full W4
       (≈ 2.5 node-hours) waits for a separate go-ahead.
+- ➕ 2026-10-09, job 28000341 (18 min, 0.3 node-hours), results in `docs/bench-results.md`.
+      - Pass marks met: W1 5.5× (cdors cold vs cdo warm; 10.3× on cdo's view), W2 8.9× on the Parquet refs, W3 3.7×
+        and 5.0×, W4Y within 14 GiB of 32 GB.
+      - Missed: W2 on the raw files, 4.9× against 5×, because planning reads the HDF5 metadata of the 240 files one
+        after another. Remote vs local is 0.05 because of the server cap; cdors is 1.3× faster than xarray on the same
+        endpoint.
+      - W4Y `timpctl` 48.6×, `ydaymean` 4.4×.
+      - Reads in flight: 128 beat 64 by 1.16× on cold decades.
+      - The one failed comparison (W4Y `ydaymean`, 26 days) is a cdo bug: on HEALPix Zarr cdo rotates the steps of a
+        partial last time chunk (`docs/deviations.md`). cdors matches zarr-python.
+- [ ] ➕ full W4 (≈ 2.5 node-hours, needs a go-ahead), after ending the W4 view on a whole chunk (87544 = 353 × 248
+      steps, cdors with the same `-seltimestep`), because cdo cannot read the store's last 120 steps
 
 ### Task 14: Agent check
 
