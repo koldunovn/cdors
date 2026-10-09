@@ -13,6 +13,7 @@
 # Output: one fresh directory $OUT (refuses to reuse one; nothing is ever deleted or overwritten):
 #   runs.tsv     run, workload, tool, source, wall_s, max_rss_kb, rc, status, decoded_gb, output, notes
 #                status: ok | not_implemented | failed | no_output | did_not_finish (timeout)
+#                        | skipped (not run on purpose; the note says why)
 #   compare.tsv  workload, ref, test, tag, abslim, values (PASS/FAIL/SKIP), timestamps, detail
 #   <run>.cmd/.log/.time per run, <run>.plan.json (cdors --plan --json, for bytes decoded), env.txt
 #
@@ -29,16 +30,16 @@
 #   CDO=/sw/spack-levante/cdo-2.6.0-akkxhz/bin/cdo   CDO_P=16 (cdo -P; -P 8 did not help in Task 2)
 #   CDORS=$CARGO_TARGET_DIR/release/cdors (copied into $OUT/bin first, so rebuilds cannot interfere)
 #   CDORS_P=128                 cdors -P (compute threads)
-#   CDORS_IO_THREADS=128        reads in flight; passed as "$CDORS_IO_FLAG $CDORS_IO_THREADS"
-#   CDORS_IO_FLAG               ### READS-IN-FLIGHT OPTION ### not in master's crates/cdors/src/parse.rs
-#                               (2026-10-09); the binary built that night lists "--io-threads <n>" in
-#                               --help. Default: --io-threads if `cdors --help` mentions it, else
-#                               empty (then CDORS_IO_THREADS is not passed and the note says so).
+#   CDORS_IO_THREADS            reads in flight (--io-threads); unset: not passed, so cdors uses its own
+#                               default (128 inside a Slurm job, 64 for URLs). W1 adds two cold runs on
+#                               other decades, one at --io-threads 64 and one at the default.
 #   CDORS_MEM=32G               W4 memory budget (--mem)
 #   XR_PY=.../envs/hk25/bin/python  xarray 2025.4, dask 2025.4, flox 0.10.1, zarr 2.18.7
 #   XR_WORKERS=128, XR_CLOUD_WORKERS=64   dask threads (local / EERIE cloud)
 #   TMO_DEFAULT=3600            timeout per run (s); TMO_CDO_W4=7200 for cdo on the full W4 (then
 #                               "did_not_finish" is the result), TMO_CDORS_W4=5400
+#   CDO_W4_TIMPCTL=0            skip cdo timpctl,95 on the full W4: by the Task 2 baseline it needs
+#                               >= 30 x 632 s = 5.3 h (docs/baseline.md); 1 runs it under TMO_CDO_W4
 #   WORKLOADS="W1 W2 W3 W4Y W4" subset to run (W4Y = W4 on its first year, 2020: cdo finishes there)
 #   OUT=/scratch/a/a270088/cdors-bench/bench-<jobid>   (fixture: .../fixture-<date>-<pid>)
 set -uo pipefail          # no -e: one failing run must not stop the others
@@ -54,8 +55,9 @@ XR_PY=${XR_PY:-/work/ab0995/a270088/mambaforge/envs/hk25/bin/python}
 VIEW_PY=${VIEW_PY:-/work/ab0995/a270088/mambaforge/bin/python}
 CDO_P=${CDO_P:-16}
 CDORS_P=${CDORS_P:-128}
-CDORS_IO_THREADS=${CDORS_IO_THREADS:-128}
+CDORS_IO_THREADS=${CDORS_IO_THREADS:-}
 CDORS_MEM=${CDORS_MEM:-32G}
+CDO_W4_TIMPCTL=${CDO_W4_TIMPCTL:-0}
 XR_WORKERS=${XR_WORKERS:-128}
 XR_CLOUD_WORKERS=${XR_CLOUD_WORKERS:-64}
 TMO_DEFAULT=${TMO_DEFAULT:-3600}
@@ -110,13 +112,8 @@ else
     printf "workload\tref\ttest\ttag\tabslim\tvalues\ttimestamps\tdetail\n" > "$OUT/compare.tsv"
 fi
 
-# reads-in-flight option (see header)
-if [[ -z ${CDORS_IO_FLAG+x} ]]; then
-    if "$CDORS_SRC" --help 2>&1 | grep -q -- '--io-threads'; then CDORS_IO_FLAG=--io-threads; else CDORS_IO_FLAG=; fi
-fi
-IO_OPT=(); IO_NOTE="io=${CDORS_IO_THREADS}"
-if [[ -n $CDORS_IO_FLAG ]]; then IO_OPT=("$CDORS_IO_FLAG" "$CDORS_IO_THREADS"); else IO_NOTE="io=default (no reads-in-flight option)"; fi
-CDORS_OPT=(-P "$CDORS_P" "${IO_OPT[@]}" -f nc4)
+# reads in flight: --io-threads only when CDORS_IO_THREADS (or a run's IO=) is set (see header)
+CDORS_OPT=(-P "$CDORS_P" -f nc4)
 CDO_OPT=(-P "$CDO_P" -f nc4)
 
 if ! ((DRY)); then
@@ -127,7 +124,8 @@ if ! ((DRY)); then
         "$CDO" --version 2>&1 | head -2
         echo "cdors: $CDORS_SRC (copied to $CDORS)"; ls -l "$CDORS_SRC"; sha256sum "$CDORS"
         "$CDORS" --version 2>&1
-        echo "CDORS_OPT=${CDORS_OPT[*]}  CDO_OPT=${CDO_OPT[*]}  CDORS_MEM=$CDORS_MEM  WORKLOADS=$WORKLOADS"
+        echo "CDORS_OPT=${CDORS_OPT[*]}  CDORS_IO_THREADS=${CDORS_IO_THREADS:-default}  CDO_OPT=${CDO_OPT[*]}  CDORS_MEM=$CDORS_MEM  WORKLOADS=$WORKLOADS"
+        echo "CDO_W4_TIMPCTL=$CDO_W4_TIMPCTL"
         echo "XR_PY=$XR_PY XR_WORKERS=$XR_WORKERS XR_CLOUD_WORKERS=$XR_CLOUD_WORKERS"
         echo "TMO_DEFAULT=$TMO_DEFAULT TMO_CDO_W4=$TMO_CDO_W4 TMO_CDORS_W4=$TMO_CDORS_W4 FIXTURE=$FIXTURE"
     } > "$OUT/env.txt" 2>&1
@@ -171,12 +169,23 @@ run() {
     tail -n 1 "$OUT/runs.tsv"
     STATUS[$id]=$status; OUTF[$id]=$outf
 }
+# skip ID WORKLOAD TOOL SOURCE NOTE : a runs.tsv line (status skipped) for a run not made on purpose
+skip() {
+    local id=$1 wl=$2 tool=$3 src=$4 note=$5
+    STATUS[$id]=skipped; OUTF[$id]=-
+    if ((DRY)); then printf '[%s] %s/%s/%s skipped: %s\n' "$id" "$wl" "$tool" "$src" "$note"; return 0; fi
+    ((PLAN_ONLY)) && return 0
+    printf '%s\t%s\t%s\t%s\t-\t-\t-\tskipped\t-\t-\t%s\n' "$id" "$wl" "$tool" "$src" "$note" >> "$OUT/runs.tsv"
+    tail -n 1 "$OUT/runs.tsv"
+}
 
 # cdors with the common options; also saves `--plan --json` (what will be read) beside the run.
-# [TMO=] [GB=] [NOTE=] [MEM=size] run_cdors ID WORKLOAD SOURCE OUTFILE CHAIN...
+# [TMO=] [GB=] [NOTE=] [MEM=size] [IO=reads in flight] run_cdors ID WORKLOAD SOURCE OUTFILE CHAIN...
 run_cdors() {
     local id=$1 wl=$2 src=$3 outf=$4; shift 4
+    local io=${IO:-$CDORS_IO_THREADS}
     local -a cmd=("$CDORS" "${CDORS_OPT[@]}")
+    [[ -n $io ]] && cmd+=(--io-threads "$io")
     [[ -n ${MEM:-} ]] && cmd+=(--mem "$MEM")
     cmd+=("$@" "$outf")
     if ((PLAN_ONLY)); then     # metadata only: can cdors open the inputs and plan the chain?
@@ -186,7 +195,7 @@ run_cdors() {
     if ! ((DRY)); then
         timeout 300 "${cmd[0]}" --plan --json "${cmd[@]:1}" > "$OUT/$id.plan.json" 2> "$OUT/$id.plan.err"
     fi
-    NOTE="${NOTE:+$NOTE; }P=$CDORS_P $IO_NOTE${MEM:+ mem=$MEM}" run "$id" "$wl" cdors "$src" "$outf" "${cmd[@]}"
+    NOTE="${NOTE:+$NOTE; }P=$CDORS_P io=${io:-default}${MEM:+ mem=$MEM}" run "$id" "$wl" cdors "$src" "$outf" "${cmd[@]}"
 }
 # [TMO=] [GB=] [NOTE=] run_cdo ID WORKLOAD SOURCE OUTFILE ARGS...
 run_cdo() {
@@ -345,6 +354,12 @@ if want W1; then
     make_view "$SRC1" "$V1" tas 3652
     D1=2020-01-01T00:00:00 D2=2029-12-31T23:59:59
     GB=45.95 NOTE="cold" run_cdors w1_cdors_store W1 local "$O/w1_cdors_store.nc" yearmean -seldate,$D1,$D2 -selname,tas "$SRC1"
+    # reads in flight on cold data: the next two decades of the store (each read once before, by the
+    # Task 2 probe, as decade 1 was by cdo), at --io-threads 64 (login-node default) and at the default
+    GB=46.2 NOTE="cold; reads-in-flight check" IO=64 run_cdors w1_cdors_io64 W1 local "$O/w1_cdors_io64.nc" \
+        yearmean -seldate,2030-01-01T00:00:00,2039-12-31T23:59:59 -selname,tas "$SRC1"
+    GB=46.2 NOTE="cold; reads-in-flight check" run_cdors w1_cdors_io_default W1 local "$O/w1_cdors_io_default.nc" \
+        yearmean -seldate,2040-01-01T00:00:00,2049-12-31T23:59:59 -selname,tas "$SRC1"
     GB=45.95 NOTE="view (cdo's input)" run_cdors w1_cdors_view W1 local "$O/w1_cdors_view.nc" yearmean "$V1"
     GB=45.95 run_cdo w1_cdo W1 local "$O/w1_cdo.nc" yearmean "$(zarr "$V1")"
     GB=45.95 run_xr  w1_xr_local W1 local "$O/w1_xr_local.nc" w1 "$SRC1" --var tas --start $D1 --end $D2 --workers "$XR_WORKERS"
@@ -387,6 +402,9 @@ if want W3; then
     G3="$ICON/oce_2d_1d_mean_remap025/run_199[1-5]*/*.nc"
     W=$O/w3_weights_bil_r360x180.nc
     run_cdo w3_cdo_genbil W3 local "$W" genbil,r360x180 -seltimestep,1 -select,name=to "${W3FILES[0]}"
+    if ((PLAN_ONLY)); then     # run() skips cdo here, but the plan of w3_cdors_remap needs the file (~1 s)
+        "$CDO" -s -f nc4 genbil,r360x180 -seltimestep,1 -select,name=to "${W3FILES[0]}" "$W" > "$O/w3_genbil.log" 2>&1
+    fi
     GB=7.58 NOTE="cold; cdo's weights" run_cdors w3_cdors_remap W3 local "$O/w3_cdors_remap.nc" remap,r360x180,"$W" -selname,to -mergetime "$G3"
     GB=7.58 NOTE="own weight cache (\$CDORS_CACHE/weights, made by cdo genbil on first use)" \
         run_cdors w3_cdors_remapbil W3 local "$O/w3_cdors_remapbil.nc" remapbil,r360x180 -selname,to -mergetime "$G3"
@@ -425,7 +443,11 @@ if want W4; then
     GB=1103 MEM=$CDORS_MEM TMO=$TMO_CDORS_W4 run_cdors w4_cdors_timpctl  W4 local "$O/w4_cdors_timpctl.nc" timpctl,95 $S -timmin $S -timmax $S
     GB=1103 MEM=$CDORS_MEM TMO=$TMO_CDORS_W4 run_cdors w4_cdors_ydaymean W4 local "$O/w4_cdors_ydaymean.nc" ydaymean $S
     GB=1103 TMO=$TMO_CDO_W4 run_cdo w4_cdo_ydaymean W4 local "$O/w4_cdo_ydaymean.nc" ydaymean "$(zarr "$V4")"
-    GB=1103 TMO=$TMO_CDO_W4 run_cdo w4_cdo_timpctl  W4 local "$O/w4_cdo_timpctl.nc"  timpctl,95 "$(zarr "$V4")" -timmin "$(zarr "$V4")" -timmax "$(zarr "$V4")"
+    if ((CDO_W4_TIMPCTL)); then
+        GB=1103 TMO=$TMO_CDO_W4 run_cdo w4_cdo_timpctl  W4 local "$O/w4_cdo_timpctl.nc"  timpctl,95 "$(zarr "$V4")" -timmin "$(zarr "$V4")" -timmax "$(zarr "$V4")"
+    else
+        skip w4_cdo_timpctl W4 cdo local "not run: >= 5.3 h extrapolated (30 x 632 s for 2020 in the Task 2 baseline); CDO_W4_TIMPCTL=1 runs it"
+    fi
     RANGE=none   # the bin width costs another pass over 1.1 TB: only when there is a cdo result to compare with
     if [[ ${STATUS[w4_cdo_timpctl]:-} == ok || ${STATUS[w4_cdo_timpctl]:-} == dry ]]; then
         GB=1103 MEM=$CDORS_MEM TMO=$TMO_CDORS_W4 cdors_range w4_cdors W4 local $S

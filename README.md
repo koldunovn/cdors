@@ -186,8 +186,9 @@ three limits are checked on the plan, before anything is read or written.
   fails with `memory_limit` or `intermediate_too_large` (exit 2); the hint says what to raise or
   select.
 
-Outside Slurm, cdors also uses at most 16 compute threads (`-P`); reads in flight default to 64
-everywhere (`--io-threads`). Heavy runs belong on a compute node:
+Outside Slurm, cdors also uses at most 16 compute threads (`-P`). Reads in flight
+(`--io-threads`) default to 128 inside a Slurm job and to 64 on login nodes or when an input is a
+URL (the EERIE cloud is no faster with more). Heavy runs belong on a compute node:
 
 ```sh
 srun -p compute -A <account> -t 01:00:00 cdors -ydaymean in.zarr clim.nc

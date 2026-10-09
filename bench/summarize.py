@@ -165,7 +165,8 @@ def main():
             s = ref["wall"] / test["wall"]
             meas, lower = f"> {s:.1f}× (cdo did not finish in {fmt(ref['wall'])} s)", True
         else:
-            marks.append((label, f"{ref['tool']} {ref['status']}", tgt, "–"))
+            why = f" ({ref['notes']})" if ref["status"] == "skipped" and ref["notes"] else ""
+            marks.append((label, f"{ref['tool']} {ref['status']}{why}", tgt, "–"))
             return
         if target is None:
             marks.append((label, meas, "–", "info"))
@@ -193,6 +194,7 @@ def main():
         marks.append((label, f"{gib:.1f} GiB peak RSS, {fmt(test['wall'])} s", "≤ 32 GiB", res))
 
     speed("W1 yearmean: cdors (store) vs cdo (view)", pick("w1_cdo", "fx1_cdo"), pick("w1_cdors_store", "fx1_cdors_store"), 5)
+    speed("W1 reads in flight, cold decades: cdors default vs --io-threads 64", pick("w1_cdors_io64"), pick("w1_cdors_io_default"), None)
     speed("W1 yearmean: cdors (view) vs cdo (view)", pick("w1_cdo"), pick("w1_cdors_view"), 5)
     speed("W1 yearmean: xarray+dask+flox vs cdo", pick("w1_cdo", "fx1_cdo"), pick("w1_xr_local", "fx1_xr_local"), None)
     speed("W2 fldmean box: cdors (Parquet refs) vs cdo (raw files)", pick("w2_cdo_raw"), pick("w2_cdors_parquet"), 5)

@@ -84,11 +84,25 @@ pub fn default_threads(cmd: &Command) -> usize {
     }
 }
 
-/// Blocking reads in flight: `--io-threads`, else 64, in Slurm jobs and on login nodes alike
-/// (cold Lustre reads are latency-bound: on a login node W1 decodes about 5.5 GB/s with 32
-/// reads in flight and 9-10 GB/s with 64, see `docs/baseline.md`).
+/// Blocking reads in flight: `--io-threads`, else 128 inside a Slurm job and 64 on login nodes or
+/// when an input is remote. Cold Lustre reads are latency-bound (40-80 MB/s each), so throughput
+/// grows with reads in flight until a node saturates at about 120: W1's chunk files came at
+/// 9-9.5 GB/s on a compute node with 116-245 in flight, 5.4 GB/s on a login node with 64
+/// (`docs/baseline.md`). The EERIE cloud caps a client at about 0.19 GB/s and was no faster at 64
+/// requests than at 16, so remote inputs stay at 64.
 pub fn default_io_threads(cmd: &Command) -> usize {
-    cmd.options.io_threads.unwrap_or(64)
+    cmd.options.io_threads.unwrap_or_else(|| {
+        let remote = cmd
+            .root
+            .paths()
+            .iter()
+            .any(|p| crate::io::remote::is_url(p));
+        if crate::plan::explain::in_slurm_job() && !remote {
+            128
+        } else {
+            64
+        }
+    })
 }
 
 /// Output chunks: `--chunks dim=n` where given; otherwise one timestep per chunk, and for Zarr

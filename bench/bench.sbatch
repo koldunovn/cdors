@@ -4,20 +4,20 @@
 # DO NOT SUBMIT without Nikolay's explicit go-ahead.
 #
 # Cost estimate (one exclusive node = 1 node-hour per hour):
-#   expected ~5-6 h  =>  ~5-6 node-hours; time limit 8 h  =>  at most 8 node-hours
+#   expected ~3.5-4 h  =>  ~3.5-4 node-hours; time limit 8 h  =>  at most 8 node-hours
 #   (the plan budgets 10-20 node-hours for Task 13).
-#   Where the time goes (cold Lustre; rates from docs/baseline.md):
+#   Where the time goes (rates from the Task 2 baseline, docs/baseline.md):
 #     pre-flight on the fixtures                                     ~1 min
-#     W1  cdors x2, cdo, xarray on 46 GB                              ~5-10 min
+#     W1  cdors x4 (2 of them the reads-in-flight check), cdo, xarray on 46 GB each  ~5-10 min
 #     W2  cdors x3 (Parquet, raw, cloud), cdo, xarray x2 (Lustre, cloud); the cloud is capped at
 #         ~0.19 GB/s, so each cloud run reads 13.2 GB in ~70 s or more  ~10-20 min
 #     W3  genbil, cdors x2, cdo on 7.6 GB                             ~5 min
-#     W4Y (2020 only, 37 GB) cdors x3, cdo timpctl (3 reads) and ydaymean  ~20-30 min
+#     W4Y (2020 only, 37 GB) cdors x3, cdo timpctl (632 s in Task 2) and ydaymean  ~20-30 min
 #     W4  (1.1 TB) cdors timpctl and ydaymean under --mem 32G        ~10-60 min
-#         cdo ydaymean and timpctl, 2 h timeout each (cdo reads ~0.18 GB/s => ydaymean ~1.7 h,
-#         timpctl ~5 h: expected "did_not_finish")                   up to 4 h
-#   Cheaper split, if wanted: WORKLOADS="W1 W2 W3 W4Y" (~1-1.5 node-hours), W4 later on its own.
-#   Shorter cdo timeouts: TMO_CDO_W4=3600 (W4 at most ~2.5 h).
+#         cdo ydaymean, 2 h timeout (Task 2: 191 s per year => ~1.6 h)  up to 2 h
+#         cdo timpctl is skipped (>= 5.3 h; CDO_W4_TIMPCTL=1 runs it with a 2 h timeout)
+#   Cheaper split, if wanted: WORKLOADS="W1 W2 W3 W4Y" (~1 node-hour; sbatch --time=02:00:00),
+#   W4 later on its own (~2.5 node-hours).
 #
 # Before submitting (login node):
 #   1. build cdors:   source /home/a/a270088/cdo/env.sh && cargo build --release
