@@ -12,11 +12,12 @@ on small fixtures (`tests/`). Where cdors deliberately differs from cdo, the dif
 in [docs/deviations.md](docs/deviations.md).
 
 **Status (2026-10-09): the prototype is complete.** On a Levante compute node it was 4.4–72×
-faster than cdo on the four benchmark workloads, with matching results. It read the EERIE cloud
-at the server's cap, 1.2–1.3× faster than xarray. Agents answered five of five test tasks
-correctly with it, at 2.7× the tokens they needed with cdo and Python. It ran exact percentiles
-and a daily climatology over 1.1 TB within a 32 GB budget. What was shown and what was not:
-[docs/criteria.md](docs/criteria.md), with the details in
+faster than cdo on the four benchmark workloads, with matching results. It read the EERIE cloud at
+the server's cap, 1.2–1.3× faster than xarray. Agents answered five of five test tasks correctly
+with it and needed less than half the time they took with cdo and Python (704 s against 1684 s),
+at 1.7× the cost ($2.73 against $1.57), mostly for reading its documentation. It ran exact
+percentiles and a daily climatology over 1.1 TB within a 32 GB budget. What was shown and what was
+not: [docs/criteria.md](docs/criteria.md), with the details in
 [docs/bench-results.md](docs/bench-results.md) and [docs/agent-check.md](docs/agent-check.md).
 
 **On Levante, without building:** `export PATH=/work/ab0995/a270088/cdors/bin:$PATH`. The guide with
