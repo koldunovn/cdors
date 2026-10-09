@@ -10,7 +10,7 @@ mark measures the EERIE server rather than the client.
 |---|---|---|---|
 | 1 | Faster than cdo on the same node, results within tolerance | **met** | 4.4–72× across W1–W4; every comparison with cdo passes, except one where cdo is wrong |
 | 2 | Analysis directly on remote Zarr is practical | **met in practice; the throughput mark is not** | 15 GB decoded from the EERIE cloud in 75–97 s, 1.2–1.3× xarray on the same endpoint; cdo cannot read it; the server caps every client at ≈ 0.2 GB/s |
-| 3 | Agents use it reliably | **met in a small check** | 5 of 5 tasks correct, no failed command, `--plan` used in every session; 2.7× the tokens of cdo + Python |
+| 3 | Agents use it reliably | **met in a small check** | 5 of 5 tasks correct, no failed command, `--plan` used in every session; with `cdors guide`, 4× faster than cdo + Python at 1.3× the cost |
 | 4 | Memory stays bounded on multi-TB inputs | **met at 1.1 TB** | full W4 (1.1 TB; 1.9 TB decoded for percentiles) within 23.7 GiB under `--mem 32G`; the 13 TB store was not run |
 
 ## 1. Faster than cdo, with matching results
@@ -73,7 +73,9 @@ Measured on an exclusive compute node (128 cores), cdors on cold data, cdo usual
   `--plan` before reading data. The wall time was 704 s, against 1684 s with cdo + Python, which also got five of
   five right.
 - **Cost.** 1.7× the tool calls and 2.7× the tokens ($2.73 against $1.57 at list price). The agents had to learn
-  cdors from its README and `docs/deviations.md` (34 kB), which they know nothing about from training.
+  cdors from its README and `docs/deviations.md` (34 kB), which they know nothing about from training. A re-check
+  with `cdors guide` (5 kB, 2026-10-10) instead: 5 of 5 correct, 426 s, $1.98, so 1.3× the cost of cdo + Python
+  and 4× faster (`docs/agent-check.md`).
 - **Limits.** One session per task and arm, with one model, on one day.
 - **Found while checking the criteria.** cdo options that cdors does not have (`-z zip`, `-k`, `-r`, ...) were
   taken for operators and failed with `unknown operator 'z'` and unrelated suggestions. They now fail as unknown

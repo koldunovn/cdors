@@ -77,3 +77,21 @@ runner's original scores. Wall time is the whole session; USD is the API list pr
 failed commands. The agents checked the plan before reading data and needed less wall time than with the tools
 they already know. The price is the learning cost in tokens, which a compact agent-facing reference would
 reduce. The sample is small: one session per task and arm, with one model.
+
+## Re-check with `cdors guide` (2026-10-10)
+
+The cdors arm again: the same five tasks and settings, but with `cdors guide` (5.4 kB, `docs/agent-guide.md`)
+instead of copies of the README and `docs/deviations.md` (34 kB). Run `20261010-005426`
+(`DOCS=guide bench/agent_check.sh`), cdors build 173f12a, results in `bench/agent/results-20261010-005426.md`.
+
+| | cdors, README + deviations | cdors, `cdors guide` | cdo + Python |
+|---|---|---|---|
+| Correct | 5 of 5 | 5 of 5 | 5 of 5 |
+| Wall time | 704 s | 426 s | 1684 s |
+| Tool calls | 69 | 56 | 40 |
+| Tokens (fresh + cache reads) | 0.24M + 2.19M | 0.17M + 1.42M | 0.13M + 0.78M |
+| Cost at list price | $2.73 | $1.98 | $1.57 |
+
+Per task: T1 56 s ($0.27), T2 149 s ($0.52), T3 88 s ($0.45), T4 90 s ($0.48), T5 44 s ($0.26). No session was
+flagged. With the guide, the cdors arm cost 27% less and took 39% less time: 1.3× the cost of cdo + Python, and
+4× faster.

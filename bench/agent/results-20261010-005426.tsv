@@ -1,0 +1,6 @@
+run_id	task	arm	verdict	variant	n_expected	answer	reference	max_rel_err	exit_code	wall_s	duration_ms	num_turns	tool_calls	bash_calls	cdors_calls	cdo_calls	python_calls	input_tokens	output_tokens	cache_creation_tokens	cache_read_tokens	cost_usd	stop	model	peeked	note
+20261010-005426	T1	A	correct		1	288.6954	288.695417	5.89e-08	0	55.7	54529	9	8	8	8	0	0	18	4041	19413	158836	0.2679632	success	claude-opus-5-5		
+20261010-005426	T2	A	correct		5	2.911299 2.882307 2.918659 2.897557 2.99566	2.911299 2.882307 2.918659 2.897558 2.995661	3.45e-07	0	148.7	147692	16	15	15	10	0	1	30	8272	34170	400755	0.519071	success	claude-opus-5-5		
+20261010-005426	T3	A	correct		1	17.979334	17.979334	0	0	87.9	86873	14	13	13	12	0	0	28	7174	30135	345269	0.4537258	success	claude-opus-5-5		
+20261010-005426	T4	A	correct		1	292.11996	292.119965	1.71e-08	0	89.7	88481	15	14	14	11	0	1	30	7375	31805	393862	0.4808323999999999	success	claude-opus-5-5		
+20261010-005426	T5	A	correct		1	2.34109	2.34109	0	0	44.4	43405	7	6	6	6	0	0	14	2843	21835	125402	0.25667639999999997	success	claude-opus-5-5		
