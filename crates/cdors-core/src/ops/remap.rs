@@ -15,6 +15,12 @@
 //! - weights are generated (or read) lazily, on the first field that needs them, so `--plan` never
 //!   runs cdo for weights.
 //!
+//! **Reads only what the weights touch.** When the weights are at hand while planning (a weight
+//! file, cached weights, or — in a run, not under `--plan` — weights generated right away), the
+//! source cells that no link reads are dropped like a selection (rows and columns of 2-D grids),
+//! so only the chunks holding linked cells are read; the weights are renumbered to the kept
+//! cells, which leaves every result bit-identical.
+//!
 //! Access class: whole extent over space. The stage's tiles are folded along the horizontal
 //! dimensions (a lane is one block of timesteps and levels); once a lane holds complete fields
 //! they are remapped together (`RemapWeights::apply_batch`), lanes in parallel. Values are summed
@@ -424,6 +430,33 @@ struct RemapMap {
 }
 
 impl GridWeights {
+    /// Whether the weights can be had without running cdo (given, or in the cache).
+    fn at_hand(&self, op: &str) -> bool {
+        let WeightSpec::Gen {
+            method,
+            target,
+            grid,
+            ..
+        } = &self.spec
+        else {
+            return true;
+        };
+        (|| -> Result<bool> {
+            let cache = WeightCache::from_env().map_err(|e| rerr(op, e))?;
+            let identity = grid_identity(grid)?;
+            let probe = WeightRequest {
+                method: *method,
+                target,
+                source: Path::new(""),
+                variable: None,
+                identity: SourceIdentity::Bytes(&identity),
+            };
+            let key = cache.key(&probe).map_err(|e| rerr(op, e))?;
+            Ok(cache.dir().join(format!("{key}.nc")).is_file())
+        })()
+        .unwrap_or(false)
+    }
+
     /// `--plan`: where the weights come from and whether cdo has to generate them.
     fn plan_info(&self, op: &str) -> serde_json::Value {
         let WeightSpec::Gen {
@@ -623,10 +656,49 @@ fn target_grid(
     Ok((g, hd, gen_target))
 }
 
+/// The selection (one map per horizontal dimension of `g`) that keeps only the source cells the
+/// links of `w` read, and the kept cells as flat source indices (ascending); `None` when it would
+/// keep more than half of the grid.
+fn prune(g: &GridDesc, w: &RemapWeights) -> Option<(Vec<IndexMap>, Vec<usize>)> {
+    let used = w.used_sources();
+    let n = w.src_size();
+    if used.is_empty() {
+        // nothing linked: the fields are still read, all results are missing
+        return None;
+    }
+    if g.sel.len() == 2 {
+        let nx = g.sel[1].len();
+        if nx == 0 || g.sel[0].len() * nx != n {
+            return None;
+        }
+        let mut rows: Vec<usize> = used.iter().map(|&f| f / nx).collect();
+        rows.dedup();
+        let mut cols: Vec<usize> = used.iter().map(|&f| f % nx).collect();
+        cols.sort_unstable();
+        cols.dedup();
+        if rows.len() * cols.len() * 2 > n {
+            return None;
+        }
+        let cells = rows
+            .iter()
+            .flat_map(|&y| cols.iter().map(move |&x| y * nx + x))
+            .collect();
+        Some((
+            vec![IndexMap::from_list(rows), IndexMap::from_list(cols)],
+            cells,
+        ))
+    } else {
+        if used.len() * 2 > n || g.sel.len() != 1 {
+            return None;
+        }
+        Some((vec![IndexMap::from_list(used.clone())], used))
+    }
+}
+
 /// Output description of a remapping operator.
-pub fn describe(node: &OpNode, mut inputs: Vec<Desc>) -> Result<Desc> {
+pub fn describe(node: &OpNode, mut inputs: Vec<Desc>, plan_only: bool) -> Result<Desc> {
     let op = node.name.as_str();
-    let input = inputs
+    let mut input = inputs
         .pop()
         .ok_or_else(|| Error::internal("remap without input"))?;
     no_pending_fold(op, &input)?;
@@ -737,6 +809,40 @@ pub fn describe(node: &OpNode, mut inputs: Vec<Desc>) -> Result<Desc> {
     }
     if out_vars.is_empty() {
         return Err(Error::bad_arguments(format!("{op}: no variables to remap")));
+    }
+    // read only the source cells the weights link
+    for &(gi, entry) in &grid_index {
+        let gw = &mut grids[entry];
+        if plan_only && !gw.at_hand(op) {
+            continue;
+        }
+        let w = gw.weights(op)?;
+        let Some((sel, cells)) = prune(&input.grids[gi], &w) else {
+            continue;
+        };
+        let rw = w.restrict_sources(&cells).map_err(|e| rerr(op, e))?;
+        gw.cell = OnceLock::new();
+        let _ = gw.cell.set(Ok(Arc::new(rw)));
+        let g = &mut input.grids[gi];
+        if let Some(xv) = &mut g.xvals {
+            *xv = sel[sel.len() - 1].to_vec().iter().map(|&i| xv[i]).collect();
+        }
+        for (k, m) in sel.iter().enumerate() {
+            g.sel[k] = g.sel[k].compose(m);
+        }
+        if g.kind == GridKind::Healpix {
+            g.kind = GridKind::Unstructured;
+        }
+        for (vi, v) in input.vars.iter_mut().enumerate() {
+            if v.grid != Some(gi) {
+                continue;
+            }
+            let hd = v.hdims();
+            for (k, m) in sel.iter().enumerate() {
+                v.select(hd[k], m);
+            }
+            fvars[vi].src_size = cells.len();
+        }
     }
     let kernel = FieldKernel {
         map: Arc::new(RemapMap {

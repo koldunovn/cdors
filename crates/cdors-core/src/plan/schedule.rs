@@ -10,8 +10,9 @@
 //! **Finer tiles.** A fold stage's tiles are chunk-aligned, so data stored one complete field per
 //! chunk gives a time fold a single lane. The lanes are therefore cut finer: the non-folded
 //! dimension with the longest segments is split into pieces (a divisor of the segment length, so
-//! pieces line up with the chunk grid), until there are about two lanes per compute thread, or
-//! until one lane's state fits its share of the budget. A decoded tile is sliced into its pieces,
+//! pieces line up with the chunk grid), until there are about two lanes per compute thread (for
+//! short-lived lanes, such as those of space folds, which are open only while their tiles are
+//! read: in every tile), or until one lane's state fits its share of the budget. A decoded tile is sliced into its pieces,
 //! each pushed into its own lane; every cell still sees its values in fold order, so the result
 //! is bit-identical to the unsplit run.
 //!
@@ -346,6 +347,12 @@ pub fn schedule(
             let seg_state = per_cell * (seg_len * other) as u64;
             if lanes_now < 2 * threads {
                 k = (2 * threads).div_ceil(lanes_now.max(1));
+            }
+            if !long_lived {
+                // short-lived lanes (space folds: the tiles of one time segment, cells
+                // fastest) are open a few at a time, so every tile is cut into enough lanes
+                // to keep the compute threads busy
+                k = k.max(2 * threads);
             }
             let live_state = if long_lived {
                 total_state

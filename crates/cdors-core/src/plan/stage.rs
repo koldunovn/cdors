@@ -60,6 +60,17 @@ pub trait FoldState: Send {
     fn push(&mut self, tile: Tile) -> Result<Vec<Tile>>;
     /// No more tiles: returns the remaining output tiles.
     fn finish(&mut self) -> Result<Vec<Tile>>;
+    /// [`FoldState::push`] of the tile with box `bx` whose values (C order) are
+    /// `values[range]`, a contiguous part of a larger tile, without copying it out. `None`: not
+    /// supported (nothing was pushed; the caller pushes a copy).
+    fn push_slice(
+        &mut self,
+        _bx: &TileBox,
+        _values: &Values,
+        _range: std::ops::Range<usize>,
+    ) -> Option<Result<Vec<Tile>>> {
+        None
+    }
 }
 
 /// One output variable of a stage.

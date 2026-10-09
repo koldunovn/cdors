@@ -606,6 +606,8 @@ pub struct Sources {
     pub mem: Option<u64>,
     /// Results of inner stages kept in memory (multi-stage chains), in execution order.
     pub intermediates: Vec<intermediate::Intermediate>,
+    /// `--plan`: describe without running anything (no weight generation by cdo).
+    pub plan_only: bool,
 }
 
 impl Sources {
@@ -859,6 +861,7 @@ pub fn build(cmd: &Command) -> Result<Plan> {
             None => Default::default(),
         },
         mem: cmd.options.mem,
+        plan_only: cmd.options.plan,
         ..Sources::default()
     };
     let desc = describe_tree(&cmd.root, &mut srcs)?;

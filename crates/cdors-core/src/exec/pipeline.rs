@@ -10,10 +10,12 @@
 //! - **decode + compute** (rayon pool of `-P` threads): every fetched chunk is decoded in its own
 //!   task; the task that decodes a tile's last chunk gathers the tile and evaluates the
 //!   expression.
-//! - **assemble + write** (one writer thread): copies finished tiles into output-chunk buffers
-//!   and hands each complete output chunk to the writer — in canonical order for NetCDF (one
-//!   netCDF-C call at a time anyway), as parallel encode tasks on the rayon pool for Zarr.
-//!   Releasing a tile's permit happens here, after its values have been copied.
+//! - **assemble** (the thread that finished a tile, usually a compute thread): copies the tile
+//!   into output-chunk buffers (each under its own lock; NaN becomes the writer's missing value
+//!   on the way) and releases the tile's permit; a chunk filled completely goes to the writer.
+//! - **write** (one writer thread): hands complete output chunks to the writer — in canonical
+//!   order for NetCDF (one netCDF-C call at a time anyway), as parallel encode tasks on the
+//!   rayon pool for Zarr.
 
 use super::{OutVar, Writer};
 use crate::error::{Error, Result};
@@ -95,6 +97,7 @@ struct Shared {
     /// are written by the writer thread.
     compute: OnceLock<rayon::ThreadPool>,
     write: OnceLock<rayon::ThreadPool>,
+    asm: Assembler,
 }
 
 impl Shared {
@@ -131,6 +134,11 @@ struct Sub {
 
 /// A lane of a fold stage: tiles that differ only along the folded dimension(s), pushed into
 /// one running state strictly in fold order.
+///
+/// The lock is held only to queue a tile or to take the next one: the thread that finds the
+/// lane idle becomes its drainer and pushes every tile that is next in fold order (the state
+/// moved out of the lock), including tiles queued by other threads meanwhile. No thread ever
+/// waits for a push of another.
 struct Lane {
     inner: Mutex<LaneInner>,
 }
@@ -139,8 +147,61 @@ struct LaneInner {
     next: usize,
     total: usize,
     /// Tiles waiting for their predecessors, with the counter of their dispatched tile.
-    pending: BTreeMap<usize, (Tile, Arc<AtomicUsize>)>,
+    pending: BTreeMap<usize, (LaneTile, Arc<AtomicUsize>)>,
+    /// The running state; `None` while a drainer pushes into it, and after the lane finished.
     state: Option<Box<dyn FoldState>>,
+    /// A thread is draining the lane.
+    busy: bool,
+}
+
+/// A tile of a lane: a whole computed tile, or a part of one (finer lanes), shared by the
+/// parts' lanes and cut out only if the lane's state cannot fold a contiguous part in place.
+enum LaneTile {
+    Whole(Tile),
+    Part(Arc<Tile>, TileBox),
+}
+
+/// Positions of box `bx` in the values of the enclosing box `outer` (C order), if they are
+/// contiguous: dimensions after the innermost one that `bx` cuts are whole, and the ones before
+/// it have length 1 in `bx`.
+fn contiguous(outer: &TileBox, bx: &TileBox) -> Option<std::ops::Range<usize>> {
+    let nd = bx.ranges.len();
+    let shape = outer.shape();
+    let mut inner = nd;
+    while inner > 0 && bx.ranges[inner - 1] == outer.ranges[inner - 1] {
+        inner -= 1;
+    }
+    if inner == 0 {
+        return Some(0..outer.len());
+    }
+    let k = inner - 1;
+    if (0..k).any(|d| bx.ranges[d].len() != 1) {
+        return None;
+    }
+    let stride: usize = shape[k + 1..].iter().product();
+    let mut off = 0;
+    for ((n, r), o) in shape.iter().zip(&bx.ranges).zip(&outer.ranges).take(k + 1) {
+        off = off * n + (r.start - o.start);
+    }
+    let start = off * stride;
+    Some(start..start + bx.len())
+}
+
+/// Pushes a lane tile into a lane state.
+fn push_lane_tile(state: &mut dyn FoldState, t: LaneTile) -> Result<Vec<Tile>> {
+    match t {
+        LaneTile::Whole(t) => state.push(t),
+        LaneTile::Part(tile, bx) => {
+            if let Some(r) = contiguous(&tile.bx, &bx)
+                && let Some(out) = state.push_slice(&bx, &tile.values, r)
+            {
+                return out;
+            }
+            let part = slice(&tile, &bx);
+            drop(tile);
+            state.push(part)
+        }
+    }
 }
 
 struct Fetch {
@@ -151,9 +212,15 @@ struct Fetch {
 }
 
 enum Msg {
-    /// A tile for the writer. `input`: it also completes one dispatched tile (map stages, or a
-    /// failed tile), whose window permit the writer releases after copying it.
+    /// A tile for the writer to assemble (failed tiles). `input`: it also completes one
+    /// dispatched tile, whose window permit the writer releases.
     Out { tile: Result<Tile>, input: bool },
+    /// A complete output chunk (variable, linear chunk index).
+    Chunk {
+        var: usize,
+        lin: usize,
+        buf: ChunkBuf,
+    },
     /// A dispatched tile was consumed by a fold kernel (its permit is already released).
     Consumed,
     /// Dispatch finished after this many tiles.
@@ -181,25 +248,56 @@ fn compute(job: &TileJob) -> Result<Tile> {
 
 /// The part `bx` of a computed tile.
 fn slice(tile: &Tile, bx: &TileBox) -> Tile {
-    let n = bx.len();
-    let mut dst = match &tile.values {
-        Values::F32(_) => new_values(DType::F32, n),
-        Values::F64(_) => new_values(DType::F64, n),
+    let values = match &tile.values {
+        Values::F32(v) => Values::F32(extract(v, &tile.bx, bx)),
+        Values::F64(v) => Values::F64(extract(v, &tile.bx, bx)),
     };
-    let so: Vec<usize> = tile.bx.ranges.iter().map(|r| r.start).collect();
-    let dorig: Vec<usize> = bx.ranges.iter().map(|r| r.start).collect();
-    copy_box(
-        &tile.values,
-        &so,
-        &tile.bx.shape(),
-        &mut dst,
-        &dorig,
-        &bx.shape(),
-    );
     Tile {
         var: tile.var,
         bx: bx.clone(),
-        values: dst,
+        values,
+    }
+}
+
+/// The values of box `bx` (inside `src_bx`) of `src`, row by row (no prefill).
+pub(crate) fn extract<T: Copy>(src: &[T], src_bx: &TileBox, bx: &TileBox) -> Vec<T> {
+    let n = bx.len();
+    let mut out = Vec::with_capacity(n);
+    let nd = bx.ranges.len();
+    if n == 0 || nd == 0 {
+        out.extend_from_slice(&src[..n.min(src.len())]);
+        return out;
+    }
+    let sshape = src_bx.shape();
+    let mut st = vec![1usize; nd];
+    for d in (0..nd - 1).rev() {
+        st[d] = st[d + 1] * sshape[d + 1];
+    }
+    // trailing dimensions covered in full merge into one row
+    let mut inner = nd - 1;
+    while inner > 0 && bx.ranges[inner] == src_bx.ranges[inner] {
+        inner -= 1;
+    }
+    let lo: Vec<usize> = (0..nd)
+        .map(|d| bx.ranges[d].start - src_bx.ranges[d].start)
+        .collect();
+    let row = bx.ranges[inner].len() * st[inner];
+    let mut idx = lo.clone();
+    loop {
+        let off: usize = (0..=inner).map(|d| idx[d] * st[d]).sum();
+        out.extend_from_slice(&src[off..off + row]);
+        let mut d = inner;
+        loop {
+            if d == 0 {
+                return out;
+            }
+            d -= 1;
+            idx[d] += 1;
+            if idx[d] < lo[d] + bx.ranges[d].len() {
+                break;
+            }
+            idx[d] = lo[d];
+        }
     }
 }
 
@@ -215,8 +313,15 @@ fn chunk_done(job: &Arc<TileJob>, tx: &Sender<Msg>, shared: &Arc<Shared>) {
     };
     let tile = match r {
         Ok(t) if job.subs.iter().all(|s| s.lane.is_some()) => t,
+        Ok(t) => {
+            // map stage: assembled here, then the tile is done
+            deliver(t, tx, shared);
+            shared.window.release();
+            let _ = tx.send(Msg::Consumed);
+            return;
+        }
         r => {
-            // map stage, or a failed tile (counted once, its permit released by the writer)
+            // a failed tile (counted once, its permit released by the writer)
             let _ = tx.send(Msg::Out {
                 tile: r,
                 input: true,
@@ -228,14 +333,22 @@ fn chunk_done(job: &Arc<TileJob>, tx: &Sender<Msg>, shared: &Arc<Shared>) {
         && sub.bx == tile.bx
     {
         let (lane, seq) = sub.lane.as_ref().expect("fold part");
-        lane_push(lane, *seq, tile, &job.pending_subs, tx, shared);
+        lane_push(
+            lane,
+            *seq,
+            LaneTile::Whole(tile),
+            &job.pending_subs,
+            tx,
+            shared,
+        );
         return;
     }
     // finer tiles: every part goes to its own lane, in parallel when there is a pool
+    let tile = Arc::new(tile);
     for sub in &job.subs {
-        let part = slice(&tile, &sub.bx);
         let (lane, seq) = sub.lane.clone().expect("fold part");
         let (tx, sh, cnt) = (tx.clone(), shared.clone(), job.pending_subs.clone());
+        let part = LaneTile::Part(tile.clone(), sub.bx.clone());
         let task = move || lane_push(&lane, seq, part, &cnt, &tx, &sh);
         match shared.compute.get() {
             Some(pool) if job.subs.len() > 1 => pool.spawn(task),
@@ -244,55 +357,79 @@ fn chunk_done(job: &Arc<TileJob>, tx: &Sender<Msg>, shared: &Arc<Shared>) {
     }
 }
 
-/// Adds a computed tile to its lane and pushes every tile that is next in fold order into the
-/// lane's state; finishes the lane after its last tile. A dispatched tile's window permit is
-/// released when all its parts have been pushed.
+/// Copies a finished output tile into the output chunks (on the calling thread) and hands the
+/// chunks it completed to the writer, before the tile counts as done.
+fn deliver(tile: Tile, tx: &Sender<Msg>, shared: &Shared) {
+    if shared.cancel.load(Ordering::Relaxed) {
+        return;
+    }
+    for (var, lin, buf) in shared.asm.add(tile) {
+        let _ = tx.send(Msg::Chunk { var, lin, buf });
+    }
+}
+
+/// Adds a computed tile to its lane. If no other thread is draining the lane, pushes every tile
+/// that is next in fold order into the lane's state (outside the lock) and finishes the lane
+/// after its last tile; otherwise returns at once, the drainer pushes it. A dispatched tile's
+/// window permit is released when all its parts have been pushed.
 fn lane_push(
     lane: &Lane,
     seq: usize,
-    tile: Tile,
+    tile: LaneTile,
     cnt: &Arc<AtomicUsize>,
     tx: &Sender<Msg>,
     shared: &Shared,
 ) {
     let mut g = lane.inner.lock().expect("lane lock");
     g.pending.insert(seq, (tile, cnt.clone()));
-    let mut consumed = Vec::new();
+    if g.busy {
+        return;
+    }
+    g.busy = true;
     loop {
         let n = g.next;
         let Some((t, c)) = g.pending.remove(&n) else {
-            break;
+            g.busy = false;
+            return;
         };
         g.next += 1;
-        consumed.push(c);
         let done = g.next == g.total;
-        let Some(state) = g.state.as_mut() else { break };
-        let mut outs = state.push(t);
-        if done {
-            outs = outs.and_then(|mut o| {
-                o.extend(state.finish()?);
-                Ok(o)
-            });
-            g.state = None;
-        }
-        match outs {
-            Ok(o) => {
-                for t in o {
-                    let _ = tx.send(Msg::Out {
-                        tile: Ok(t),
-                        input: false,
-                    });
+        let mut state = g.state.take();
+        drop(g);
+        if let Some(st) = state.as_mut() {
+            // the state lives outside the lock while it folds: a panicking kernel must not leave
+            // the lane busy (its queued tiles would never release their permits)
+            let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let outs = push_lane_tile(st.as_mut(), t);
+                if done {
+                    outs.and_then(|mut o| {
+                        o.extend(st.finish()?);
+                        Ok(o)
+                    })
+                } else {
+                    outs
                 }
+            }));
+            let panicked = r.is_err();
+            let outs = r.unwrap_or_else(|_| Err(Error::internal("a fold kernel panicked")));
+            if done || panicked {
+                state = None;
             }
-            Err(e) => shared.fail(e),
+            match outs {
+                Ok(o) => {
+                    for t in o {
+                        deliver(t, tx, shared);
+                    }
+                }
+                Err(e) => shared.fail(e),
+            }
         }
-    }
-    drop(g);
-    for c in consumed {
         if c.fetch_sub(1, Ordering::AcqRel) == 1 {
             shared.window.release();
             let _ = tx.send(Msg::Consumed);
         }
+        g = lane.inner.lock().expect("lane lock");
+        g.state = state;
     }
 }
 
@@ -353,10 +490,16 @@ struct ChunkBuf {
     filled: usize,
 }
 
-/// Collects tiles into output chunks.
+/// An output chunk being filled by several tiles.
+type OpenChunk = Arc<Mutex<ChunkBuf>>;
+
+/// Collects tiles into output chunks. Tiles are copied in by the threads that finish them, each
+/// chunk under its own lock; NaN becomes the writer's missing value on the way.
 struct Assembler {
     vars: Vec<OutVar>,
-    open: HashMap<(usize, usize), ChunkBuf>,
+    /// Per variable: what NaN becomes ([`Writer::missing_as`]).
+    missing: Vec<Option<f64>>,
+    open: Mutex<HashMap<(usize, usize), OpenChunk>>,
 }
 
 fn new_values(t: DType, n: usize) -> Values {
@@ -366,8 +509,55 @@ fn new_values(t: DType, n: usize) -> Values {
     }
 }
 
+/// Replaces NaN by `mv` (in the values' type).
+fn replace_nan(v: &mut Values, mv: f64) {
+    match v {
+        Values::F32(x) => {
+            let m = mv as f32;
+            for y in x.iter_mut() {
+                *y = if y.is_nan() { m } else { *y };
+            }
+        }
+        Values::F64(x) => {
+            for y in x.iter_mut() {
+                *y = if y.is_nan() { mv } else { *y };
+            }
+        }
+    }
+}
+
+/// The values of box `bx` (inside the box `sbx` of `src`) in type `t`, NaN replaced by `mv`.
+fn cut(src: &Values, sbx: &TileBox, bx: &TileBox, t: DType, mv: Option<f64>) -> Values {
+    let v = match (src, t) {
+        (Values::F32(s), DType::F32) => Values::F32(extract(s, sbx, bx)),
+        (Values::F64(s), DType::F32) => {
+            Values::F32(extract(s, sbx, bx).into_iter().map(|x| x as f32).collect())
+        }
+        (Values::F32(s), _) => {
+            Values::F64(extract(s, sbx, bx).into_iter().map(f64::from).collect())
+        }
+        (Values::F64(s), _) => Values::F64(extract(s, sbx, bx)),
+    };
+    own(v, t, mv)
+}
+
+/// `v` in type `t`, NaN replaced by `mv`.
+fn own(v: Values, t: DType, mv: Option<f64>) -> Values {
+    let mut v = match (v, t) {
+        (Values::F64(s), DType::F32) => Values::F32(s.into_iter().map(|x| x as f32).collect()),
+        (Values::F32(s), t) if t != DType::F32 => {
+            Values::F64(s.into_iter().map(f64::from).collect())
+        }
+        (v, _) => v,
+    };
+    if let Some(m) = mv {
+        replace_nan(&mut v, m);
+    }
+    v
+}
+
 /// Copies the part of `src` (a box with `src_origin`, `src_shape`) that lies inside `dst`
-/// (`dst_origin`, `dst_shape`); returns the number of elements copied.
+/// (`dst_origin`, `dst_shape`), NaN replaced by `mv`; returns the number of elements copied.
 fn copy_box(
     src: &Values,
     src_origin: &[usize],
@@ -375,6 +565,7 @@ fn copy_box(
     dst: &mut Values,
     dst_origin: &[usize],
     dst_shape: &[usize],
+    mv: Option<f64>,
 ) -> usize {
     let nd = src_shape.len();
     let lo: Vec<usize> = (0..nd).map(|d| src_origin[d].max(dst_origin[d])).collect();
@@ -412,6 +603,21 @@ fn copy_box(
                 }
             }
         }
+        if let Some(m) = mv {
+            match &mut *dst {
+                Values::F32(t) => {
+                    let m = m as f32;
+                    for y in &mut t[dof..dof + row] {
+                        *y = if y.is_nan() { m } else { *y };
+                    }
+                }
+                Values::F64(t) => {
+                    for y in &mut t[dof..dof + row] {
+                        *y = if y.is_nan() { m } else { *y };
+                    }
+                }
+            }
+        }
         n += row;
         let mut d = nd - 1;
         loop {
@@ -429,12 +635,18 @@ fn copy_box(
 }
 
 impl Assembler {
-    /// Adds a tile; returns the output chunks it completed as (var, linear chunk, buffer).
-    fn add(&mut self, tile: Tile) -> Vec<(usize, usize, ChunkBuf)> {
+    /// Adds a tile; returns the output chunks it completed as (var, linear chunk, buffer). An
+    /// output chunk that lies inside the tile is cut out of it directly (no buffer, no prefill;
+    /// the tile's values themselves when the tile is the chunk).
+    fn add(&self, tile: Tile) -> Vec<(usize, usize, ChunkBuf)> {
         let ov = &self.vars[tile.var];
+        let mv = self.missing.get(tile.var).copied().flatten();
         let nd = ov.shape.len();
         let origin: Vec<usize> = tile.bx.ranges.iter().map(|r| r.start).collect();
         let shape = tile.bx.shape();
+        if shape.contains(&0) {
+            return Vec::new();
+        }
         // chunk index ranges touched by the tile
         let c0: Vec<usize> = (0..nd).map(|d| origin[d] / ov.chunks[d]).collect();
         let c1: Vec<usize> = (0..nd)
@@ -443,32 +655,72 @@ impl Assembler {
         let counts = ov.chunk_counts();
         let mut done = Vec::new();
         let mut ci = c0.clone();
+        let mut values = Some(tile.values);
+        let single = c0 == c1;
         loop {
             let lin = ci.iter().zip(&counts).fold(0, |a, (&i, &n)| a * n + i);
             let key = (tile.var, lin);
-            let buf = self.open.entry(key).or_insert_with(|| {
-                let o: Vec<usize> = (0..nd).map(|d| ci[d] * ov.chunks[d]).collect();
-                let s: Vec<usize> = (0..nd)
-                    .map(|d| ov.chunks[d].min(ov.shape[d] - o[d]))
-                    .collect();
-                ChunkBuf {
-                    data: new_values(ov.dtype, s.iter().product()),
-                    origin: o,
-                    shape: s,
-                    filled: 0,
+            let o: Vec<usize> = (0..nd).map(|d| ci[d] * ov.chunks[d]).collect();
+            let s: Vec<usize> = (0..nd)
+                .map(|d| ov.chunks[d].min(ov.shape[d] - o[d]))
+                .collect();
+            let n: usize = s.iter().product();
+            let inside = (0..nd).all(|d| origin[d] <= o[d] && o[d] + s[d] <= origin[d] + shape[d]);
+            if inside {
+                let cb = TileBox {
+                    ranges: (0..nd).map(|d| o[d]..o[d] + s[d]).collect(),
+                };
+                let data = if single && cb == tile.bx {
+                    own(values.take().expect("tile values"), ov.dtype, mv)
+                } else {
+                    let src = values.as_ref().expect("tile values");
+                    cut(src, &tile.bx, &cb, ov.dtype, mv)
+                };
+                done.push((
+                    tile.var,
+                    lin,
+                    ChunkBuf {
+                        origin: o,
+                        shape: s,
+                        data,
+                        filled: n,
+                    },
+                ));
+            } else {
+                let slot = self
+                    .open
+                    .lock()
+                    .expect("assembler lock")
+                    .entry(key)
+                    .or_insert_with(|| {
+                        Arc::new(Mutex::new(ChunkBuf {
+                            data: new_values(ov.dtype, n),
+                            origin: o,
+                            shape: s,
+                            filled: 0,
+                        }))
+                    })
+                    .clone();
+                let mut g = slot.lock().expect("chunk lock");
+                let ChunkBuf {
+                    origin: bo,
+                    shape: bs,
+                    data,
+                    filled,
+                } = &mut *g;
+                let src = values.as_ref().expect("tile values");
+                *filled += copy_box(src, &origin, &shape, data, bo, bs, mv);
+                if *filled == n {
+                    let buf = ChunkBuf {
+                        origin: bo.clone(),
+                        shape: bs.clone(),
+                        data: std::mem::replace(data, Values::F32(Vec::new())),
+                        filled: n,
+                    };
+                    drop(g);
+                    self.open.lock().expect("assembler lock").remove(&key);
+                    done.push((tile.var, lin, buf));
                 }
-            });
-            buf.filled += copy_box(
-                &tile.values,
-                &origin,
-                &shape,
-                &mut buf.data,
-                &buf.origin,
-                &buf.shape,
-            );
-            if buf.filled == buf.shape.iter().product::<usize>() {
-                let b = self.open.remove(&key).expect("open chunk");
-                done.push((tile.var, lin, b));
             }
             let mut d = nd;
             loop {
@@ -518,6 +770,11 @@ pub fn run(stage: &Stage, out: &[OutVar], writer: Arc<dyn Writer>, s: Settings) 
         window: Semaphore::new(s.window),
         compute: OnceLock::new(),
         write: OnceLock::new(),
+        asm: Assembler {
+            vars: out.to_vec(),
+            missing: (0..out.len()).map(|v| writer.missing_as(v)).collect(),
+            open: Mutex::new(HashMap::new()),
+        },
     });
     let (fetch_tx, fetch_rx) = unbounded::<Fetch>();
     let (msg_tx, msg_rx) = unbounded::<Msg>();
@@ -649,6 +906,7 @@ pub fn run(stage: &Stage, out: &[OutVar], writer: Arc<dyn Writer>, s: Settings) 
                                             total: vs.lane_tiles,
                                             pending: BTreeMap::new(),
                                             state: Some(k.start(sv.var, &vs.lane_box(l))),
+                                            busy: false,
                                         }),
                                     })
                                 })
@@ -693,10 +951,6 @@ fn write_loop(
     threads: usize,
     any_order: bool,
 ) -> Result<()> {
-    let mut asm = Assembler {
-        vars: out.to_vec(),
-        open: HashMap::new(),
-    };
     // decided at the first chunk, when the pools are up: without a write pool, chunks are
     // written in canonical order on this thread
     let mut ordered: Option<bool> = None;
@@ -710,6 +964,39 @@ fn write_loop(
     let encode_slots = Arc::new(Semaphore::new(2 * threads.max(1)));
     let mut received = 0usize;
     let mut expected: Option<usize> = None;
+    let mut emit = |var: usize, lin: usize, buf: ChunkBuf| {
+        let wpool = shared.write.get();
+        if *ordered.get_or_insert(!any_order && (writer.ordered() || wpool.is_none())) {
+            pending.insert((var, lin), buf);
+            while let Some(b) = pending.remove(&next) {
+                if !shared.cancel.load(Ordering::Relaxed)
+                    && let Err(e) = writer.write_ready(next.0, &b.origin, &b.shape, b.data)
+                {
+                    shared.fail(e);
+                }
+                next.1 += 1;
+                while next.0 < nchunks.len() && next.1 >= nchunks[next.0] {
+                    next = (next.0 + 1, 0);
+                }
+            }
+        } else if let Some(pool) = wpool {
+            encode_slots.acquire();
+            let (w, sh, slots) = (writer.clone(), shared.clone(), encode_slots.clone());
+            pool.spawn(move || {
+                if !sh.cancel.load(Ordering::Relaxed)
+                    && let Err(e) = w.write_ready(var, &buf.origin, &buf.shape, buf.data)
+                {
+                    sh.fail(e);
+                }
+                slots.release();
+            });
+        } else if !shared.cancel.load(Ordering::Relaxed)
+            && let Err(e) = writer.write_ready(var, &buf.origin, &buf.shape, buf.data)
+        {
+            // any order, no write pool (NetCDF): written at once on this thread
+            shared.fail(e);
+        }
+    };
     while expected != Some(received) {
         let Ok(msg) = rx.recv() else { break };
         let (tile, input) = match msg {
@@ -719,6 +1006,10 @@ fn write_loop(
             }
             Msg::Consumed => {
                 received += 1;
+                continue;
+            }
+            Msg::Chunk { var, lin, buf } => {
+                emit(var, lin, buf);
                 continue;
             }
             Msg::Out { tile, input } => {
@@ -745,49 +1036,21 @@ fn write_loop(
                 continue;
             }
         };
-        let done = asm.add(tile);
+        let done = shared.asm.add(tile);
         release();
         for (var, lin, buf) in done {
-            let wpool = shared.write.get();
-            if *ordered.get_or_insert(!any_order && (writer.ordered() || wpool.is_none())) {
-                pending.insert((var, lin), buf);
-                while let Some(b) = pending.remove(&next) {
-                    if !shared.cancel.load(Ordering::Relaxed)
-                        && let Err(e) = writer.write(next.0, &b.origin, &b.shape, b.data)
-                    {
-                        shared.fail(e);
-                    }
-                    next.1 += 1;
-                    while next.0 < nchunks.len() && next.1 >= nchunks[next.0] {
-                        next = (next.0 + 1, 0);
-                    }
-                }
-            } else if let Some(pool) = wpool {
-                encode_slots.acquire();
-                let (w, sh, slots) = (writer.clone(), shared.clone(), encode_slots.clone());
-                pool.spawn(move || {
-                    if !sh.cancel.load(Ordering::Relaxed)
-                        && let Err(e) = w.write(var, &buf.origin, &buf.shape, buf.data)
-                    {
-                        sh.fail(e);
-                    }
-                    slots.release();
-                });
-            } else if !shared.cancel.load(Ordering::Relaxed)
-                && let Err(e) = writer.write(var, &buf.origin, &buf.shape, buf.data)
-            {
-                // any order, no write pool (NetCDF): written at once on this thread
-                shared.fail(e);
-            }
+            emit(var, lin, buf);
         }
     }
+    drop(emit);
     trace("all tiles assembled");
     encode_slots.wait_all(2 * threads.max(1));
     trace("all chunks written");
-    if !shared.cancel.load(Ordering::SeqCst) && (!asm.open.is_empty() || !pending.is_empty()) {
+    let open = shared.asm.open.lock().expect("assembler lock").len();
+    if !shared.cancel.load(Ordering::SeqCst) && (open > 0 || !pending.is_empty()) {
         return Err(Error::internal(format!(
             "{} output chunks were not completed",
-            asm.open.len() + pending.len()
+            open + pending.len()
         )));
     }
     Ok(())

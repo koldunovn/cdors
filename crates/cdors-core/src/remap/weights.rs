@@ -294,6 +294,46 @@ impl RemapWeights {
         &self.src_mask
     }
 
+    /// Source cells read by at least one link (ascending, distinct).
+    pub fn used_sources(&self) -> Vec<usize> {
+        let mut used = vec![false; self.src_size];
+        for &c in &self.col {
+            used[c as usize] = true;
+        }
+        (0..self.src_size).filter(|&i| used[i]).collect()
+    }
+
+    /// The same matrix on the source cells `cells` only (ascending, distinct, holding every cell
+    /// a link reads): link sources become positions in `cells`. Applied to the values of those
+    /// cells it gives bit-identical results.
+    pub fn restrict_sources(&self, cells: &[usize]) -> Result<Self, RemapError> {
+        let mut pos = vec![u32::MAX; self.src_size];
+        for (k, &c) in cells.iter().enumerate() {
+            pos[c] = k as u32;
+        }
+        let col = self
+            .col
+            .iter()
+            .map(|&c| match pos[c as usize] {
+                u32::MAX => Err(RemapError::Size {
+                    what: "restricted source",
+                    expected: self.src_size,
+                    got: c as usize,
+                }),
+                p => Ok(p),
+            })
+            .collect::<Result<Vec<u32>, RemapError>>()?;
+        Ok(Self {
+            src_size: cells.len(),
+            col,
+            src_mask: cells
+                .iter()
+                .map(|&c| self.src_mask.get(c).copied().unwrap_or(true))
+                .collect(),
+            ..self.clone()
+        })
+    }
+
     /// Number of valid (non-NaN) input cells that the weight file's `src_grid_imask` excludes.
     /// Non-zero means cdo would regenerate weights for this field and its result can differ.
     pub fn excluded_valid_cells<T: Value>(&self, src: &[T]) -> usize {

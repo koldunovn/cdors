@@ -329,6 +329,21 @@ impl FoldKernel for SpaceKernel {
         self.dim
     }
 
+    /// One accumulator and one f64 result per output value; 2-D blocks also hold a row strip
+    /// of tiles until it is complete (bounded by the lane's values).
+    fn state_bytes(&self, var: usize, lane: &TileBox) -> usize {
+        let Some(p) = self.vars.get(var) else {
+            return lane.len() * 8;
+        };
+        if p.nb == 2 {
+            return lane.len() * 8;
+        }
+        let shape = lane.shape();
+        let outer: usize = shape[..p.b0].iter().product();
+        let inner: usize = shape[p.b0 + p.nb..].iter().product();
+        outer * inner * p.nrows * (std::mem::size_of::<VarAcc>() + 8)
+    }
+
     fn start(&self, var: usize, lane: &TileBox) -> Box<dyn FoldState> {
         let p = self.vars[var].clone();
         match self.stat {
@@ -415,6 +430,26 @@ impl<A: Acc> State<A> {
                 }
             }
         }
+    }
+
+    /// Folds one tile of a block with at most one dimension, given by its box and its values
+    /// (C order); the same fold as [`Self::fold`] of that tile alone.
+    fn fold_values<T: Copy + Into<f64>>(&mut self, bx: &TileBox, v: &[T]) {
+        let p = &*self.p;
+        let (o_n, i_n) = (self.outer, self.inner);
+        let (x0, xn) = match p.nb {
+            1 => (bx.ranges[p.b0].start, bx.ranges[p.b0].len()),
+            _ => (0, 1),
+        };
+        let c = Cells {
+            base: 0,
+            ostride: xn * i_n,
+            n: xn,
+            f0: x0,
+            o_n,
+            i_n,
+        };
+        fold_cells(v, &c, p, &mut self.acc);
     }
 
     fn output(&self) -> Tile {
@@ -613,6 +648,22 @@ impl<A: Acc> FoldState for State<A> {
             return Err(Error::internal("space statistic: incomplete row strip"));
         }
         Ok(vec![self.output()])
+    }
+
+    fn push_slice(
+        &mut self,
+        bx: &TileBox,
+        values: &Values,
+        range: std::ops::Range<usize>,
+    ) -> Option<Result<Vec<Tile>>> {
+        if self.p.nb == 2 {
+            return None;
+        }
+        match values {
+            Values::F32(v) => self.fold_values(bx, &v[range]),
+            Values::F64(v) => self.fold_values(bx, &v[range]),
+        }
+        Some(Ok(Vec::new()))
     }
 }
 
