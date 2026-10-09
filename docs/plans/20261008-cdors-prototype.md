@@ -551,6 +551,15 @@ cached. Rows needing `cdo` are skipped with a notice where it isn't available.
       detected (HadGEM3 missing patterns identical); ICON R2B8/FESOM planning 4.3/3.6 s → 0.9 s (cell areas in
       parallel); memory budget enforced (window shrinks or memory_limit), glibc arenas capped at 4
 
+### ➕ Task 12d: Docs accuracy pass and polish
+
+- [x] README and docs/deviations.md checked against the binary (every README example run; agent section rewritten as
+      9 steps; --help exit codes completed; wrong ops notes fixed; duplicate deviation entries merged)
+- [ ] (running) behaviour bugs found by the docs pass: remap to a Zarr/dataset target grid fails on the first runs
+      (race after writing the target template); `remap,<grid>,<weights>` should not need CDORS_CACHE; clear error when
+      cdo is missing; `--plan` JSON lists glob/mergetime inputs as one string; plan text repeats operators and lists
+      timpctl's ignored inputs; `-s` does not silence warnings; `ops --json` uses `cdo_section` and `section`
+
 ### Task 13: Benchmarks W1–W4
 
 **Files:**
