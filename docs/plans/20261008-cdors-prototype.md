@@ -585,6 +585,13 @@ cached. Rows needing `cdo` are skipped with a notice where it isn't available.
 - ⚠️ 2026-10-09: scripts merged and smoke-tested (DRY, FIXTURE, PLAN_ONLY modes); `bench/bench.sbatch` estimate
       ≈ 5–6 node-hours, ≤ 8 (mostly cdo's 2 h timeouts on full W4); `WORKLOADS="W1 W2 W3 W4Y"` ≈ 1–1.5 node-hours.
       Python env for the xarray baseline: mambaforge `envs/hk25` (the only one with flox). Waits for Nikolay.
+- ➕ 2026-10-09, after the Task 2 baseline (Nikolay approved both changes and the reduced run): cdors defaults to
+      128 reads in flight inside Slurm jobs (64 on login nodes and for URLs); `bench.sh` no longer forces
+      `--io-threads`, adds two cold W1 runs on other decades (64 vs the default), skips cdo `timpctl` on the full W4
+      (`CDO_W4_TIMPCTL=1` runs it; ≥ 5.3 h extrapolated), and makes W3's weights in plan-only mode (without them
+      the job's plan check would have stopped the job). Submitted `WORKLOADS="W1 W2 W3 W4Y"` as job 28000341
+      (limit 2 h, node l50327 excluded so the baseline's page cache cannot make cold runs warm). The full W4
+      (≈ 2.5 node-hours) waits for a separate go-ahead.
 
 ### Task 14: Agent check
 

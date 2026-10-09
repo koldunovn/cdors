@@ -58,8 +58,10 @@ Deliberate and observed differences from cdo: `docs/deviations.md` (including fo
 1. ~~Day-1 baseline job~~ — **done** 2026-10-09 (job 27994857, 29 min, 0.5 node-hours). **Gate passed:** on
    cold W1 data the read probe reaches 16–17 GB/s decoded, cdo 0.13 GB/s cold and 0.93 GB/s warm (≈ 130× / 18×);
    W4 10.1 against 0.19 GB/s. Details and what follows from them: `docs/baseline.md`, last section.
-2. **Benchmarks W1–W4**: `sbatch bench/bench.sbatch` — ≈ 5–6 node-hours, at most 8 (mostly cdo's 2 h timeouts on
-   the full 1.1 TB W4); a cheaper first pass is `WORKLOADS="W1 W2 W3 W4Y"` ≈ 1–1.5 node-hours.
+2. **Benchmarks.** W1–W3 and one year of W4 **submitted** 2026-10-09 as job 28000341 (≈ 1 node-hour, limit 2 h;
+   results in `/scratch/a/a270088/cdors-bench/bench-28000341/summary.md`). **Still waiting:** the full 1.1 TB W4
+   (`sbatch --export=ALL,WORKLOADS=W4 bench/bench.sbatch`, ≈ 2.5 node-hours: cdors under `--mem 32G` plus cdo
+   `ydaymean`; cdo `timpctl` is now skipped).
 3. **Agent check**: pilot one session first, `RUN=1 TASKS=T5 ARMS=A bash bench/agent_check.sh`, then re-estimate;
    the full check is 10 headless sessions, ≈ 0.6–1.2M fresh tokens plus 3–8M cache-read tokens.
 
@@ -70,11 +72,10 @@ Deliberate and observed differences from cdo: `docs/deviations.md` (including fo
   throughput relative to the server's cap. The baseline job saw the same cap from a compute node (0.15–0.17 GB/s
   compressed, no faster at 64 requests than at 16); cdo reads the raw files of the same data at 0.15 GB/s.
 - **W4 size.** 1.1 TB (PT3H) is set up; the 13.2 TB PT15M store is the stress option.
-- **cdo timeout on full W4** (2 h each for `timpctl` and `ydaymean`); "did not finish" is recorded as a result.
-  From the baseline year (×30): `ydaymean` ≈ 1.6 h (should just finish), `timpctl,95` ≥ 5.3 h (cannot finish).
-  Skipping cdo's full-W4 `timpctl` and quoting the extrapolation would save up to 2 node-hours.
-- **Reads in flight on compute nodes.** One node saturates Lustre at about 120 reads in flight; cdors' default is
-  64. Proposal: 128 inside Slurm jobs, checked by one extra W1 run in the benchmark.
+- ~~cdo timeout on full W4~~ — decided 2026-10-09: cdo `timpctl` on the full W4 is skipped (≥ 5.3 h extrapolated
+  from the baseline year; `CDO_W4_TIMPCTL=1` runs it), cdo `ydaymean` keeps its 2 h timeout (≈ 1.6 h expected).
+- ~~Reads in flight on compute nodes~~ — done 2026-10-09: 128 by default inside Slurm jobs, 64 on login nodes and
+  for URLs; the benchmark compares 64 and the default on two cold W1 decades.
 - **Agent-check task T3**: its global mean barely depends on the remapping (skipping the remap misses the tolerance
   by only ≈ 2×). Keep, or ask for a regional value instead?
 
