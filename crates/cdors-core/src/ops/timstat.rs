@@ -296,6 +296,26 @@ impl FoldKernel for Kernel {
         DimRole::Time
     }
 
+    fn state_bytes(&self, var: usize, lane: &TileBox) -> usize {
+        let Some(td) = self.vars.get(var).copied().flatten() else {
+            return lane.len() * 8;
+        };
+        let cells = lane.len() / lane.ranges[td].len().max(1);
+        let acc =
+            8 + if self.stat.is_var() || self.stat == Stat::Range {
+                8
+            } else {
+                0
+            } + if matches!(self.stat, Stat::Min | Stat::Max | Stat::Range) {
+                0
+            } else {
+                4
+            };
+        // open groups, plus their results (f64 tiles) until the writer has them
+        let slots = if self.period { 1 } else { self.ngroups };
+        cells * slots * (acc + 8)
+    }
+
     fn start(&self, var: usize, lane: &TileBox) -> Box<dyn FoldState> {
         let td = self.vars.get(var).copied().flatten();
         let (outer, inner) = match td {

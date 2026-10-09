@@ -34,6 +34,8 @@ pub enum ErrorCode {
     ReadLimit,
     /// An intermediate result between stages does not fit in memory.
     IntermediateTooLarge,
+    /// The running state of one lane (one block of cells) does not fit in the memory budget.
+    MemoryLimit,
     /// An I/O failure that is worth retrying (network, transient storage errors).
     IoError,
     /// A malformed or unsupported file (corrupt metadata, unsupported data type or codec).
@@ -56,6 +58,7 @@ impl ErrorCode {
             Self::UnsupportedDimension => "unsupported_dimension",
             Self::ReadLimit => "read_limit",
             Self::IntermediateTooLarge => "intermediate_too_large",
+            Self::MemoryLimit => "memory_limit",
             Self::IoError => "io_error",
             Self::BadData => "bad_data",
             Self::Internal => "internal",
@@ -73,6 +76,7 @@ impl ErrorCode {
             | Self::UnsupportedGrid
             | Self::UnsupportedDimension
             | Self::IntermediateTooLarge
+            | Self::MemoryLimit
             | Self::BadData
             | Self::Internal => 2,
             Self::IoError => 3,

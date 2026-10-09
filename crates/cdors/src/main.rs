@@ -23,7 +23,8 @@ options:
   --json              machine-readable output and errors (one JSON object on stderr on failure)
   --plan              print what will be read (chunks, bytes, memory, weights) and stop;
                       the output file may be left out; with --json as JSON
-  --mem <size>        memory budget for tiles in flight (e.g. 32G; default 2G)
+  --mem <size>        memory budget (e.g. 32G; default 60% of the Slurm allocation,
+                      on login nodes 1/4 of available memory, at most 4G)
   --max-read <size>   refuse runs that decode more than this (default 64G on login nodes,
                       no limit inside Slurm jobs; `none` for no limit)
   --chunks <spec>     output chunks, dim=n[,dim=n...]

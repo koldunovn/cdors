@@ -21,6 +21,8 @@
 //! chunks of its primary leaf; `crate::exec` runs them.
 
 pub mod explain;
+pub mod intermediate;
+pub mod schedule;
 pub mod stage;
 pub mod tiling;
 
@@ -602,6 +604,8 @@ pub struct Sources {
     pub percentile: crate::kernels::percentile::PercentileMethod,
     /// `--mem` in bytes (`None`: the default budget).
     pub mem: Option<u64>,
+    /// Results of inner stages kept in memory (multi-stage chains), in execution order.
+    pub intermediates: Vec<intermediate::Intermediate>,
 }
 
 impl Sources {
@@ -729,9 +733,65 @@ pub enum OutKind {
 pub struct Plan {
     pub sources: Vec<Arc<dyn ChunkSource>>,
     pub desc: Desc,
+    /// All stages in execution order: one per intermediate (`intermediates[i]` is computed by
+    /// `stages[i]`), then the stage that writes the output.
     pub stages: Vec<stage::Stage>,
     pub output: String,
     pub out_kind: OutKind,
+    /// Inner results kept in memory (multi-stage chains).
+    pub intermediates: Vec<intermediate::Intermediate>,
+    /// Memory budget (`--mem` or [`schedule::default_mem`]).
+    pub budget: u64,
+    /// Compute threads and reads in flight, sized to the work.
+    pub threads: usize,
+    pub io_threads: usize,
+}
+
+impl Plan {
+    /// A plan without stages (writers of auxiliary files use it for the metadata).
+    pub fn new(
+        sources: Vec<Arc<dyn ChunkSource>>,
+        desc: Desc,
+        output: String,
+        out_kind: OutKind,
+    ) -> Self {
+        Self {
+            sources,
+            desc,
+            stages: Vec::new(),
+            output,
+            out_kind,
+            intermediates: Vec::new(),
+            budget: 0,
+            threads: 1,
+            io_threads: 1,
+        }
+    }
+
+    /// Bytes of all intermediates.
+    pub fn intermediate_bytes(&self) -> u64 {
+        self.intermediates.iter().map(|i| i.bytes).sum()
+    }
+
+    /// Largest number of passes over the input of any stage.
+    pub fn passes(&self) -> usize {
+        self.stages
+            .iter()
+            .map(|s| s.sched.passes)
+            .max()
+            .unwrap_or(1)
+    }
+
+    /// Estimated peak memory: the intermediates plus the largest stage.
+    pub fn peak_bytes(&self) -> u64 {
+        self.intermediate_bytes()
+            + self
+                .stages
+                .iter()
+                .map(|s| s.sched.peak_bytes)
+                .max()
+                .unwrap_or(0)
+    }
 }
 
 /// Describes an operator tree recursively.
@@ -818,18 +878,49 @@ pub fn build(cmd: &Command) -> Result<Plan> {
     if desc.vars.is_empty() {
         return Err(Error::bad_arguments("no variables to write"));
     }
-    let stages = vec![match &desc.fold {
+    let last = match &desc.fold {
         Some(f) => stage::Stage {
             kernel: Some(f.kernel.clone()),
             ..stage::Stage::map(&f.input, &srcs.srcs)?
         },
         None => stage::Stage::map(&desc, &srcs.srcs)?,
-    }];
+    };
+    let mut intermediates = std::mem::take(&mut srcs.intermediates);
+    let mut stages: Vec<stage::Stage> = intermediates
+        .iter_mut()
+        .map(|i| std::mem::replace(&mut i.stage, stage::Stage::empty()))
+        .collect();
+    stages.push(last);
+
+    // memory budget, threads, and the schedule of every stage
+    let budget = cmd.options.mem.unwrap_or_else(schedule::default_mem);
+    intermediate::check_budget(&intermediates, budget)?;
+    let ibytes: u64 = intermediates.iter().map(|i| i.bytes).sum();
+    let (threads, io_threads) = (
+        crate::exec::default_threads(cmd).max(1),
+        crate::exec::default_io_threads(cmd).max(1),
+    );
+    // pools no larger than the work: one task per chunk read (at least one per tile)
+    let tasks = stages
+        .iter()
+        .map(|s| crate::exec::pipeline::count_reads(s, threads.max(io_threads)))
+        .max()
+        .unwrap_or(1);
+    let (threads, io_threads) = (threads.min(tasks), io_threads.min(tasks));
+    for (i, st) in stages.iter_mut().enumerate() {
+        let hold = intermediates.get(i).map_or(0, |im| im.bytes);
+        st.sched = schedule::schedule(st, threads, io_threads, budget - ibytes, hold)?;
+        st.sched.bytes_read = explain::stage_stats(st).bytes_decoded;
+    }
     Ok(Plan {
         sources: srcs.srcs,
         desc,
         stages,
         out_kind: out_kind(cmd, &output),
         output,
+        intermediates,
+        budget,
+        threads,
+        io_threads,
     })
 }

@@ -15,7 +15,7 @@
 //! one-pass sum of squares (`docs/deviations.md`).
 //!
 //! **Kernel**: a lane is a block of cells; its state keeps the last `n` steps of its cells (a ring
-//! buffer, `n × cells × 8` bytes, checked against the memory budget at plan time) and emits
+//! buffer, `n × cells × 8` bytes; the planner sizes lanes and waves from it, `plan::schedule`) and emits
 //! output step `k` when step `k+n-1` arrives.
 
 use super::timstat::{Acc, Stat};
@@ -95,23 +95,13 @@ pub fn describe(node: &OpNode, inputs: Vec<Desc>, srcs: &mut Sources) -> Result<
 
     let mut out = input.clone();
     let mut vars = Vec::with_capacity(out.vars.len());
-    let mut state = 0u64;
     for v in &mut out.vars {
         let td = v.dim_of(DimRole::Time);
         if let Some(td) = td {
-            let cells: u64 = v
-                .dims
-                .iter()
-                .enumerate()
-                .filter(|(d, _)| *d != td)
-                .map(|(_, d)| d.size as u64)
-                .product();
-            state = state.max(cells * n as u64 * 8);
             v.dims[td].size = nout;
         }
         vars.push(td);
     }
-    super::pctl::check_budget(op, state, srcs, "the steps of one window")?;
     out.time = Some(time);
     out.fold = Some(Fold {
         input: Box::new(input),
@@ -130,6 +120,15 @@ struct Kernel {
 impl FoldKernel for Kernel {
     fn fold_dim(&self) -> DimRole {
         DimRole::Time
+    }
+
+    fn state_bytes(&self, var: usize, lane: &TileBox) -> usize {
+        let Some(td) = self.vars.get(var).copied().flatten() else {
+            return lane.len() * 8;
+        };
+        // ring buffer of n steps, accumulators and one result
+        let cells = lane.len() / lane.ranges[td].len().max(1);
+        cells * (self.n * 8 + 32)
     }
 
     fn start(&self, var: usize, lane: &TileBox) -> Box<dyn FoldState> {

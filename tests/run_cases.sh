@@ -21,8 +21,10 @@
 #   CDORS_JOBS        parallel rows          (default: 8, capped at 16: shared login node)
 #   CDORS_ZARR=1      (default) also run rows on hpz2_noleap on its Zarr v2/v3 copies (vs the cdo
 #                     reference); 0 switches the variant off
-#   CDORS_PLANNER=1   (default) also run rows on hpz2_noleap on the tiny-chunk Zarr copy; must equal
-#                     the first cdors output exactly. CDORS_PLANNER_MEM=1M adds "--mem 1M" to that run.
+#   CDORS_PLANNER=1   (default) also run rows on hpz2_noleap on the tiny-chunk Zarr copy, and on the
+#                     NetCDF fixture itself (one field per chunk), both with "--mem $CDORS_PLANNER_MEM"
+#                     (default 1M: finer tiles, lane waves, several passes); each must equal the first
+#                     cdors output exactly. CDORS_PLANNER_MEM= drops --mem and the second run.
 #   CDORS_THREADS     thread options of every cdors run   (default: -P 2 --io-threads 2)
 #   CDORS_THREADS_TINY  ... of the tiny-chunk run         (default: -P 3 --io-threads 3; different
 #                     from the base run, so the planner check also checks thread-count invariance)
@@ -41,7 +43,7 @@ export CDORS_TARGET=${CDORS_TARGET:-${CARGO_TARGET_DIR:-/work/ab0995/a270088/cdo
 export CDORS_FIXTURES=${CDORS_FIXTURES:-$CDORS_TARGET/fixtures}
 export CDORS=${CDORS:-$CDORS_TARGET/release/cdors}
 export CDORS_REF=${CDORS_REF:-$CDORS_TARGET/cdo-ref}
-export CDORS_ZARR=${CDORS_ZARR:-1} CDORS_PLANNER=${CDORS_PLANNER:-1} CDORS_PLANNER_MEM=${CDORS_PLANNER_MEM:-}
+export CDORS_ZARR=${CDORS_ZARR:-1} CDORS_PLANNER=${CDORS_PLANNER:-1} CDORS_PLANNER_MEM=${CDORS_PLANNER_MEM-1M}
 # modest threads: rows run in parallel on a login node with a per-user thread limit
 export CDORS_THREADS=${CDORS_THREADS--P 2 --io-threads 2} CDORS_THREADS_TINY=${CDORS_THREADS_TINY--P 3 --io-threads 3}
 VARIANT_FIXTURE=hpz2_noleap
@@ -127,6 +129,9 @@ run_job() {
     if [[ $CDORS_PLANNER == 1 ]]; then
       local tp=$CDORS_FIXTURES/${f1}_tiny.zarr2; [[ $f2 == "$f1" ]] && z2=$tp
       [[ -e $tp ]] && runs+=("tiny|$tp|$z2|$CDORS_THREADS_TINY${CDORS_PLANNER_MEM:+ --mem $CDORS_PLANNER_MEM}") || echo "planner variant skipped: $tp missing" >> "$log"
+      # the NetCDF fixture (one field per chunk) under the small budget: finer tiles, lane waves
+      # and several passes over the input
+      [[ -n $CDORS_PLANNER_MEM ]] && runs+=("mem|$in1|$in2|$CDORS_THREADS_TINY --mem $CDORS_PLANNER_MEM")
     fi
   fi
 
@@ -157,7 +162,7 @@ run_job() {
     if [[ $tag == text ]]; then
       local out=$dir/out_$name.txt
       "$CDORS" "${X[@]}" "${A[@]}" > "$out" 2>> "$log" || fail "cdors failed ($name)"
-      local want=$ref; [[ $name == tiny ]] && want=$base_out
+      local want=$ref; [[ $name == tiny || $name == mem ]] && want=$base_out
       if [[ $name != base && ${A[0]} == showname ]]; then
         diff -u <(tr -s ' \n' '\n\n' < "$want" | sort) <(tr -s ' \n' '\n\n' < "$out" | sort) >> "$log" || fail "names differ ($name)"
       else
@@ -167,7 +172,7 @@ run_job() {
       local out=$dir/out_$name.nc
       "$CDORS" --no_history "${X[@]}" "${A[@]}" "$out" >> "$log" 2>&1 || fail "cdors failed ($name)"
       local want=$ref lim=$abslim wantts=$CDORS_REF/$key.ts
-      if [[ $name == tiny ]]; then
+      if [[ $name == tiny || $name == mem ]]; then
         want=$base_out lim=0 wantts=$dir/ts_base
       fi
       if [[ $name == base ]]; then

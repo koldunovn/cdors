@@ -121,3 +121,12 @@ err:not_implemented  | -timcor {in} {in2}              | r36x18_std
 err:not_implemented  | help timcor {noout}             | r36x18_std
 err:no_coordinates   | -sellonlatbox,0,10,0,10 {in}    | nocoord_360
 err:no_coordinates   | -remapnn,r18x9 {in}             | nocoord_360
+
+# Task 7: multi-stage chains (inner results kept in memory as intermediates)
+ulp      | -fldmean -yearmean {in}                     | r36x18_std hpz2_noleap
+ulp      | -yearmean -fldmean {in}                     | r36x18_std hpz2_noleap
+ulp      | -sub -yearmean {in} -timmean {in}           | r36x18_std hpz2_noleap
+ulp      | -timmean -remapnn,r18x9 -selmon,1 {in}      | r36x18_std hpz2_noleap   # small enough for the --mem 1M planner check
+ulp      | -remapnn,r18x9 -ymonmean {in}               | r36x18_std hpz2_noleap
+ulp      | -ymonsub {in} -ymonmean {in}                | r36x18_std hpz2_noleap
+err:intermediate_too_large | --mem 10k -fldmean -ydaymean {in} | r36x18_std

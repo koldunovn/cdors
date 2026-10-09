@@ -27,15 +27,11 @@ use std::ops::Range;
 pub const SCHEMA: u32 = 1;
 /// `--max-read` default outside Slurm jobs (shared login nodes): 64 GB.
 pub const LOGIN_NODE_MAX_READ: u64 = 64_000_000_000;
-/// Memory budget for tiles in flight when `--mem` is not given.
-pub const DEFAULT_MEM: u64 = 2_000_000_000;
 /// Chunks per leaf whose stored size is looked up for the compressed-bytes estimate.
 const SAMPLE: usize = 8;
 /// Stored-size lookups for the whole plan (remote stores answer each with a request); leaves
 /// beyond the budget use the compression ratio of the chunks sampled so far.
 const SAMPLE_TOTAL: usize = 64;
-/// Bytes of running state per output value of a time statistic (sum, count, min, max, M2).
-const STATE_BYTES: u64 = 40;
 
 /// Reads of one stored variable in one stage.
 #[derive(Debug, Clone)]
@@ -115,14 +111,23 @@ fn leaf_reads(li: &LeafInfo, tiling: &VarTiling) -> (u64, u64) {
     (chunks, elems)
 }
 
-fn stage_stats(stage: &Stage) -> StageStats {
+/// Reads of one stage. In lane waves (`plan::schedule`) a tile whose lanes lie in several waves
+/// is read once per wave; its reads are scaled by the variable's tiles dispatched over all waves.
+pub(crate) fn stage_stats(stage: &Stage) -> StageStats {
     let mut st = StageStats::default();
     for (vi, sv) in stage.vars.iter().enumerate() {
         let ntiles = sv.tiling.num_tiles();
-        st.tiles += ntiles;
+        let reads = stage
+            .sched
+            .vars
+            .get(vi)
+            .map_or(ntiles as u64, |v| v.tile_reads);
+        let scale = |x: u64| (x as u128 * reads as u128 / ntiles.max(1) as u128) as u64;
+        st.tiles += reads as usize;
         for (k, li) in sv.leaves.iter().enumerate() {
             let esize = elem_size(leaf_dtype(li.src.as_ref(), &li.leaf.var));
             let (chunks, elems) = leaf_reads(li, &sv.tiling);
+            let (chunks, elems) = (scale(chunks), scale(elems));
             let bytes = elems * esize;
             st.chunks_read += chunks;
             st.bytes_decoded += bytes;
@@ -135,32 +140,6 @@ fn stage_stats(stage: &Stage) -> StageStats {
         }
     }
     st
-}
-
-/// Largest tile of the plan in bytes (values held as f64 while computed).
-pub fn max_tile_bytes(plan: &Plan) -> usize {
-    plan.stages
-        .iter()
-        .flat_map(|s| s.vars.iter())
-        .map(|v| {
-            v.tiling
-                .segments
-                .iter()
-                .map(|segs| segs.iter().map(|r| r.len()).max().unwrap_or(1))
-                .product::<usize>()
-        })
-        .max()
-        .unwrap_or(1)
-        * 8
-}
-
-/// Tiles in flight: enough to keep every read slot and compute thread busy, bounded by the
-/// memory budget (`--mem`, default 2 GB).
-pub fn tile_window(plan: &Plan, threads: usize, io_threads: usize, mem: Option<u64>) -> usize {
-    let budget = mem.unwrap_or(DEFAULT_MEM) as usize;
-    (io_threads + 2 * threads)
-        .min(budget / max_tile_bytes(plan).max(1))
-        .max(2)
 }
 
 /// The effective `--max-read` limit and where it comes from.
@@ -279,30 +258,22 @@ fn stage_operators(root: &OpNode, nstages: usize) -> Vec<Vec<String>> {
 /// `--plan --json`.
 pub fn to_json(plan: &Plan, cmd: &Command, threads: usize, io_threads: usize) -> Value {
     let stats = read_stats(plan);
-    let window = tile_window(plan, threads, io_threads, cmd.options.mem);
-    let tile_bytes = max_tile_bytes(plan) as u64;
     let ops_per_stage = stage_operators(&cmd.root, plan.stages.len());
-    let in_desc = plan.desc.fold.as_ref().map_or(&plan.desc, |f| &f.input);
 
     let mut stages = Vec::new();
     let mut weights = Vec::new();
     let mut total_comp: Option<u64> = Some(0);
-    let mut fold_state = 0u64;
-    let mut max_chunk = 0u64;
     let (mut budget, mut g_stored, mut g_dec) = (SAMPLE_TOTAL, 0u64, 0u64);
     for (si, (stage, st)) in plan.stages.iter().zip(&stats).enumerate() {
         let mut comp_stage: Option<u64> = Some(0);
         let mut sampled = 0usize;
         let mut vars = Vec::new();
         for (vi, sv) in stage.vars.iter().enumerate() {
-            let vd = &in_desc.vars[sv.var];
             let ntiles = sv.tiling.num_tiles();
             let mut leaves = Vec::new();
             for ls in st.leaves.iter().filter(|l| l.var == vi) {
                 let li = &sv.leaves[ls.leaf];
                 let esize = elem_size(leaf_dtype(li.src.as_ref(), &li.leaf.var));
-                max_chunk =
-                    max_chunk.max(li.grid.chunk_shape.iter().product::<usize>() as u64 * esize);
                 // compressed bytes: stored sizes of the first chunk of SAMPLE tiles spread
                 // evenly over the stage, scaled by decoded bytes
                 let (mut s_stored, mut s_dec, mut known) = (0u64, 0u64, true);
@@ -358,9 +329,9 @@ pub fn to_json(plan: &Plan, cmd: &Command, threads: usize, io_threads: usize) ->
                 }));
             }
             vars.push(json!({
-                "name": vd.name,
-                "dims": vd.dims.iter().map(|d| d.name.clone()).collect::<Vec<_>>(),
-                "shape": vd.shape(),
+                "name": sv.name,
+                "dims": sv.dims.iter().map(|d| d.name.clone()).collect::<Vec<_>>(),
+                "shape": sv.dims.iter().map(|d| d.size).collect::<Vec<_>>(),
                 "expr": sv.expr.describe(&plan.sources),
                 "tiles": ntiles,
                 "leaves": leaves,
@@ -376,8 +347,15 @@ pub fn to_json(plan: &Plan, cmd: &Command, threads: usize, io_threads: usize) ->
             weights.extend(w.iter().cloned());
         }
         let fold_dim = stage.kernel.as_ref().map(|k| k.fold_dim());
-        fold_state += fold_state_bytes(plan, cmd, fold_dim, window, tile_bytes);
         let ops = &ops_per_stage[si];
+        let sch = &stage.sched;
+        let intermediate = plan.intermediates.get(si).map(|im| {
+            json!({
+                "name": im.name,
+                "bytes": im.bytes,
+                "chunk_shapes": im.lay.iter().map(|o| o.chunks.clone()).collect::<Vec<_>>(),
+            })
+        });
         stages.push(json!({
             "index": si,
             "kind": if stage.kernel.is_some() { "fold" } else { "map" },
@@ -389,7 +367,15 @@ pub fn to_json(plan: &Plan, cmd: &Command, threads: usize, io_threads: usize) ->
                 DimRole::Vertical => "vertical",
                 _ => "other",
             }),
-            "passes": 1,
+            "passes": sch.passes,
+            "lanes": sch.lanes,
+            "waves": sch.waves,
+            "lane_major": sch.waves > 1,
+            "tiles_in_flight": sch.window,
+            "tile_bytes": sch.tile_bytes,
+            "lane_state_bytes": sch.state_bytes,
+            "peak_bytes_estimate": sch.peak_bytes,
+            "writes_intermediate": intermediate,
             "tiles": st.tiles,
             "chunks_read": st.chunks_read,
             "bytes_decoded": st.bytes_decoded,
@@ -407,10 +393,17 @@ pub fn to_json(plan: &Plan, cmd: &Command, threads: usize, io_threads: usize) ->
         .filter_map(|p| std::fs::metadata(p).ok())
         .map(|m| m.len())
         .sum();
-    let tiles_mem = window as u64 * tile_bytes * 2;
-    let reads_mem = io_threads as u64 * max_chunk;
-    let out_mem = output_step_bytes(plan) * 2;
-    let peak = tiles_mem + reads_mem + fold_state + out_mem + weights_bytes;
+    // the stage with the largest estimate decides the peak; intermediates live throughout
+    let top = plan
+        .stages
+        .iter()
+        .max_by_key(|s| s.sched.peak_bytes)
+        .map(|s| s.sched.clone())
+        .unwrap_or_default();
+    let tiles_mem = top.window as u64 * top.tile_bytes;
+    let inter_mem = plan.intermediate_bytes();
+    let peak = plan.peak_bytes() + weights_bytes;
+    let window = plan.stages.last().map_or(2, |s| s.sched.window);
     let lim = read_limit(cmd);
     let total_dec: u64 = stats.iter().map(|s| s.bytes_decoded).sum();
     json!({
@@ -421,7 +414,7 @@ pub fn to_json(plan: &Plan, cmd: &Command, threads: usize, io_threads: usize) ->
         "stages": stages,
         "totals": {
             "stages": plan.stages.len(),
-            "passes": plan.stages.len(),
+            "passes": plan.passes(),
             "tiles": stats.iter().map(|s| s.tiles).sum::<usize>(),
             "chunks_read": stats.iter().map(|s| s.chunks_read).sum::<u64>(),
             "bytes_decoded": total_dec,
@@ -430,14 +423,15 @@ pub fn to_json(plan: &Plan, cmd: &Command, threads: usize, io_threads: usize) ->
         },
         "memory": {
             "peak_bytes_estimate": peak,
-            "budget_bytes": cmd.options.mem.unwrap_or(DEFAULT_MEM),
-            "tiles_in_flight": window,
-            "tile_bytes_max": tile_bytes,
+            "budget_bytes": plan.budget,
+            "budget_source": if cmd.options.mem.is_some() { "--mem" } else { "default" },
+            "tiles_in_flight": top.window,
+            "tile_bytes_max": top.tile_bytes,
             "parts": {
                 "tiles_in_flight": tiles_mem,
-                "reads_in_flight": reads_mem,
-                "fold_state": fold_state,
-                "output_buffers": out_mem,
+                "fold_state": top.state_bytes,
+                "output_buffers": top.out_hold,
+                "intermediates": inter_mem,
                 "remap_weights": weights_bytes,
             },
         },
@@ -454,59 +448,6 @@ pub fn to_json(plan: &Plan, cmd: &Command, threads: usize, io_threads: usize) ->
             "exceeded": lim.limit.is_some_and(|l| total_dec > l),
         },
     })
-}
-
-/// Values of one output timestep (all variables), as f64.
-fn output_step_bytes(plan: &Plan) -> u64 {
-    plan.desc
-        .vars
-        .iter()
-        .map(|v| {
-            v.dims
-                .iter()
-                .filter(|d| d.role != DimRole::Time)
-                .map(|d| d.size as u64)
-                .product::<u64>()
-                * 8
-        })
-        .sum()
-}
-
-/// Running state of a fold stage: time statistics keep a state per output value of every open
-/// group (multi-year statistics keep all groups open); remapping and HEALPix operators buffer
-/// complete input fields per lane; field statistics keep small accumulators.
-fn fold_state_bytes(
-    plan: &Plan,
-    cmd: &Command,
-    fold_dim: Option<DimRole>,
-    window: usize,
-    tile_bytes: u64,
-) -> u64 {
-    let per_step = output_step_bytes(plan) / 8;
-    match fold_dim {
-        None => 0,
-        Some(DimRole::Time) => {
-            let multi_year = ops::timstat::parse(&cmd.root.name).is_some()
-                && ["ymon", "yday", "yseas", "yhour"]
-                    .iter()
-                    .any(|p| cmd.root.name.starts_with(p));
-            let open = if multi_year {
-                plan.desc.ntime().max(1) as u64
-            } else {
-                1
-            };
-            per_step * open * STATE_BYTES
-        }
-        Some(_) => {
-            let whole =
-                ops::lookup(&cmd.root.name).is_some_and(|s| s.class == AccessClass::WholeExtent);
-            if whole {
-                window as u64 * tile_bytes
-            } else {
-                per_step * STATE_BYTES * window as u64
-            }
-        }
-    }
 }
 
 /// Plain-text rendering of [`to_json`] for humans.
@@ -539,9 +480,17 @@ pub fn to_text(p: &Value) -> String {
             ),
             None => String::new(),
         };
+        let waves = match st["waves"].as_u64() {
+            Some(w) if w > 1 => format!(", {} lanes in {w} waves (lane-major)", st["lanes"]),
+            _ => String::new(),
+        };
+        let inter = match st["writes_intermediate"]["bytes"].as_u64() {
+            Some(n) => format!(", result kept in memory ({})", fmt_bytes(n)),
+            None => String::new(),
+        };
         let _ = writeln!(
             s,
-            "stage {} of {nst}: {}{kernel}, {} pass(es)",
+            "stage {} of {nst}: {}{kernel}, {} pass(es){waves}{inter}",
             st["index"].as_u64().unwrap_or(0) + 1,
             ops.join(" -> "),
             st["passes"]
@@ -598,11 +547,13 @@ pub fn to_text(p: &Value) -> String {
     let m = &p["memory"];
     let _ = writeln!(
         s,
-        "memory: ~{} peak (estimate: {} tiles in flight of up to {}, fold state {}, output buffers {})",
+        "memory: ~{} peak of {} budget (estimate: {} tiles in flight of up to {}, lane states {}, intermediates {}, output buffers {})",
         b(&m["peak_bytes_estimate"]),
+        b(&m["budget_bytes"]),
         m["tiles_in_flight"],
         b(&m["tile_bytes_max"]),
         b(&m["parts"]["fold_state"]),
+        b(&m["parts"]["intermediates"]),
         b(&m["parts"]["output_buffers"])
     );
     let t = &p["totals"];

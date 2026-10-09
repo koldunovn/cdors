@@ -16,8 +16,9 @@ use std::path::Path;
 use std::sync::Arc;
 use zarrs::array::{Array, ArrayMetadata, ArrayMetadataV2, ArrayMetadataV3};
 use zarrs::filesystem::FilesystemStore;
+use zarrs::storage::{ReadableWritableStorageTraits, StoreKey};
 
-type Store = FilesystemStore;
+type Store = dyn ReadableWritableStorageTraits;
 
 /// zstd level of written chunks (1: fast; output writing is often the bottleneck).
 const ZSTD_LEVEL: i32 = 1;
@@ -43,6 +44,7 @@ fn array_json(
     dtype: DType,
     dims: &[String],
     attrs: &Map<String, Value>,
+    compress: bool,
 ) -> Value {
     let (v3t, v2t, fill) = match dtype {
         DType::F32 => ("float32", "<f4", json!("NaN")),
@@ -52,12 +54,17 @@ fn array_json(
     if v2 {
         let mut a = attrs.clone();
         a.insert("_ARRAY_DIMENSIONS".into(), json!(dims));
+        let compressor = if compress {
+            json!({"id": "zstd", "level": ZSTD_LEVEL})
+        } else {
+            Value::Null
+        };
         json!({
             "zarr_format": 2,
             "shape": shape,
             "chunks": chunks,
             "dtype": v2t,
-            "compressor": {"id": "zstd", "level": ZSTD_LEVEL},
+            "compressor": compressor,
             "fill_value": fill,
             "order": "C",
             "filters": null,
@@ -65,6 +72,12 @@ fn array_json(
             "attributes": a,
         })
     } else {
+        let mut codecs = vec![json!({"name": "bytes", "configuration": {"endian": "little"}})];
+        if compress {
+            codecs.push(
+                json!({"name": "zstd", "configuration": {"level": ZSTD_LEVEL, "checksum": false}}),
+            );
+        }
         json!({
             "zarr_format": 3,
             "node_type": "array",
@@ -73,10 +86,7 @@ fn array_json(
             "chunk_grid": {"name": "regular", "configuration": {"chunk_shape": chunks}},
             "chunk_key_encoding": {"name": "default", "configuration": {"separator": "/"}},
             "fill_value": fill,
-            "codecs": [
-                {"name": "bytes", "configuration": {"endian": "little"}},
-                {"name": "zstd", "configuration": {"level": ZSTD_LEVEL, "checksum": false}}
-            ],
+            "codecs": codecs,
             "attributes": attrs,
             "dimension_names": dims,
         })
@@ -94,10 +104,10 @@ fn make_array(store: &Arc<Store>, path: &str, meta: Value, v2: bool) -> Result<A
     Ok(a)
 }
 
-fn write_json(path: &Path, v: &Value) -> Result<()> {
+fn write_json(store: &Store, key: &str, v: &Value) -> Result<()> {
     let s = serde_json::to_vec_pretty(v).map_err(zerr)?;
-    std::fs::write(path, s)?;
-    Ok(())
+    let k = StoreKey::new(key).map_err(zerr)?;
+    store.set(&k, s.into()).map_err(zerr)
 }
 
 /// Pads a trimmed edge chunk to the full chunk shape with NaN.
@@ -144,16 +154,29 @@ impl ZarrWriter {
         v2: bool,
         history: Option<&str>,
     ) -> Result<Self> {
+        std::fs::create_dir(path)?;
+        let store: Arc<Store> = Arc::new(FilesystemStore::new(path).map_err(zerr)?);
+        Self::create_in(store, plan, lay, v2, history, true)
+    }
+
+    /// Writes the metadata and coordinates into any store (the filesystem, or memory for the
+    /// intermediates of multi-stage chains); `compress: false` stores raw little-endian values.
+    pub fn create_in(
+        store: Arc<Store>,
+        plan: &Plan,
+        lay: &[OutVar],
+        v2: bool,
+        history: Option<&str>,
+        compress: bool,
+    ) -> Result<Self> {
         let meta: OutMeta = out_meta(plan, lay, history)?;
         zarrs::config::global_config_mut().set_include_zarrs_metadata(false);
-        std::fs::create_dir(path)?;
-        let store = Arc::new(FilesystemStore::new(path).map_err(zerr)?);
         let global = attrs_json(&meta.global);
         let mut consolidated = Map::new();
         if v2 {
             let g = json!({"zarr_format": 2});
-            write_json(&path.join(".zgroup"), &g)?;
-            write_json(&path.join(".zattrs"), &Value::Object(global.clone()))?;
+            write_json(&*store, ".zgroup", &g)?;
+            write_json(&*store, ".zattrs", &Value::Object(global.clone()))?;
             consolidated.insert(".zgroup".into(), g);
             consolidated.insert(".zattrs".into(), Value::Object(global.clone()));
         }
@@ -173,7 +196,15 @@ impl ZarrWriter {
         for c in &meta.coords {
             let shape = c.shape.clone();
             let chunks: Vec<usize> = shape.iter().map(|&n| n.max(1)).collect();
-            let m = array_json(v2, &shape, &chunks, c.dtype, &c.dims, &attrs_json(&c.attrs));
+            let m = array_json(
+                v2,
+                &shape,
+                &chunks,
+                c.dtype,
+                &c.dims,
+                &attrs_json(&c.attrs),
+                compress,
+            );
             record(&c.name, &m);
             let a = make_array(&store, &format!("/{}", c.name), m, v2)?;
             let idx = vec![0u64; shape.len()];
@@ -194,19 +225,21 @@ impl ZarrWriter {
             let mut aj = attrs_json(attrs);
             aj.remove("_FillValue");
             aj.remove("missing_value");
-            let m = array_json(v2, &ov.shape, &ov.chunks, ov.dtype, &ov.dims, &aj);
+            let m = array_json(v2, &ov.shape, &ov.chunks, ov.dtype, &ov.dims, &aj, compress);
             record(&ov.name, &m);
             arrays.push(make_array(&store, &format!("/{}", ov.name), m, v2)?);
         }
         if v2 {
             write_json(
-                &path.join(".zmetadata"),
+                &*store,
+                ".zmetadata",
                 &json!({"metadata": consolidated, "zarr_consolidated_format": 1}),
             )?;
         } else {
             // root group with consolidated metadata (as zarr-python 3 writes it)
             write_json(
-                &path.join("zarr.json"),
+                &*store,
+                "zarr.json",
                 &json!({
                     "zarr_format": 3,
                     "node_type": "group",

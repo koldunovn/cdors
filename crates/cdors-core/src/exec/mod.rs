@@ -116,12 +116,19 @@ pub fn out_chunks(
     c
 }
 
-/// Data-variable layouts of a plan's output.
+/// Data-variable layouts of a plan's output. When the output stage runs in lane waves, the
+/// output chunks follow the lanes (`plan::schedule`), unless `--chunks` says otherwise.
 pub fn layout(plan: &Plan, cmd: &Command) -> Vec<OutVar> {
+    let last = plan.stages.last();
     plan.desc
         .vars
         .iter()
-        .map(|v| {
+        .enumerate()
+        .map(|(i, v)| {
+            let lane_chunks = last.and_then(|st| {
+                let sv = st.vars.get(i)?;
+                plan::schedule::out_chunks_for(sv, st.sched.vars.get(i)?, &v.dims)
+            });
             let dtype = match cmd.options.precision {
                 Some(Precision::F32) => DType::F32,
                 Some(Precision::F64) => DType::F64,
@@ -132,12 +139,15 @@ pub fn layout(plan: &Plan, cmd: &Command) -> Vec<OutVar> {
                 name: v.name.clone(),
                 dims: v.dims.iter().map(|d| d.name.clone()).collect(),
                 shape: v.shape(),
-                chunks: out_chunks(
-                    v,
-                    plan.out_kind,
-                    dtype.size(),
-                    cmd.options.chunks.as_deref(),
-                ),
+                chunks: match lane_chunks {
+                    Some(c) if cmd.options.chunks.is_none() => c,
+                    _ => out_chunks(
+                        v,
+                        plan.out_kind,
+                        dtype.size(),
+                        cmd.options.chunks.as_deref(),
+                    ),
+                },
                 dtype,
                 missval: v.missval,
             }
@@ -188,15 +198,8 @@ fn remove_own_temp(tmp: &Path) {
 /// Plans and runs a command that writes one output.
 pub fn run(cmd: &Command) -> Result<String> {
     let plan = plan::build(cmd)?;
-    // pools no larger than the work: one task per chunk read (at least one per tile)
-    let (threads, io_threads) = (default_threads(cmd).max(1), default_io_threads(cmd).max(1));
-    let tasks = plan
-        .stages
-        .iter()
-        .map(|s| pipeline::count_reads(s, threads.max(io_threads)))
-        .max()
-        .unwrap_or(1);
-    let (threads, io_threads) = (threads.min(tasks), io_threads.min(tasks));
+    // pools sized to the work while planning (`plan::build`)
+    let (threads, io_threads) = (plan.threads, plan.io_threads);
     if cmd.options.plan {
         let p = plan::explain::to_json(&plan, cmd, threads, io_threads);
         return Ok(if cmd.options.json {
@@ -265,15 +268,22 @@ pub fn run(cmd: &Command) -> Result<String> {
                 history.as_deref(),
             )?),
         };
-        let window = plan::explain::tile_window(&plan, threads, io_threads, cmd.options.mem);
-        let settings = pipeline::Settings {
-            threads,
-            io_threads,
-            window,
-        };
+        // inner stages first, each into its in-memory intermediate; then the output stage
         for (i, stage) in plan.stages.iter().enumerate() {
             progress::set_stage(i);
-            pipeline::run(stage, &lay, writer.clone(), settings)?;
+            let settings = pipeline::Settings {
+                threads,
+                io_threads,
+                window: stage.sched.window,
+                any_order: stage.sched.any_order(),
+            };
+            match plan.intermediates.get(i) {
+                Some(im) => {
+                    pipeline::run(stage, &im.lay, im.writer.clone(), settings)?;
+                    im.writer.finish()?;
+                }
+                None => pipeline::run(stage, &lay, writer.clone(), settings)?,
+            }
         }
         writer.finish()
     })();

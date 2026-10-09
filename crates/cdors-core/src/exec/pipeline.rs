@@ -81,6 +81,9 @@ pub struct Settings {
     pub io_threads: usize,
     /// Tiles in flight.
     pub window: usize,
+    /// Output chunks may be written in any order (lane-major dispatch: each output chunk is
+    /// completed by one lane, and the lanes of one wave finish before the next wave starts).
+    pub any_order: bool,
 }
 
 struct Shared {
@@ -113,7 +116,16 @@ struct TileJob {
     chunks: Mutex<Vec<Vec<Option<DecodedChunk>>>>,
     remaining: AtomicUsize,
     error: Mutex<Option<Error>>,
-    /// Fold stages: the lane of the tile and its position along the folded dimension(s).
+    /// Parts of the computed tile and where they go: map stages one part, the whole tile, to the
+    /// writer; fold stages one part per lane (finer tiles), each pushed into its lane.
+    subs: Vec<Sub>,
+    /// Parts not yet consumed by their lanes; the tile's window permit is released at zero.
+    pending_subs: Arc<AtomicUsize>,
+}
+
+/// A part of a tile: its box and, for fold stages, its lane and position in the lane.
+struct Sub {
+    bx: TileBox,
     lane: Option<(Arc<Lane>, usize)>,
 }
 
@@ -126,7 +138,8 @@ struct Lane {
 struct LaneInner {
     next: usize,
     total: usize,
-    pending: BTreeMap<usize, Tile>,
+    /// Tiles waiting for their predecessors, with the counter of their dispatched tile.
+    pending: BTreeMap<usize, (Tile, Arc<AtomicUsize>)>,
     state: Option<Box<dyn FoldState>>,
 }
 
@@ -166,8 +179,32 @@ fn compute(job: &TileJob) -> Result<Tile> {
     })
 }
 
+/// The part `bx` of a computed tile.
+fn slice(tile: &Tile, bx: &TileBox) -> Tile {
+    let n = bx.len();
+    let mut dst = match &tile.values {
+        Values::F32(_) => new_values(DType::F32, n),
+        Values::F64(_) => new_values(DType::F64, n),
+    };
+    let so: Vec<usize> = tile.bx.ranges.iter().map(|r| r.start).collect();
+    let dorig: Vec<usize> = bx.ranges.iter().map(|r| r.start).collect();
+    copy_box(
+        &tile.values,
+        &so,
+        &tile.bx.shape(),
+        &mut dst,
+        &dorig,
+        &bx.shape(),
+    );
+    Tile {
+        var: tile.var,
+        bx: bx.clone(),
+        values: dst,
+    }
+}
+
 /// Called after one chunk of `job` finished (decoded or failed).
-fn chunk_done(job: &Arc<TileJob>, tx: &Sender<Msg>, shared: &Shared) {
+fn chunk_done(job: &Arc<TileJob>, tx: &Sender<Msg>, shared: &Arc<Shared>) {
     if job.remaining.fetch_sub(1, Ordering::AcqRel) != 1 {
         return;
     }
@@ -176,28 +213,58 @@ fn chunk_done(job: &Arc<TileJob>, tx: &Sender<Msg>, shared: &Shared) {
         Some(e) => Err(e),
         None => compute(job),
     };
-    match (&job.lane, r) {
-        (Some((lane, seq)), Ok(tile)) => lane_push(lane, *seq, tile, tx, shared),
-        (_, r) => {
+    let tile = match r {
+        Ok(t) if job.subs.iter().all(|s| s.lane.is_some()) => t,
+        r => {
+            // map stage, or a failed tile (counted once, its permit released by the writer)
             let _ = tx.send(Msg::Out {
                 tile: r,
                 input: true,
             });
+            return;
+        }
+    };
+    if let [sub] = job.subs.as_slice()
+        && sub.bx == tile.bx
+    {
+        let (lane, seq) = sub.lane.as_ref().expect("fold part");
+        lane_push(lane, *seq, tile, &job.pending_subs, tx, shared);
+        return;
+    }
+    // finer tiles: every part goes to its own lane, in parallel when there is a pool
+    for sub in &job.subs {
+        let part = slice(&tile, &sub.bx);
+        let (lane, seq) = sub.lane.clone().expect("fold part");
+        let (tx, sh, cnt) = (tx.clone(), shared.clone(), job.pending_subs.clone());
+        let task = move || lane_push(&lane, seq, part, &cnt, &tx, &sh);
+        match shared.compute.get() {
+            Some(pool) if job.subs.len() > 1 => pool.spawn(task),
+            _ => task(),
         }
     }
 }
 
 /// Adds a computed tile to its lane and pushes every tile that is next in fold order into the
-/// lane's state; finishes the lane after its last tile.
-fn lane_push(lane: &Lane, seq: usize, tile: Tile, tx: &Sender<Msg>, shared: &Shared) {
+/// lane's state; finishes the lane after its last tile. A dispatched tile's window permit is
+/// released when all its parts have been pushed.
+fn lane_push(
+    lane: &Lane,
+    seq: usize,
+    tile: Tile,
+    cnt: &Arc<AtomicUsize>,
+    tx: &Sender<Msg>,
+    shared: &Shared,
+) {
     let mut g = lane.inner.lock().expect("lane lock");
-    g.pending.insert(seq, tile);
-    let mut consumed = 0;
+    g.pending.insert(seq, (tile, cnt.clone()));
+    let mut consumed = Vec::new();
     loop {
         let n = g.next;
-        let Some(t) = g.pending.remove(&n) else { break };
+        let Some((t, c)) = g.pending.remove(&n) else {
+            break;
+        };
         g.next += 1;
-        consumed += 1;
+        consumed.push(c);
         let done = g.next == g.total;
         let Some(state) = g.state.as_mut() else { break };
         let mut outs = state.push(t);
@@ -221,9 +288,11 @@ fn lane_push(lane: &Lane, seq: usize, tile: Tile, tx: &Sender<Msg>, shared: &Sha
         }
     }
     drop(g);
-    for _ in 0..consumed {
-        shared.window.release();
-        let _ = tx.send(Msg::Consumed);
+    for c in consumed {
+        if c.fetch_sub(1, Ordering::AcqRel) == 1 {
+            shared.window.release();
+            let _ = tx.send(Msg::Consumed);
+        }
     }
 }
 
@@ -461,7 +530,7 @@ pub fn run(stage: &Stage, out: &[OutVar], writer: Arc<dyn Writer>, s: Settings) 
         // and writer threads), then the other I/O threads (as many as allowed).
         let writer_handle = super::threads::spawn_scoped(scope, "cdors-writer".into(), || {
             let (rx, w, sh) = (msg_rx.clone(), writer.clone(), shared.clone());
-            move || write_loop(rx, out, w, sh, s.threads)
+            move || write_loop(rx, out, w, sh, s.threads, s.any_order)
         })?;
         drop(msg_rx);
         let io = |_| {
@@ -495,77 +564,107 @@ pub fn run(stage: &Stage, out: &[OutVar], writer: Arc<dyn Writer>, s: Settings) 
         super::threads::spawn_more(scope, "io", 1, s.io_threads, io);
         drop(fetch_rx);
 
-        // dispatch
+        // dispatch: map stages tile by tile in canonical order; fold stages wave by wave (one
+        // wave unless the lane states need lane-major dispatch), within a wave in canonical
+        // order, every tile cut into the parts of its lanes
         let mut n = 0usize;
-        let mut lanes: HashMap<(usize, Vec<usize>), Arc<Lane>> = HashMap::new();
-        'outer: for sv in &svs {
-            let fold: Vec<bool> = match &stage.kernel {
-                Some(k) => sv.dims.iter().map(|d| d.role == k.fold_dim()).collect(),
-                None => vec![false; sv.dims.len()],
-            };
-            for t in 0..sv.tiling.num_tiles() {
-                shared.window.acquire();
-                if shared.cancel.load(Ordering::SeqCst) {
-                    shared.window.release();
-                    break 'outer;
+        let dispatch = |sv: &Arc<StageVar>, bx: TileBox, subs: Vec<Sub>, n: &mut usize| -> bool {
+            shared.window.acquire();
+            if shared.cancel.load(Ordering::SeqCst) {
+                shared.window.release();
+                return false;
+            }
+            let reads: Vec<LeafRead> = sv.leaves.iter().map(|l| LeafRead::new(l, &bx)).collect();
+            let lists: Vec<Vec<Vec<u64>>> = reads.iter().map(LeafRead::chunks).collect();
+            let total: usize = lists.iter().map(Vec::len).sum();
+            let job = Arc::new(TileJob {
+                sv: sv.clone(),
+                bx,
+                chunks: Mutex::new(lists.iter().map(|l| vec![None; l.len()]).collect()),
+                reads,
+                remaining: AtomicUsize::new(total),
+                error: Mutex::new(None),
+                pending_subs: Arc::new(AtomicUsize::new(subs.len())),
+                subs,
+            });
+            *n += 1;
+            for (leaf, l) in lists.into_iter().enumerate() {
+                for (slot, idx) in l.into_iter().enumerate() {
+                    let _ = fetch_tx.send(Fetch {
+                        tile: job.clone(),
+                        leaf,
+                        slot,
+                        idx,
+                    });
                 }
-                let bx = sv.tiling.tile(t);
-                let lane = stage.kernel.as_ref().map(|k| {
+            }
+            true
+        };
+        'outer: for (vi, sv) in svs.iter().enumerate() {
+            let (Some(k), Some(vs)) = (&stage.kernel, stage.sched.vars.get(vi)) else {
+                for t in 0..sv.tiling.num_tiles() {
+                    let bx = sv.tiling.tile(t);
+                    let subs = vec![Sub {
+                        bx: bx.clone(),
+                        lane: None,
+                    }];
+                    if !dispatch(sv, bx, subs, &mut n) {
+                        break 'outer;
+                    }
+                }
+                continue;
+            };
+            let mut lanes: HashMap<usize, Arc<Lane>> = HashMap::new();
+            for wave in &vs.waves {
+                for t in 0..sv.tiling.num_tiles() {
                     let seg = sv.tiling.segment_indices(t);
-                    let (mut key, mut seq, mut total) = (seg.clone(), 0usize, 1usize);
-                    for d in 0..seg.len() {
-                        if fold[d] {
-                            let m = sv.tiling.segments[d].len();
-                            seq = seq * m + seg[d];
-                            total *= m;
-                            key[d] = 0;
+                    let parts: Vec<(usize, TileBox)> = vs
+                        .tile_lanes(&sv.tiling, &seg)
+                        .into_iter()
+                        .filter(|(l, _)| wave.contains(l))
+                        .collect();
+                    if parts.is_empty() {
+                        continue;
+                    }
+                    // position of the tile in its lanes: C order over the folded dimensions
+                    let mut seq = 0usize;
+                    for (d, &sg) in seg.iter().enumerate() {
+                        if vs.fold[d] {
+                            seq = seq * sv.tiling.segments[d].len() + sg;
                         }
                     }
-                    let l = lanes
-                        .entry((sv.var, key))
-                        .or_insert_with(|| {
-                            let mut lb = bx.clone();
-                            for (d, f) in fold.iter().enumerate() {
-                                if *f {
-                                    lb.ranges[d] = 0..sv.dims[d].size;
-                                }
+                    let mut bx = parts[0].1.clone();
+                    let subs: Vec<Sub> = parts
+                        .into_iter()
+                        .map(|(l, pb)| {
+                            for (r, p) in bx.ranges.iter_mut().zip(&pb.ranges) {
+                                *r = r.start.min(p.start)..r.end.max(p.end);
                             }
-                            Arc::new(Lane {
-                                inner: Mutex::new(LaneInner {
-                                    next: 0,
-                                    total,
-                                    pending: BTreeMap::new(),
-                                    state: Some(k.start(sv.var, &lb)),
-                                }),
-                            })
+                            let lane = lanes
+                                .entry(l)
+                                .or_insert_with(|| {
+                                    Arc::new(Lane {
+                                        inner: Mutex::new(LaneInner {
+                                            next: 0,
+                                            total: vs.lane_tiles,
+                                            pending: BTreeMap::new(),
+                                            state: Some(k.start(sv.var, &vs.lane_box(l))),
+                                        }),
+                                    })
+                                })
+                                .clone();
+                            Sub {
+                                bx: pb,
+                                lane: Some((lane, seq)),
+                            }
                         })
-                        .clone();
-                    (l, seq)
-                });
-                let reads: Vec<LeafRead> =
-                    sv.leaves.iter().map(|l| LeafRead::new(l, &bx)).collect();
-                let lists: Vec<Vec<Vec<u64>>> = reads.iter().map(LeafRead::chunks).collect();
-                let total: usize = lists.iter().map(Vec::len).sum();
-                let job = Arc::new(TileJob {
-                    sv: sv.clone(),
-                    bx,
-                    chunks: Mutex::new(lists.iter().map(|l| vec![None; l.len()]).collect()),
-                    reads,
-                    remaining: AtomicUsize::new(total),
-                    error: Mutex::new(None),
-                    lane,
-                });
-                n += 1;
-                for (leaf, l) in lists.into_iter().enumerate() {
-                    for (slot, idx) in l.into_iter().enumerate() {
-                        let _ = fetch_tx.send(Fetch {
-                            tile: job.clone(),
-                            leaf,
-                            slot,
-                            idx,
-                        });
+                        .collect();
+                    if !dispatch(sv, bx, subs, &mut n) {
+                        break 'outer;
                     }
                 }
+                // the lanes of this wave are complete once their tiles are pushed
+                lanes.retain(|l, _| !wave.contains(l));
             }
         }
         trace(&format!("dispatched {n} tiles"));
@@ -592,6 +691,7 @@ fn write_loop(
     writer: Arc<dyn Writer>,
     shared: Arc<Shared>,
     threads: usize,
+    any_order: bool,
 ) -> Result<()> {
     let mut asm = Assembler {
         vars: out.to_vec(),
@@ -649,7 +749,7 @@ fn write_loop(
         release();
         for (var, lin, buf) in done {
             let wpool = shared.write.get();
-            if *ordered.get_or_insert(writer.ordered() || wpool.is_none()) {
+            if *ordered.get_or_insert(!any_order && (writer.ordered() || wpool.is_none())) {
                 pending.insert((var, lin), buf);
                 while let Some(b) = pending.remove(&next) {
                     if !shared.cancel.load(Ordering::Relaxed)
@@ -673,6 +773,11 @@ fn write_loop(
                     }
                     slots.release();
                 });
+            } else if !shared.cancel.load(Ordering::Relaxed)
+                && let Err(e) = writer.write(var, &buf.origin, &buf.shape, buf.data)
+            {
+                // any order, no write pool (NetCDF): written at once on this thread
+                shared.fail(e);
             }
         }
     }

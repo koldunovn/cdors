@@ -41,6 +41,13 @@ pub trait FoldKernel: Send + Sync {
     /// Starts the running state of one lane of variable `var`; `lane` is the lane's box with the
     /// folded dimension spanning the whole extent.
     fn start(&self, var: usize, lane: &TileBox) -> Box<dyn FoldState>;
+    /// Bytes of the running state of a lane with box `lane` (folded dimension spanning the whole
+    /// extent), including output it holds until it emits it. The planner sizes lanes and waves
+    /// with it (`plan::schedule`). Default: all values of the lane in f64 (kernels that hold
+    /// their whole input, such as remapping).
+    fn state_bytes(&self, _var: usize, lane: &TileBox) -> usize {
+        lane.len() * 8
+    }
     /// Kernel-specific facts for `--plan` (e.g. remap weights to generate), as a JSON object.
     fn plan_info(&self) -> Option<Value> {
         None
@@ -60,6 +67,8 @@ pub trait FoldState: Send {
 pub struct StageVar {
     /// Index into the stage's input description (`Desc::vars`).
     pub var: usize,
+    /// Name of the variable.
+    pub name: String,
     /// Dimensions of the variable (roles tell the executor which dimension a kernel folds).
     pub dims: Vec<crate::model::VarDim>,
     pub expr: Expr,
@@ -73,6 +82,8 @@ pub struct StageVar {
 pub struct Stage {
     pub vars: Vec<StageVar>,
     pub kernel: Option<Arc<dyn FoldKernel>>,
+    /// Window, lanes, waves and passes within the memory budget (`plan::schedule`).
+    pub sched: super::schedule::Schedule,
 }
 
 impl Stage {
@@ -84,6 +95,7 @@ impl Stage {
             let tiling = VarTiling::new(v, &leaves);
             vars.push(StageVar {
                 var: i,
+                name: v.name.clone(),
                 dims: v.dims.clone(),
                 expr: v.expr.clone(),
                 dtype: v.dtype,
@@ -91,7 +103,20 @@ impl Stage {
                 tiling,
             });
         }
-        Ok(Self { vars, kernel: None })
+        Ok(Self {
+            vars,
+            kernel: None,
+            sched: Default::default(),
+        })
+    }
+
+    /// A stage without variables (placeholder while stages are moved).
+    pub fn empty() -> Self {
+        Self {
+            vars: Vec::new(),
+            kernel: None,
+            sched: Default::default(),
+        }
     }
 
     pub fn num_tiles(&self) -> usize {

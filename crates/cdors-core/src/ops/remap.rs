@@ -373,13 +373,12 @@ fn write_grid_file(
         time: None,
         fold: None,
     };
-    let plan = Plan {
-        sources: vec![g.src.clone()],
+    let plan = Plan::new(
+        vec![g.src.clone()],
         desc,
-        stages: Vec::new(),
-        output: tmp.to_string_lossy().into_owned(),
-        out_kind: OutKind::Nc4,
-    };
+        tmp.to_string_lossy().into_owned(),
+        OutKind::Nc4,
+    );
     let lay = vec![OutVar {
         name: "cdors_grid".into(),
         dims: dims.iter().map(|d| d.name.clone()).collect(),

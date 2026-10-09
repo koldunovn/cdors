@@ -697,17 +697,18 @@ pub fn used_inputs(node: &OpNode) -> usize {
 /// Output description of a data operator from the descriptions of its inputs (no data read).
 pub fn describe(node: &OpNode, inputs: Vec<Desc>, srcs: &mut Sources) -> Result<Desc> {
     let spec = require_implemented(node)?;
-    if inputs.iter().any(|d| d.fold.is_some()) {
-        return Err(Error::new(
-            ErrorCode::NotImplemented,
-            format!(
-                "operator '{}' cannot take the output of a statistic as input yet",
-                node.name
-            ),
-        )
-        .with("operator", node.name.clone())
-        .with_hint("put selections inside the statistic (-yearmean -selname,tas in.nc), or run two commands"));
-    }
+    // the result of a fold used as input ends the inner stage: it is kept in memory as an
+    // intermediate and read back like a stored dataset (`plan::intermediate`)
+    let inputs = inputs
+        .into_iter()
+        .map(|d| {
+            if d.fold.is_some() {
+                crate::plan::intermediate::materialize(d, &node.name, srcs)
+            } else {
+                Ok(d)
+            }
+        })
+        .collect::<Result<Vec<_>>>()?;
     match node.name.as_str() {
         n if remap::handles(n) => return remap::describe(node, inputs),
         "hpdegrade" | "hpupgrade" => return healpix::describe(node, inputs),

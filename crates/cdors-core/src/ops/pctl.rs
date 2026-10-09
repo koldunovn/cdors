@@ -19,24 +19,19 @@
 //!
 //! **Kernel**: a lane is a block of cells; its state keeps the values of the open group for its
 //! cells (time-major, in the input's type) and emits the group's percentiles when the group
-//! closes. The values of all cells of one group are held at once (lanes of all cell blocks are
-//! open together), so the planner refuses inputs where `cells × longest group × value size`
-//! exceeds the memory budget (`--mem`, default 2 GB) with `intermediate_too_large`; several
-//! passes over the input are not implemented yet.
+//! closes. The planner sizes lanes, waves of lanes and passes over the input from
+//! `cells × longest group` values (`state_bytes`, `plan::schedule`).
 
 use crate::chain::OpNode;
-use crate::error::{Error, ErrorCode, Result};
+use crate::error::{Error, Result};
 use crate::io::Values;
 use crate::kernels::percentile::{PercentileMethod, Sample, percentile};
+use crate::model::DimRole;
 use crate::model::timegroup::Period;
-use crate::model::{DType, DimRole};
 use crate::plan::stage::{FoldKernel, FoldState, Tile};
 use crate::plan::tiling::TileBox;
 use crate::plan::{Desc, Fold, Sources};
 use std::sync::Arc;
-
-/// Default memory budget of operator state (as the executor's default `--mem`).
-pub(crate) const DEFAULT_BUDGET: u64 = 2_000_000_000;
 
 const PREFIXES: [(&str, &str); 6] = [
     ("tim", "over all timesteps"),
@@ -67,32 +62,6 @@ pub fn operators() -> Vec<(String, String)> {
             )
         })
         .collect()
-}
-
-/// Value size of a variable's tiles.
-pub(crate) fn value_size(t: DType) -> u64 {
-    if t == DType::F32 { 4 } else { 8 }
-}
-
-/// Refuses operator state above the memory budget.
-pub(crate) fn check_budget(op: &str, bytes: u64, srcs: &Sources, what: &str) -> Result<()> {
-    let budget = srcs.mem.unwrap_or(DEFAULT_BUDGET);
-    if bytes <= budget {
-        return Ok(());
-    }
-    Err(Error::new(
-        ErrorCode::IntermediateTooLarge,
-        format!(
-            "'{op}' needs {bytes} bytes of memory for {what}, more than the budget of {budget}"
-        ),
-    )
-    .with("operator", op.to_owned())
-    .with("bytes", bytes)
-    .with("limit", budget)
-    .with_hint(
-        "select fewer cells or levels first (-sellonlatbox, -sellevel, -selname), use a shorter \
-         period, or raise --mem; several passes over the input are not implemented yet",
-    ))
 }
 
 /// Output description: grouped time axis and the pending fold.
@@ -136,23 +105,13 @@ pub fn describe(node: &OpNode, inputs: Vec<Desc>, srcs: &mut Sources) -> Result<
 
     let mut out = input.clone();
     let mut vars = Vec::with_capacity(out.vars.len());
-    let mut state = 0u64;
     for v in &mut out.vars {
         let td = v.dim_of(DimRole::Time);
         if let Some(td) = td {
-            let cells: u64 = v
-                .dims
-                .iter()
-                .enumerate()
-                .filter(|(d, _)| *d != td)
-                .map(|(_, d)| d.size as u64)
-                .product();
-            state = state.max(cells * longest * value_size(v.dtype));
             v.dims[td].size = ngroups;
         }
         vars.push(td);
     }
-    check_budget(op, state, srcs, "the values of one time group")?;
     out.time = Some(time);
     out.fold = Some(Fold {
         input: Box::new(input),
@@ -160,6 +119,7 @@ pub fn describe(node: &OpNode, inputs: Vec<Desc>, srcs: &mut Sources) -> Result<
             p,
             method: srcs.percentile,
             groups: Arc::new(groups),
+            longest: longest as usize,
             vars,
         }),
     });
@@ -171,6 +131,8 @@ struct Kernel {
     method: PercentileMethod,
     /// Output step of every input step (consecutive groups).
     groups: Arc<Vec<usize>>,
+    /// Steps of the longest group.
+    longest: usize,
     /// Time dimension of every variable (`None`: no time axis, passed through).
     vars: Vec<Option<usize>>,
 }
@@ -178,6 +140,15 @@ struct Kernel {
 impl FoldKernel for Kernel {
     fn fold_dim(&self) -> DimRole {
         DimRole::Time
+    }
+
+    fn state_bytes(&self, var: usize, lane: &TileBox) -> usize {
+        let Some(td) = self.vars.get(var).copied().flatten() else {
+            return lane.len() * 8;
+        };
+        // the values of the open group (in the tiles' type; f64 assumed) and the sort scratch
+        let cells = lane.len() / lane.ranges[td].len().max(1);
+        cells * (self.longest * 8 + 8)
     }
 
     fn start(&self, var: usize, lane: &TileBox) -> Box<dyn FoldState> {
