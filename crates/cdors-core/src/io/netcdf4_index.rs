@@ -324,7 +324,17 @@ impl Nc4Index {
             && index.ctime_ns == id.ctime_ns
         {
             // A cache that cannot be written only costs a rebuild next time.
-            let _ = write_atomic(cache, &serde_json::to_vec(&index).unwrap_or_default());
+            let data = serde_json::to_vec(&index).unwrap_or_default();
+            let mut held = HELD
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            match held.as_mut() {
+                Some(h) => h.push((cache.clone(), data)),
+                None => {
+                    drop(held);
+                    let _ = write_atomic(cache, &data);
+                }
+            }
         }
         Ok(index)
     }
@@ -549,6 +559,31 @@ fn file_identity(path: &Path) -> Result<Identity, Nc4Error> {
         inode: meta.ino(),
         ctime_ns: ns(meta.ctime(), meta.ctime_nsec()),
     })
+}
+
+/// Index files not written yet while cache writes are held.
+type Held = Vec<(PathBuf, Vec<u8>)>;
+static HELD: std::sync::Mutex<Option<Held>> = std::sync::Mutex::new(None);
+
+/// Holds back index files from `$CDORS_CACHE` until [`release_cache_writes`]: `--plan` and the
+/// checks that may refuse a run leave the cache untouched.
+pub fn hold_cache_writes() {
+    *HELD
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Vec::new());
+}
+
+/// Writes the held index files (if `write`) and lets later ones through.
+pub fn release_cache_writes(write: bool) {
+    let held = HELD
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .take();
+    if write {
+        for (path, data) in held.into_iter().flatten() {
+            let _ = write_atomic(&path, &data);
+        }
+    }
 }
 
 /// `$CDORS_CACHE/nc4index/<fnv1a64>.json`, `None` without `CDORS_CACHE`.

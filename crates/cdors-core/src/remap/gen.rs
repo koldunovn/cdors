@@ -159,15 +159,22 @@ impl WeightCache {
         Ok(())
     }
 
-    /// A small NetCDF file on the target grid, written by cdo (`cdo -f nc4 const,0,<grid>`) and
-    /// cached as `<cache>/grid-<key>.nc`, so that output grids (coordinates, bounds, HEALPix
-    /// mapping, attributes) are exactly what cdo writes for `remap*,<grid>`.
-    pub fn grid_template(&self, target: &str) -> Result<PathBuf, RemapError> {
+    /// Cache key and path of the grid template of `target` (whether it exists or not); reads
+    /// nothing but a grid file named by `target`, writes nothing.
+    pub fn template_path(&self, target: &str) -> Result<(String, PathBuf), RemapError> {
         let mut h = Fnv128::new();
         h.update(b"cdors-grid-v1\0");
         self.target_hash(&mut h, target)?;
         let key = format!("grid-{:032x}", h.finish());
         let path = self.dir.join(format!("{key}.nc"));
+        Ok((key, path))
+    }
+
+    /// A small NetCDF file on the target grid, written by cdo (`cdo -f nc4 const,0,<grid>`) and
+    /// cached as `<cache>/grid-<key>.nc`, so that output grids (coordinates, bounds, HEALPix
+    /// mapping, attributes) are exactly what cdo writes for `remap*,<grid>`.
+    pub fn grid_template(&self, target: &str) -> Result<PathBuf, RemapError> {
+        let (key, path) = self.template_path(target)?;
         if path.is_file() {
             return Ok(path);
         }
