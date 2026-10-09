@@ -650,16 +650,35 @@ cached. Rows needing `cdo` are skipped with a notice where it isn't available.
 
 ### Task 15: Verify acceptance criteria
 
-- [ ] the four prototype criteria checked against `docs/baseline.md`, `docs/bench-results.md`, `docs/agent-check.md`
-- [ ] `tests/run_cases.sh` passes in full, in seconds
-- [ ] `docs/deviations.md` lists every known difference from cdo
+- [x] the four prototype criteria checked against `docs/baseline.md`, `docs/bench-results.md`, `docs/agent-check.md`
+      — `docs/criteria.md` (2026-10-09): 1 faster than cdo met (4.4–72×, all comparisons pass but one cdo bug);
+      2 remote practical, but the half-of-local mark is not met (the EERIE server caps every client at ≈ 0.2 GB/s;
+      cdors 1.2–1.3× xarray there; S3 never run against a real bucket); 3 agents met in a small check (5 of 5,
+      2.7× the tokens); 4 bounded memory met at 1.1 TB (23.7 GiB under `--mem 32G`; two months of W4 within
+      `--mem 1G` at 0.65 GB RSS), the 13 TB store not run
+- [x] `tests/run_cases.sh` passes in full, in seconds — 237 of 237 in 28 s (16 rows in parallel; 50 s with the
+      default 8 on a busy login node); `cargo test` passes
+- [x] `docs/deviations.md` lists every known difference from cdo — checked by running both tools; added: output
+      format by name (cdo keeps the input's), output data type (cdo keeps integers, rounds integer means, keeps
+      packing through selections), NetCDF chunking and no compression, global attributes (`CDI`, `CDO`,
+      `Conventions`), `sinfo` text, refused options, threads, exit codes, and the general rule on numerical
+      agreement. Corrected: an empty time selection is an error in cdo too (cdo 2.2.2 and 2.6.0 abort; inside a
+      chain cdo crashes), so it moved to "cdo bugs observed" and its operator note was fixed
+- [x] ➕ found while checking: cdo's single-letter options that cdors lacks (`-z zip`, `-k`, `-r`, ...) were taken
+      for operators (`unknown operator 'z'`, suggestions `eq`, `ge`, ...); now `bad_arguments` "unknown option" with
+      hints for `-z` and `-k`, harness row added
+- [x] ➕ found while checking: `-f nc` wrote CDF-1 (classic, 2 GiB offset limit) where cdo writes the 64-bit offset
+      format; now 64-bit offset, harness row on all three fixtures added
 
 ### Task 16: [Final] Documentation
 
-- [ ] `README.md`: building with `env.sh`, weights and index caches, link to `docs/deviations.md`, known limits of the
-      prototype (no rechunking stage, no intermediate spills, no GRIB)
-- [ ] record new project facts in the Claude project memory if any
-- [ ] move this plan to `docs/plans/completed/`
+- [x] `README.md`: building with `env.sh`, weights and index caches, link to `docs/deviations.md`, known limits of the
+      prototype (no rechunking stage, no intermediate spills, no GRIB) — all were there; added a status paragraph
+      linking `docs/criteria.md`, the output format and type rules, and two known limits (no compression or
+      classic model; `s3://` untested). `cdors --help`: reads-in-flight default and `-f` corrected
+- [x] record new project facts in the Claude project memory if any — prototype closed, criteria verdict, cdo
+      behaviours verified in Task 15, plan path
+- [x] move this plan to `docs/plans/completed/` (2026-10-09)
 
 ## Technical Details
 
@@ -679,7 +698,7 @@ crates/cdors-core/src/
 crates/cdors/src/          main.rs (options, dispatch), parse.rs (CDO chain grammar)
 tests/                     cases.txt, run_cases.sh, make_fixtures.sh
 bench/                     datasets.md, read_probe, baseline/bench sbatch, bench.sh, xarray_baseline.py, agent check
-docs/                      baseline.md, deviations.md, bench-results.md, agent-check.md, plans/
+docs/                      baseline.md, deviations.md, bench-results.md, agent-check.md, criteria.md, STATUS.md, plans/
 ```
 
 **Processing flow.** Parse the chain → open inputs lazily (metadata only) → each operator maps its input description to

@@ -2,7 +2,9 @@
 //!
 //! `cdors [options] op1[,args] [-op2[,args] ...] inputs... [outputs...]`
 //!
-//! - Global options come first. Anything else starting with `-` (and the first token without a
+//! - Global options come first. A dash and a single letter is one of cdo's options, also the
+//!   ones cdors does not support (`-z zip`, `-k grid`, `-r`, ...), which are refused: no operator
+//!   name is one letter long. Anything else starting with `-` (and the first token without a
 //!   dash) is an operator; the leading dash of the first operator is optional, as in cdo.
 //! - Operators have a fixed number of inputs and outputs from the registry. Each input is either
 //!   a nested operator (a token starting with `-`) or a path/URL. Variadic operators
@@ -128,7 +130,11 @@ fn unknown_option(tok: &str) -> Error {
         .collect();
     best.truncate(2);
     let e = Error::bad_arguments(format!("unknown option '{name}'")).with("option", name);
-    if best.is_empty() {
+    if name == "-z" {
+        e.with_hint("cdors writes uncompressed output; leave out -z")
+    } else if name == "-k" {
+        e.with_hint("output chunks are set with --chunks dim=n[,dim=n...]")
+    } else if best.is_empty() {
         e.with_hint(format!("options: {}", OPTIONS.join(" ")))
     } else {
         e.with_hint(format!("did you mean {}?", best.join(" or ")))
@@ -275,6 +281,14 @@ fn parse_options(args: &[String]) -> Result<(Options, usize)> {
                 o.progress_json = true;
             }
             _ if key.starts_with("--") => return Err(unknown_option(tok)),
+            // one of cdo's single-letter options that cdors does not support (`-h` is help)
+            _ if key.len() == 2
+                && key.starts_with('-')
+                && key != "-h"
+                && key.as_bytes()[1].is_ascii_alphabetic() =>
+            {
+                return Err(unknown_option(tok));
+            }
             _ => break,
         }
         i += 1;

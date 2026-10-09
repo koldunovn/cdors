@@ -11,6 +11,14 @@ It is a prototype: about 190 operators in a dozen families (`cdors ops`), tested
 on small fixtures (`tests/`). Where cdors deliberately differs from cdo, the difference is listed
 in [docs/deviations.md](docs/deviations.md).
 
+**Status (2026-10-09): the prototype is complete.** On a Levante compute node it was 4.4–72×
+faster than cdo on the four benchmark workloads, with matching results. It read the EERIE cloud
+at the server's cap, 1.2–1.3× faster than xarray. Agents answered five of five test tasks
+correctly with it, at 2.7× the tokens they needed with cdo and Python. It ran exact percentiles
+and a daily climatology over 1.1 TB within a 32 GB budget. What was shown and what was not:
+[docs/criteria.md](docs/criteria.md), with the details in
+[docs/bench-results.md](docs/bench-results.md) and [docs/agent-check.md](docs/agent-check.md).
+
 ## Building (Levante)
 
 ```sh
@@ -39,11 +47,14 @@ cdors --plan -yearmean in.zarr   # what would be read, without reading it
 **Inputs:** Zarr stores, NetCDF files (NetCDF-4 chunks are read directly through a cached chunk
 index; NetCDF-3 goes through netCDF-C), kerchunk references (JSON or Parquet), `http(s)://` and
 `s3://` URLs of Zarr stores or kerchunk JSON, and glob patterns (`'data/*.nc'`, quoted), whose
-files are sorted and concatenated along time. **Output:** the format follows the suffix (`.nc`:
-NetCDF-4, `.zarr`: Zarr v3) unless `-f nc4|nc4c|nc|zarr|zarr2` says otherwise. NetCDF output is
-uncompressed, one chunk per field (all horizontal points of one level and step); Zarr chunks hold
-about 4 MiB. When a statistic runs in lane waves (`--plan`: `waves` > 1), output chunks end at wave
-boundaries and are otherwise as large as these defaults; `--chunks dim=n,...` sets them explicitly.
+files are sorted and concatenated along time. **Output:** the format follows the output name
+(`.zarr`: Zarr v3, any other name: NetCDF-4) unless `-f nc4|nc4c|nc|zarr|zarr2` says otherwise
+(`nc` is the 64-bit offset format; `nc4c` writes NetCDF-4, not the classic model). Float32
+variables are written as float32, all others as float64 (`-b F32|F64`). NetCDF output is
+uncompressed (`-z` is refused), one chunk per field (all horizontal points of one level and
+step); Zarr chunks hold about 4 MiB. When a statistic runs in lane waves (`--plan`: `waves` >
+1), output chunks end at wave boundaries and are otherwise as large as these defaults;
+`--chunks dim=n,...` sets them explicitly.
 
 **Outputs never replace anything by accident.** An existing output (also a dangling symlink) is
 refused (`output_exists`) unless `-O` is given, and the refusal is atomic: a file is published
@@ -260,6 +271,10 @@ is accepted; the min/max inputs are not read.
 - Information operators (`sinfo`, `showname`, `showtimestamp`, `griddes`) and `mergetime`/`cat`
   take files or stores only, not the output of another operator.
 - No GRIB input; no native NetCDF-3 reader (NetCDF-3 goes through netCDF-C).
+- NetCDF output is uncompressed, and `-f nc4c` writes NetCDF-4, not the classic model. cdo
+  options that `cdors --help` does not list (`-z`, `-k`, `-r`, ...) are refused.
+- Remote reads were tested against the EERIE cloud (HTTPS) only; `s3://` is implemented but has
+  not been run against a real bucket.
 - No rechunking stage: data stored one complete field per chunk (GRIB, NetCDF written per
   timestep) is read correctly, but percentiles and daily climatologies on it whose state does
   not fit `--mem` read the input several times (`passes` in `--plan`).

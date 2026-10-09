@@ -1,17 +1,22 @@
-# cdors: status after the first night (2026-10-09)
+# cdors: status at the end of the prototype (2026-10-09)
 
-Morning briefing for Nikolay. Everything below is committed on `master` in `~/cdo` (local repository, no remote).
-The plan with all checkboxes and per-task notes: `docs/plans/20261008-cdors-prototype.md`.
+Briefing for Nikolay. Everything below is committed on `master` in `~/cdo` (local repository, no remote).
+The plan with all checkboxes and per-task notes: `docs/plans/completed/20261008-cdors-prototype.md`. How the
+prototype meets its four criteria: `docs/criteria.md`.
 
 ## In short
 
-- The prototype is built through Task 12 of the plan, plus two performance rounds and a safety round. It reads Zarr
-  v2/v3 (local and HTTPS/S3), kerchunk references (JSON and Parquet), NetCDF-4 (parallel, without HDF5 after a
-  one-time chunk index) and multi-file inputs, and runs about 180 CDO operators.
-- Correctness: every operator is compared with cdo 2.6.0 by `tests/run_cases.sh` (233 rows, about 35 s, both
+- **The prototype is complete: all 16 plan tasks are done.** It reads Zarr v2/v3 (local and HTTPS/S3), kerchunk
+  references (JSON and Parquet), NetCDF-4 (parallel, without HDF5 after a one-time chunk index) and multi-file inputs,
+  and runs 187 CDO operators.
+- **The four criteria** (`docs/criteria.md`): faster than cdo, met (4.4–72×, results match); remote Zarr practical,
+  but the "half of local throughput" mark is not met, because the EERIE server caps every client at ≈ 0.2 GB/s
+  (cdors is 1.2–1.3× xarray there; S3 was never tried on a real bucket); agents, met in a small check; bounded memory,
+  met at 1.1 TB (the 13 TB store was not run).
+- Correctness: every operator is compared with cdo 2.6.0 by `tests/run_cases.sh` (237 rows, about 30 s, both
   NetCDF read paths, and a planner check that forces tiny chunks, tiny memory and several passes and must give
   bit-identical output). The real-data check (`bench/realdata_check.sh`, 23 cases on small slices of W1–W4, ICON
-  R2B8, FESOM, HadGEM3 ORCA1, the EERIE cloud) on the final master: 17 identical, 2 within tolerance (a percentile
+  R2B8, FESOM, HadGEM3 ORCA1, the EERIE cloud), last run on the final binary: 17 identical, 2 within tolerance (a percentile
   vs cdo's histogram method; a mean vs numpy at 6.6e-10 relative), 4 plan/memory checks ok, 0 different.
 - Speed on the login node (indications, not the benchmark): typically 5–30× faster than cdo where reading
   dominates (up to 170× on W4 `ydaymean`); on tiny inputs cdo is faster, because cdors has ≈ 0.2–0.3 s of start-up
@@ -35,7 +40,7 @@ The plan with all checkboxes and per-task notes: `docs/plans/20261008-cdors-prot
 | Remapping | `remap,<grid>,<weights>`, `remapnn/dis/bil/con/ycon` (weights made once by cdo and cached), `hpdegrade/hpupgrade`; reads only the source cells the weights use (point extraction is cheap) |
 | Files | `copy`, `setgrid`, `mergetime`, `cat` (many files or a glob as one virtual input) |
 | Chains | any nesting, incl. statistics of statistics, via in-memory intermediates |
-| Memory | `--mem` budget with lane waves and multi-pass; `ydaymean` on 2 months of W4 ran in 1.3 GB under `--mem 1G` |
+| Memory | `--mem` budget with lane waves and multi-pass; `ydaymean` on 2 months of W4 ran in 0.65 GB under `--mem 1G` (9 waves) |
 | For agents | `--plan --json` (what will be read, memory, passes), `ops --json`, `help <op>` (cdo's text + cdors notes), JSON errors with stable codes and exit codes, `--max-read` (64 GB default on login nodes), `--max-values`, `--progress json`, never prompts, README section for agents |
 | Safety | output written to a unique temp name and published atomically; never overwrites without `-O`; refuses output = input; failure cleanup removes only what the run created; panics become JSON errors |
 
@@ -81,8 +86,11 @@ Deliberate and observed differences from cdo: `docs/deviations.md` (including fo
      steps. Details: `docs/bench-results.md`, last section.
 3. ~~Agent check~~ — **done** 2026-10-09 with your go-ahead: the pilot plus nine sessions, all correct, 0.36M
    fresh tokens + 3.0M cache reads ($4.29 at list price) in total. Details and what follows: `docs/agent-check.md`.
-   Remaining plan tasks: 15 (check the four prototype criteria against the docs) and 16 (README, close the
-   plan); neither needs compute.
+4. ~~Tasks 15 and 16~~ — **done** 2026-10-09 with your go-ahead: `docs/criteria.md`, `docs/deviations.md`
+   completed (and one wrong entry corrected), README status, plan moved to `docs/plans/completed/`. Found and
+   fixed on the way: cdo options cdors lacks (`-z zip`, `-k`, ...) were taken for operators, and `-f nc` wrote
+   CDF-1 instead of cdo's 64-bit offset format.
+5. **Next round or not** — your call; the candidates are in the plan's Post-Completion and under Known gaps below.
 
 ## Open questions
 
@@ -113,7 +121,10 @@ Deliberate and observed differences from cdo: `docs/deviations.md` (including fo
   held output is in the memory plan.
 - Agents spend most of their extra tokens learning cdors (README + `docs/deviations.md`, 34 kB, read in every
   session): a compact agent-facing reference or an MCP layer would cut that.
-- NetCDF output is uncompressed (no `-z zip` yet); `-f nc4c` writes the same as `nc4`.
+- NetCDF output is uncompressed (`-z` is refused); `-f nc4c` writes the same as `nc4`.
+- `s3://` inputs are implemented but were never run against a real bucket; remote reads were tested on the EERIE
+  cloud only.
+- "Multi-TB" memory was shown at 1.1 TB (1.9 TB decoded for percentiles); the 13.2 TB PT15M store was not run.
 - No rechunk-to-scratch stage: percentiles or daily climatologies on data stored one field per chunk need several
   passes over the input.
 - Remap weights are generated by cdo (first run per grid pair needs cdo on the machine; cdors calls it with `-L`,
@@ -126,7 +137,7 @@ Deliberate and observed differences from cdo: `docs/deviations.md` (including fo
 | `/work/ab0995/a270088/cdors-target-*` except `cdors-target` | ≈ 85 GB+ (several dirs not measured) | each agent's private build tree and scratch outputs; regenerable |
 | `/work/ab0995/a270088/cdors-target/runs/` | ≈ 11 MB per harness run, many runs | harness run directories (the harness never deletes) |
 | `/scratch/a/a270088/cdors-bench/prelim/` | 544 MB | early cdo test outputs |
-| `/scratch/a/a270088/cdors-realdata/` | ≈ 0.6 GB | runs of the real-data check (each run in its own directory) |
+| `/scratch/a/a270088/cdors-realdata/` | ≈ 0.7 GB | runs of the real-data check (each run in its own directory; the last, 0.3 GB, is the Task 15 check) |
 | `/work/ab0995/a270088/rust/rustup-init` | 21 MB | installer, no longer needed |
 | `~/cdo/.claude/worktrees/` (≈ 30 worktrees) | ≈ 30 MB | agent worktrees; all their branches are merged |
 | `~/cdo/nc4index/` | 1.2 MB, 15 files | NetCDF-4 index files written into the working directory by a test with an empty `CDORS_CACHE` (2026-10-09; that bug is fixed); untracked, counts against the home quota |

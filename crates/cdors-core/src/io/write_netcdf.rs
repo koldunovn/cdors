@@ -1,4 +1,4 @@
-//! NetCDF writer (NetCDF-4 or classic) through the `netcdf` crate.
+//! NetCDF writer (NetCDF-4, or the 64-bit offset format for `-f nc`) through the `netcdf` crate.
 //!
 //! The layout follows what cdo writes, so that cdo reads the result with the same grid: CF
 //! coordinate variables for regular grids, `coordinates` plus bounds for curvilinear and
@@ -71,7 +71,8 @@ impl NcWriter {
         let meta: OutMeta = out_meta(plan, lay, history)?;
         let _hdf5 = super::hdf5_lock();
         let opts = if classic {
-            netcdf::Options::NOCLOBBER
+            // cdo's `-f nc` also writes the 64-bit offset format (no 2 GiB offset limit)
+            netcdf::Options::_64BIT_OFFSET | netcdf::Options::NOCLOBBER
         } else {
             netcdf::Options::NETCDF4 | netcdf::Options::NOCLOBBER
         };

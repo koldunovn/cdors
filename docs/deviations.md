@@ -5,6 +5,13 @@ except for the points below. Each entry says what cdo does, what cdors does, and
 that `cdors help <op>` and `cdors ops --json` print name their entry here as `[section: entry]`.
 Bugs of cdo that cdors does not reproduce are listed in the last section.
 
+Bit-identical output is not a goal. cdors accumulates in double precision and in its own order
+(chunk by chunk, on several threads, with the same result for any thread count); cdo accumulates
+partly in float32 and uses OpenMP reductions whose order depends on its build and thread count.
+`tests/run_cases.sh` therefore compares most results exactly and the others within a tolerance:
+2 float32 units in the last place of the largest value (`ulp` rows), or one histogram bin where
+cdo's percentiles are approximate (`bin` rows).
+
 ## Files and outputs
 
 - **No silent overwrite, no append.** cdo overwrites an existing output without asking
@@ -26,6 +33,39 @@ Bugs of cdo that cdors does not reproduce are listed in the last section.
   backwards (`bad_data`), because the downstream operators assume a monotonic time axis. Their
   inputs must be files or stores (or one glob pattern), not the output of other operators
   (`not_implemented`).
+- **The output format follows the output name.** Without `-f`, cdo writes the input's format
+  whatever the output is called: a NetCDF-3 classic input gives classic output. cdors writes Zarr
+  v3 to a name ending in `.zarr` and NetCDF-4 to any other name. `-f nc` writes the 64-bit
+  offset format, as cdo does; `-f nc4c` writes NetCDF-4, not cdo's NetCDF-4 classic model.
+- **Output data type.** cdo keeps the input's type: integer variables stay integers, also for
+  statistics (it writes the time mean of an `int` variable rounded to an `int`), and a packed
+  variable (`short` with `scale_factor` and `add_offset`) stays packed through selections and
+  becomes float32 after a statistic. cdors writes float32 variables as float32 and all others
+  (packed or plain integers, float64) as unpacked float64, so no result is rounded or re-packed;
+  `-b F32` and `-b F64` set the type. cdo's other `-b` types (`I8`, `I16`, `U8`, ...) are
+  refused (`bad_arguments`).
+- **NetCDF output is uncompressed and chunked by field.** cdo compresses with `-z zip` (refused by
+  cdors, see "Command line") and, by default, splits large fields into several chunks (262144
+  cells per chunk on a HEALPix z9 grid). cdors writes one chunk per field (all horizontal points
+  of one level and step), or, when a statistic runs in lane waves, chunks that end at wave
+  boundaries; `--chunks dim=n,...` sets them. The values are the same.
+- **Global attributes.** Both copy the input's global attributes and add the command to
+  `history` (`--no_history` leaves it out). cdo also adds `CDI`, `CDO` and, on an input
+  without one, `Conventions = "CF-1.6"`; cdors adds none of them.
+
+## Command line
+
+- **cdo options that cdors does not have are refused** (`bad_arguments`, naming the option): `-z`
+  (cdors does not compress), `-k` (`--chunks` instead), `-r`, `-a`, `-R`, `-t`, `-p` and the
+  other single-letter options not listed by `cdors --help`. cdo's `-L` (serialised I/O) is
+  accepted and has no effect.
+- **Threads.** cdo computes on one thread unless `-P` says otherwise. cdors uses every core
+  available to the process (in a Slurm job, those of the allocation), at most 16 outside Slurm
+  jobs (also with a larger `-P`), and keeps 64–128 reads in flight (`--io-threads`).
+- **Exit codes.** cdo exits with 1 on every error it reports. cdors separates usage errors
+  (1), data errors (2), I/O errors worth retrying (3) and refusals (4: read limit, too many
+  values, existing output), and with `--json` reports each error as one JSON object with a
+  stable code (README, "For agents").
 
 ## Limits
 
@@ -99,8 +139,6 @@ output is created.
 - **Timestep, year and month ranges are not expanded.** `seltimestep,1/400000000` selects the
   existing timesteps at once; cdo expands the range into a list first. Ranges of more than 1000
   members are reported as one "not found" warning instead of one per member.
-- **An empty time selection is an error.** cdo warns and writes an output without timesteps;
-  cdors fails (`bad_arguments`), so that a mistyped date range is not silently accepted.
 - **Time values beyond about 100 million years** from the reference (typically an unmasked fill
   value such as 9.97e36) are `bad_data`, not dates.
 
@@ -151,6 +189,14 @@ output is created.
 - **`--force` is accepted and ignored.** cdo needs it for `remapcon` from or to HEALPix grids;
   cdors always passes it to `cdo gencon` and `cdo genycon`.
 
+## Information operators
+
+- **`sinfo` prints cdors' own summary.** cdo's `sinfo` is a table with institute, source, step
+  type and parameter ID per variable and every timestamp of the input. cdors prints per variable
+  the time flag, levels, points, data type, chunk shape and name, then the grids, the vertical
+  axes and the time axis with its first and last timestamp; `--json` gives the same as one
+  object (README, "For agents"). `showname`, `showtimestamp` and `griddes` print cdo's text.
+
 ## Printing values (`info`, `infon`, `output`, `outputf`, `outputtab`)
 
 - **Flood guard.** cdo prints whatever it is asked to. cdors refuses, before reading, to print
@@ -196,6 +242,10 @@ output is created.
   check) and on the benchmark's W4Y `ydaymean`: 26 of 366 days wrong, by up to 46 K
   (`docs/bench-results.md`). The full `ngc4008_PT3H_9.zarr` (87664 steps) ends inside a chunk too,
   and cdo cannot read its last 120 steps. cdors and zarr-python agree to float32 rounding.
+- **Empty time selection in a chain.** A time selection that selects nothing ends cdo 2.6.0
+  with "No timesteps selected!" (exit 1) and no output, as it ends cdors (`bad_arguments`, exit
+  1, before any data is read). Inside a chain (`cdo -seltimestep,1 -selyear,3000 in out`) cdo
+  crashes instead: `terminate called without an active exception`, SIGABRT, exit code 134.
 - **Time bounds of a time selection from a CMIP6 file.** On
   `tos_Omon_HadGEM3-GC31-LL_historical_r1i1p1f3_gn_195001-201412.nc` (360_day calendar),
   `cdo -selyear,2000` and `cdo -seltimestep,601/603` write the time bounds of the file's first

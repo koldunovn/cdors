@@ -26,9 +26,11 @@ exact    | -mulc,0 -mulc,1.7 {in}                      | r36x18_std hpz2_noleap 
 exact    | -divc,3 {in}                                | r36x18_std hpz2_noleap unst_360
 exact    | -ifthen -selname,pr {in} {in2}              | r36x18_std hpz2_noleap unst_360
 exact    | -copy {in}                                  | r36x18_std hpz2_noleap unst_360
+exact    | -f nc -copy {in}                            | r36x18_std hpz2_noleap unst_360   # 64-bit offset NetCDF
 exact    | -setgrid,{in2} {in}                         | r36x18_std hpz2_noleap unst_360
 exact    | -selname,tas -seltimestep,5/40 -sellonlatbox,0,120,-20,50 -mulc,2 {in} | r36x18_std hpz2_noleap unst_360
 err:unknown_operator | -yearmeans {in}                 | r36x18_std
+err:bad_arguments    | -z zip -timmean {in}            | r36x18_std   # cdo option not supported, not an operator 'z'
 err:bad_arguments    | -addc,1 {in} {in} {noout}       | r36x18_std   # output is an input
 err:output_exists    | -addc,1 {in} {fx}/r36x18_std_y2001.nc {noout} | r36x18_std
 err:bad_arguments    | -seltimestep,9223372036854775807 {in} | r36x18_std   # ranges are never expanded

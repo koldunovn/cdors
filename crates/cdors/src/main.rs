@@ -17,8 +17,10 @@ const USAGE: &str =
 options:
   -O                  overwrite existing outputs
   -P <n>              number of compute threads (default: all cores, at most 16 outside Slurm)
-  --io-threads <n>    blocking reads in flight (default: 64)
-  -f <fmt>            output format: nc4, nc4c, nc, zarr, zarr2
+  --io-threads <n>    blocking reads in flight (default: 128 in Slurm jobs, 64 on login
+                      nodes and for URLs)
+  -f <fmt>            output format: nc4, nc4c (written as nc4), nc (64-bit offset), zarr,
+                      zarr2 (default: zarr for a name ending in .zarr, else nc4)
   -b <F32|F64>        output precision
   -s                  as cdo -s for showtimestamp (one line); as in cdo, warnings are
                       still printed
@@ -36,7 +38,8 @@ options:
   --percentile <method>
   --no_history        do not write the history attribute
   --progress json     progress lines on stderr about once per second, and a summary line
-  -v, -L, --force     accepted for cdo compatibility; no effect
+  -v, -L, --force     accepted for cdo compatibility; no effect (cdo's other options, such
+                      as -z, -k, -r, are refused)
 
 exit codes: 0 success
             1 usage: unknown operator, not implemented, bad arguments, missing input,

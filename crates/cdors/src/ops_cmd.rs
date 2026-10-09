@@ -228,8 +228,9 @@ pub fn notes(name: &str) -> Vec<String> {
     }
     if is(&["seltimestep", "seldate", "selyear", "selmon", "selseason"]) {
         n.push(
-            "a selection that leaves no timestep is an error (cdo warns and writes an empty \
-             file) [Time axis: empty time selection]",
+            "a selection that leaves no timestep fails before reading (bad_arguments), as cdo \
+             fails; inside a chain cdo 2.6.0 crashes instead [cdo bugs observed: empty time \
+             selection in a chain]",
         );
     }
     if ops::output::handles(name) {
