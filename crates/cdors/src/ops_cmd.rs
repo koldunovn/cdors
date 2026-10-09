@@ -197,7 +197,8 @@ pub fn notes(name: &str) -> Vec<String> {
              [Statistics: Exact percentiles]",
         );
     }
-    if is(&["fld", "zon", "mer", "vert"]) {
+    // not "mer": mer* is not implemented, and the prefix would match mergetime
+    if is(&["fld", "zon", "vert"]) {
         n.push(
             "cell_methods (area: ..., longitude: ..., vertical) is added to the output \
              [Space statistics: cell_methods]",
@@ -211,12 +212,15 @@ pub fn notes(name: &str) -> Vec<String> {
     if is(&["vert"]) {
         n.push("accumulates in double precision [Space statistics: vert*]");
     }
-    if is(&["remap"]) {
+    // `remap,<grid>,<weights>` uses the given weight file: nothing is generated
+    if is(&["remap"]) && name != "remap" {
         n.push(
             "weights are generated once by cdo for the unmasked grid and cached in \
              $CDORS_CACHE/weights; missing values are renormalised per method \
              [Remapping: weights for the unmasked grid]",
         );
+    }
+    if is(&["remap"]) {
         n.push("--force is accepted and ignored [Remapping: --force]");
     }
     if name == "hpdegrade" {
