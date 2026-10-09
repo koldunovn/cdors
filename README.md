@@ -19,6 +19,10 @@ and a daily climatology over 1.1 TB within a 32 GB budget. What was shown and wh
 [docs/criteria.md](docs/criteria.md), with the details in
 [docs/bench-results.md](docs/bench-results.md) and [docs/agent-check.md](docs/agent-check.md).
 
+**On Levante, without building:** `export PATH=/work/ab0995/a270088/cdors/bin:$PATH`. The guide with
+worked examples on nextGEMS, EERIE and CMIP6 data is [docs/levante.md](docs/levante.md), installed
+next to the program as `/work/ab0995/a270088/cdors/README.md`.
+
 ## Building (Levante)
 
 ```sh

@@ -132,35 +132,58 @@ Deliberate and observed differences from cdo: `docs/deviations.md` (including fo
 
 ## Cleanup candidates (nothing was deleted — your call)
 
+Sizes measured 2026-10-09 22:30. Files on `/scratch` are also removed by DKRZ's automatic scratch cleanup after a
+while.
+
 | Path | Size | What |
 |---|---|---|
-| `/work/ab0995/a270088/cdors-target-*` except `cdors-target` | ≈ 85 GB+ (several dirs not measured) | each agent's private build tree and scratch outputs; regenerable |
-| `/work/ab0995/a270088/cdors-target/runs/` | ≈ 11 MB per harness run, many runs | harness run directories (the harness never deletes) |
-| `/scratch/a/a270088/cdors-bench/prelim/` | 544 MB | early cdo test outputs |
-| `/scratch/a/a270088/cdors-realdata/` | ≈ 0.7 GB | runs of the real-data check (each run in its own directory; the last, 0.3 GB, is the Task 15 check) |
+| `~/cdo/bench/agent/results-*-rescored.{tsv,md}` (6 files) | 20 kB | a botched re-scoring (shifted columns); the correct one is `bench/agent/rescored/`; untracked |
+| `~/cdo/nc4index/` | 1.2 MB | index files written into the repository by a test with an empty `CDORS_CACHE` (bug fixed); untracked |
+| `~/.claude/projects/-scratch-a-a270088-cdors-agentcheck-*` | 10 directories, 71 kB | made by the agent-check sessions |
+| `~/cdo/.claude/worktrees/` | 27 worktrees, 31 MB | agent worktrees: every branch is merged into master; the uncommitted files in two of them are in master too (checked 2026-10-09) |
+| `/work/ab0995/a270088/cdors-target-*` (28, not `cdors-target`) | ≈ 50–85 GB (3 measured: 1.7–2.6 GB each) | the agents' private build trees; regenerable |
+| `/work/ab0995/a270088/cdors-target/runs/` | 81 runs, ≈ 1 GB | harness run directories (the harness never deletes) |
 | `/work/ab0995/a270088/rust/rustup-init` | 21 MB | installer, no longer needed |
-| `~/cdo/.claude/worktrees/` (≈ 30 worktrees) | ≈ 30 MB | agent worktrees; all their branches are merged |
-| `~/cdo/nc4index/` | 1.2 MB, 15 files | NetCDF-4 index files written into the working directory by a test with an empty `CDORS_CACHE` (2026-10-09; that bug is fixed); untracked, counts against the home quota |
-| `/scratch/a/a270088/cdors-bench/bench-28000341/*.nc`, `bench-28007818/*.nc` | ≈ 11 GB each | benchmark outputs; the `.tsv`, `.md`, `.time` and `.log` files next to them are the record and stay |
-| `~/.claude/projects/-scratch-a-a270088-cdors-agentcheck-*` | 10 directories, 72 kB | made by the agent-check sessions despite `--no-session-persistence` (two hold a saved tool output, eight are empty); counts against the home quota |
-| `/scratch/a/a270088/cdors-agentcheck/bin-0415117/`, `/scratch/a/a270088/cdors-bin/0415117/` | 146 MB each | frozen cdors binaries of the agent check (written up in `docs/agent-check.md`) |
-| `~/cdo/bench/agent/results-*-rescored.{tsv,md}` (6 files) | 20 kB | a botched re-scoring (shifted columns, 2026-10-09); the correct one is `bench/agent/rescored/`; untracked |
+| `/scratch/a/a270088/cdors-bench/{bench-28000341,bench-28007818,baseline-27994857}/*.nc` | 11.5 + 10.7 + 6.6 GB | benchmark outputs; the `.tsv`, `.md`, `.time` and `.log` files next to them are the record and stay |
+| `/scratch/a/a270088/cdors-bench/{prelim,fixture-*,plan-20261009-*,plan-check-1}` | ≈ 2.1 GB | early cdo tests and smoke runs of `bench.sh` |
+| `/scratch/a/a270088/cdors-realdata/20261009-0*` | ≈ 0.7 GB | the three night runs of the real-data check; the latest run (`20261009-215314-…`) stays |
+| `/scratch/a/a270088/cdors-agentcheck/bin-0415117/`, `/scratch/a/a270088/cdors-bin/0415117/` | 140 MB each | frozen binaries of the agent check |
+| the Claude session's scratchpad under `/scratch/a/a270088/tmp/claude-24253/` | 5.5 GB | test outputs of this session |
 
-Commands, if you want them (check the list first):
+Commands (check the list first; the exact scratchpad path is in the session's last report):
 
 ```bash
-cd /work/ab0995/a270088 && ls -d cdors-target-*            # review
-rm -rf /work/ab0995/a270088/cdors-target-{area,catalog,docs,fsync,hard,pctl,perf,perf1,perf2,polish,probe,remap,remote,review,rplan,safety,t10,t10b,t12,t6,t7a,t7b,t8,t9,tg,usab,valid,vfix}
-rm -rf /work/ab0995/a270088/cdors-target/runs /scratch/a/a270088/cdors-bench/prelim /work/ab0995/a270088/rust/rustup-init
-rm -r ~/cdo/nc4index                                        # stray index files in the repository
-rm /scratch/a/a270088/cdors-bench/bench-28000341/*.nc /scratch/a/a270088/cdors-bench/bench-28007818/*.nc
-rm -r ~/.claude/projects/-scratch-a-a270088-cdors-agentcheck-*
+# small things in the home directory
 rm ~/cdo/bench/agent/results-*-rescored.tsv ~/cdo/bench/agent/results-*-rescored.md
+rm -r ~/cdo/nc4index ~/.claude/projects/-scratch-a-a270088-cdors-agentcheck-*
+
+# agent worktrees and their merged branches
+cd ~/cdo
+git worktree unlock .claude/worktrees/agent-a2a96d1f3fc63043a
+for w in .claude/worktrees/agent-*; do git worktree remove --force "$w"; done
+git branch -d $(git branch --list 'worktree-agent-*' --format='%(refname:short)')
+git worktree prune
+
+# build trees and harness runs on /work (keeps /work/ab0995/a270088/cdors-target itself)
+rm -rf /work/ab0995/a270088/cdors-target-{area,catalog,docs,fsync,hard,pctl,perf,perf1,perf2,polish,probe,remap,remote,review,rplan,safety,t10,t10b,t12,t6,t7a,t7b,t8,t9,tg,usab,valid,vfix}
+rm -rf /work/ab0995/a270088/cdors-target/runs
+rm /work/ab0995/a270088/rust/rustup-init
+
+# benchmark outputs and old runs on /scratch
+rm /scratch/a/a270088/cdors-bench/{bench-28000341,bench-28007818,baseline-27994857}/*.nc
+rm -r /scratch/a/a270088/cdors-bench/{prelim,fixture-*,plan-20261009-*,plan-check-1}
+rm -r /scratch/a/a270088/cdors-realdata/20261009-0*
 rm -r /scratch/a/a270088/cdors-agentcheck/bin-0415117 /scratch/a/a270088/cdors-bin/0415117
-cd ~/cdo && git worktree list && git worktree prune          # after removing the worktree directories
 ```
 
+Keep: `/work/ab0995/a270088/cdors/` (the shared install), `/work/ab0995/a270088/cdors-target` (build tree, test
+fixtures, cdo references), `/work/ab0995/a270088/cdors-cache` (weights and indexes), the agent-check transcripts in
+`/scratch/a/a270088/cdors-agentcheck/2026*` and the job records next to the benchmark outputs.
+
 ## Try it
+
+The installed version, for everyone on Levante (guide: `docs/levante.md`, also at
+`/work/ab0995/a270088/cdors/README.md`): `export PATH=/work/ab0995/a270088/cdors/bin:$PATH`. The build tree:
 
 ```bash
 source ~/cdo/env.sh; C=$CARGO_TARGET_DIR/release/cdors; W1=/work/kd1453/rechunked_ngc4008/ngc4008_P1D_9.zarr
