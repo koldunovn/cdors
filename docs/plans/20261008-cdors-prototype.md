@@ -508,9 +508,9 @@ cached. Rows needing `cdo` are skipped with a notice where it isn't available.
       loops, 64 reads in flight on login nodes
 - [ ] round 2 (after the Task 7 planner merge): O(1)/parallel tile construction, no blocking on fold-lane locks
       (≥ -P active lanes), NetCDF writer work moved to the compute pool
-- [ ] ➕ value-printing operators for agents (`outputtab`, `info`/`infon`, `output`/`outputf`, with `--json`): the
+- [x] ➕ value-printing operators for agents (`outputtab`, `info`/`infon`, `output`/`outputf`, with `--json`): the
       Task 14 prep found that agents had to fall back to ncdump (planned in Task 3, never built)
-- [ ] ➕ broken-pipe handling: `cdors --version | head -1` panics (agents pipe output into head)
+- [x] ➕ broken-pipe handling: `cdors --version | head -1` panics (agents pipe output into head)
 - [ ] ➕ remap reads only the source chunks its weights touch (point extraction with remapnn read a whole
       year of every cell: 21 s, 9 GB RSS on the login node)
 - ⚠️ 2026-10-09 profile (login node, W1): yearmean reaches ≈ 20 % of the read+decode ceiling warm and 50–62 %
@@ -520,6 +520,10 @@ cached. Rows needing `cdo` are skipped with a notice where it isn't available.
 - ⚠️ 2026-10-09 round 1 merged (bit-identical outputs): W1 yearmean warm 7 → 14–17 GB/s, cold 4.4 → 9.8 GB/s (the
       probe ceiling); timmean warm 4.6 → 15.8 GB/s; fldmean 3 → 4.1–4.6 GB/s (still lane-limited → round 2).
       glibc needs both mallopt thresholds (mmap 32 MiB max on glibc 2.28, trim off); one alone is worse.
+- ⚠️ 2026-10-09 usability merged: info/infon/output/outputf/outputtab on any chain, byte-identical to cdo 2.6.0 where
+      compared, `--json` records (missing = null), `--max-values` flood guard (1e6), SIGPIPE → quiet exit 141,
+      `--plan` keeps variadic inputs, intermediates freed after their stage, `--max-read` counts only real sources.
+      Harness 226/226. Agent-check arm A now prints values with cdors (no ncdump).
 
 ### Task 13: Benchmarks W1–W4
 
