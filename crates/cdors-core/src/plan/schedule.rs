@@ -23,9 +23,10 @@
 //! next wave. On data chunked in space, waves read disjoint chunks; when one chunk holds the
 //! cells of several waves (one field per chunk), it is read once per wave: the number of
 //! **passes** over the input is the largest number of waves reading one chunk. In wave mode the
-//! output chunks are aligned to the lanes, so every output chunk is completed by one lane and
-//! written at once (in any order). If not even one lane of one cell fits, planning fails with
-//! `memory_limit`.
+//! output chunks are aligned to the lanes and lie inside one wave, so every output chunk is
+//! completed by the wave that writes it and written at once (in any order); they span as many
+//! lanes as the output's usual chunks allow ([`out_chunks_for`]). If not even one lane of one cell
+//! fits, planning fails with `memory_limit`.
 
 use super::stage::Stage;
 use super::tiling::{LeafRead, TileBox, VarTiling};
@@ -176,6 +177,9 @@ pub struct Schedule {
     pub state_bytes: u64,
     /// Output held while being assembled (stages that produce an intermediate).
     pub out_hold: u64,
+    /// Written output of one wave, held until all lanes of the wave have finished (lane waves:
+    /// output chunks span many lanes, [`out_chunks_for`]).
+    pub wave_hold: u64,
     /// Budget of the stage (the run's budget minus the intermediates alive while it runs).
     pub budget: u64,
     /// Estimated peak: window + states + held output (+ intermediates, added by the plan).
@@ -198,6 +202,7 @@ impl Schedule {
             "passes": self.passes,
             "bytes_read": self.bytes_read,
             "state_bytes": self.state_bytes,
+            "wave_hold": self.wave_hold,
             "budget": self.budget,
             "peak_bytes": self.peak_bytes,
         })
@@ -253,13 +258,16 @@ pub fn human(b: u64) -> String {
 }
 
 /// Plans the tile window, lanes, waves and passes of `stage` within `budget` bytes, of which
-/// `out_hold` are taken by output being assembled.
+/// `out_hold` are taken by output being assembled. `written`: per stage variable, the bytes of
+/// its output if the stage writes the output file (in the written type), else empty; in lane
+/// waves, a wave's share of it is held until the wave's lanes have finished.
 pub fn schedule(
     stage: &Stage,
     threads: usize,
     io_threads: usize,
     budget: u64,
     out_hold: u64,
+    written: &[u64],
 ) -> Result<Schedule> {
     let threads = threads.max(1);
     // largest tile in flight: decoded chunks + the computed tile (f64 at most)
@@ -310,7 +318,8 @@ pub fn schedule(
     // largest wave state of long-lived lanes; largest lane state and largest total state of
     // short-lived lanes
     let (mut long_state, mut short_lane, mut short_all) = (0u64, 0u64, 0u64);
-    for sv in &stage.vars {
+    let mut wave_hold = 0u64;
+    for (vi, sv) in stage.vars.iter().enumerate() {
         let nd = sv.dims.len();
         let segs = &sv.tiling.segments;
         let fold: Vec<bool> = sv.dims.iter().map(|d| d.role == fold_role).collect();
@@ -446,9 +455,19 @@ pub fn schedule(
             lane_state.iter().max().copied().unwrap_or(0) * window
         };
         if long_lived && live > state_budget {
+            // a wave's share of the written output is held until all lanes of the wave have
+            // finished (its chunks span many lanes), so it counts with the lane states
+            let out = u128::from(written.get(vi).copied().unwrap_or(0));
+            let lane_out: Vec<u64> = (0..nlanes)
+                .map(|l| {
+                    let lane_cells = (vs.lane_box(l).len() / fold_extent.max(1)) as u128;
+                    (out * lane_cells / u128::from(cells)) as u64
+                })
+                .collect();
             let mut waves = Vec::new();
             let (mut a, mut acc) = (0usize, 0u64);
             for (l, &b) in lane_state.iter().enumerate() {
+                let b = b + lane_out[l];
                 if acc + b > state_budget && l > a {
                     waves.push(a..l);
                     a = l;
@@ -459,6 +478,8 @@ pub fn schedule(
             waves.push(a..nlanes);
             vs.waves = waves;
             vs.out_chunks = Some(lane_chunks(sv, &vs));
+            let held = vs.waves.iter().map(|w| lane_out[w.clone()].iter().sum::<u64>());
+            wave_hold = wave_hold.max(held.max().unwrap_or(0));
         }
         let wave_state = vs
             .waves
@@ -502,8 +523,10 @@ pub fn schedule(
     // Short-lived lanes are open about one per tile in flight, so their states grow with the
     // window: when the estimate exceeds the budget, fewer tiles are kept in flight (at least
     // two); if even that does not fit, planning fails before anything is read.
-    let peak_at =
-        |w: u64| w * tile_bytes + long_state.max((short_lane * w).min(short_all)) + out_hold;
+    s.wave_hold = wave_hold;
+    let peak_at = |w: u64| {
+        w * tile_bytes + long_state.max((short_lane * w).min(short_all)) + out_hold + wave_hold
+    };
     if peak_at(window) > budget {
         let Some(w) = (2..window).rev().find(|&w| peak_at(w) <= budget) else {
             return Err(too_small(
@@ -528,14 +551,15 @@ pub fn schedule(
         s.peak_bytes = peak_at(w);
         return Ok(s);
     }
-    s.peak_bytes = window_bytes + s.state_bytes + out_hold;
+    s.peak_bytes = window_bytes + s.state_bytes + out_hold + wave_hold;
     Ok(s)
 }
 
 /// Output chunks of a stage variable aligned to its lanes: along a non-folded dimension whose
 /// pieces all have one length `s` (the last may be shorter) and start at multiples of `s`, the
 /// chunk is `s`; along the folded dimensions 1; elsewhere the whole extent. Expressed in the
-/// input variable's dimensions; [`out_chunks_for`] maps them to the output variable.
+/// input variable's dimensions; [`out_chunks_for`] widens them and maps them to the output
+/// variable.
 fn lane_chunks(sv: &super::stage::StageVar, vs: &VarSched) -> Vec<usize> {
     (0..sv.dims.len())
         .map(|d| {
@@ -553,27 +577,170 @@ fn lane_chunks(sv: &super::stage::StageVar, vs: &VarSched) -> Vec<usize> {
         .collect()
 }
 
-/// Output chunks for output variable `out` of a fold stage in wave mode: the lane-aligned chunk
-/// of the input dimension with the same name and size, 1 along time, otherwise the whole extent.
+/// Output chunks for output variable `out` of a fold stage in wave mode. Along an input dimension
+/// with the same name and size: a multiple of the lane-aligned chunk, as large as `target` (the
+/// output's chunks without waves, per output dimension) allows while every chunk stays inside
+/// one wave; 1 along time; otherwise the whole extent. Chunks of one lane each would scatter one
+/// field over many small chunks across the file (W4 `ydaymean`: 384 chunks of 32 KB per day).
 pub fn out_chunks_for(
     sv: &super::stage::StageVar,
     vs: &VarSched,
     out: &[crate::model::VarDim],
+    target: &[usize],
 ) -> Option<Vec<usize>> {
     let lc = vs.out_chunks.as_ref()?;
+    let map: Vec<Option<usize>> = out
+        .iter()
+        .map(|od| {
+            sv.dims
+                .iter()
+                .position(|d| d.name == od.name && d.size == od.size)
+                .filter(|&d| !vs.fold[d])
+        })
+        .collect();
+    let mut want = lc.clone();
+    for (i, m) in map.iter().enumerate() {
+        if let Some(d) = *m {
+            want[d] = target.get(i).copied().unwrap_or(lc[d]);
+        }
+    }
+    let sizes: Vec<usize> = sv.dims.iter().map(|d| d.size).collect();
+    let chunk = widen_in_waves(&sizes, vs, lc, &want);
     Some(
         out.iter()
-            .map(|od| {
-                match sv
-                    .dims
-                    .iter()
-                    .position(|d| d.name == od.name && d.size == od.size)
-                {
-                    Some(d) if !vs.fold[d] => lc[d],
-                    _ if od.role == DimRole::Time => 1,
-                    _ => od.size.max(1),
-                }
+            .zip(&map)
+            .map(|(od, m)| match m {
+                Some(d) => chunk[*d],
+                None if od.role == DimRole::Time => 1,
+                None => od.size.max(1),
             })
             .collect(),
     )
+}
+
+/// Widens the lane-aligned chunks `unit` (input dimensions) towards `want`, last dimension first:
+/// along each non-folded dimension the largest multiple of the unit, at most `want` (but at
+/// least the unit), with which every chunk still lies inside one wave.
+fn widen_in_waves(sizes: &[usize], vs: &VarSched, unit: &[usize], want: &[usize]) -> Vec<usize> {
+    let mut chunk = unit.to_vec();
+    for d in (0..sizes.len()).rev() {
+        if vs.fold[d] {
+            continue;
+        }
+        let (u, size) = (unit[d].max(1), sizes[d].max(1));
+        let max_m = (want[d] / u).clamp(1, size.div_ceil(u));
+        for m in (2..=max_m).rev() {
+            let mut c = chunk.clone();
+            c[d] = (m * u).min(size);
+            if chunks_within_waves(sizes, vs, &c) {
+                chunk = c;
+                break;
+            }
+        }
+    }
+    chunk
+}
+
+/// Whether every chunk of shape `chunk` (input dimensions; folded dimensions ignored) lies inside
+/// one wave: waves are consecutive lane ranges, so it is enough that a chunk's first and last
+/// lane (C order over the pieces it touches) are in the same wave.
+fn chunks_within_waves(sizes: &[usize], vs: &VarSched, chunk: &[usize]) -> bool {
+    let dims: Vec<usize> = (0..sizes.len()).filter(|&d| !vs.fold[d]).collect();
+    // per non-folded dimension: the first and last piece touched by each of its chunks
+    let spans: Vec<Vec<(usize, usize)>> = dims
+        .iter()
+        .map(|&d| {
+            let (p, c) = (&vs.pieces[d], chunk[d].max(1));
+            (0..sizes[d].div_ceil(c))
+                .map(|k| {
+                    let (lo, hi) = (k * c, ((k + 1) * c).min(sizes[d]));
+                    let first = p.partition_point(|r| r.end <= lo);
+                    let last = p.partition_point(|r| r.start < hi).saturating_sub(1);
+                    (first, last)
+                })
+                .collect()
+        })
+        .collect();
+    if spans.iter().any(Vec::is_empty) {
+        return true;
+    }
+    let mut idx = vec![0usize; dims.len()];
+    loop {
+        let (mut first, mut last) = (0usize, 0usize);
+        for (j, &d) in dims.iter().enumerate() {
+            let (f, l) = spans[j][idx[j]];
+            first += f * vs.stride[d];
+            last += l * vs.stride[d];
+        }
+        if vs.wave_of(first) != vs.wave_of(last) {
+            return false;
+        }
+        let mut j = dims.len();
+        loop {
+            if j == 0 {
+                return true;
+            }
+            j -= 1;
+            idx[j] += 1;
+            if idx[j] < spans[j].len() {
+                break;
+            }
+            idx[j] = 0;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Lanes over the non-folded dimensions (pieces of `piece` cells), dimension 0 folded.
+    fn sched(sizes: &[usize], piece: &[usize], waves: &[Range<usize>]) -> VarSched {
+        let nd = sizes.len();
+        let pieces: Vec<Vec<Range<usize>>> = (0..nd)
+            .map(|d| {
+                if d == 0 {
+                    return std::iter::once(0..sizes[0]).collect();
+                }
+                (0..sizes[d].div_ceil(piece[d]))
+                    .map(|k| k * piece[d]..((k + 1) * piece[d]).min(sizes[d]))
+                    .collect()
+            })
+            .collect();
+        let mut stride = vec![0; nd];
+        let mut s = 1;
+        for d in (1..nd).rev() {
+            stride[d] = s;
+            s *= pieces[d].len();
+        }
+        VarSched {
+            fold: (0..nd).map(|d| d == 0).collect(),
+            pieces,
+            seg_pieces: Vec::new(),
+            stride,
+            waves: waves.to_vec(),
+            lane_tiles: 1,
+            out_chunks: None,
+            tile_reads: 0,
+        }
+    }
+
+    #[test]
+    fn output_chunks_span_lanes_within_waves() {
+        // W4 ydaymean in small: 48 lanes of 8 cells in two waves -> one chunk per wave
+        let vs = sched(&[100, 384], &[1, 8], &[0..24, 24..48]);
+        assert_eq!(widen_in_waves(&[100, 384], &vs, &[1, 8], &[1, 384]), vec![1, 192]);
+        // a smaller usual chunk: the largest multiple of the lane that divides the waves
+        assert_eq!(widen_in_waves(&[100, 384], &vs, &[1, 8], &[1, 100]), vec![1, 96]);
+        // W4 timpctl in small: waves of 5 lanes, the last one shorter
+        let vs = sched(&[9, 96], &[1, 4], &[0..5, 5..10, 10..15, 15..20, 20..24]);
+        assert_eq!(widen_in_waves(&[9, 96], &vs, &[1, 4], &[1, 96]), vec![1, 20]);
+        // two horizontal dimensions: rows of lanes, two rows per wave
+        let vs = sched(&[10, 8, 18], &[1, 2, 3], &[0..12, 12..24]);
+        assert_eq!(widen_in_waves(&[10, 8, 18], &vs, &[1, 2, 3], &[1, 8, 18]), vec![1, 4, 18]);
+        // a wave boundary inside a row: x stays split where the waves cut it
+        let vs = sched(&[10, 8, 18], &[1, 2, 3], &[0..9, 9..24]);
+        assert!(!chunks_within_waves(&[10, 8, 18], &vs, &[1, 2, 18]));
+        assert_eq!(widen_in_waves(&[10, 8, 18], &vs, &[1, 2, 3], &[1, 8, 18]), vec![1, 2, 9]);
+    }
 }

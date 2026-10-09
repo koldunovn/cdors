@@ -93,8 +93,8 @@ pub struct Settings {
     pub io_threads: usize,
     /// Tiles in flight.
     pub window: usize,
-    /// Output chunks may be written in any order (lane-major dispatch: each output chunk is
-    /// completed by one lane, and the lanes of one wave finish before the next wave starts).
+    /// Output chunks may be written in any order (lane-major dispatch: each output chunk lies
+    /// inside one wave and is complete once that wave's lanes have finished).
     pub any_order: bool,
 }
 

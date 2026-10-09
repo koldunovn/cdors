@@ -527,7 +527,7 @@ pub fn to_json(plan: &Plan, cmd: &Command, threads: usize, io_threads: usize) ->
             "parts": {
                 "tiles_in_flight": tiles_mem,
                 "fold_state": top.state_bytes,
-                "output_buffers": top.out_hold,
+                "output_buffers": top.out_hold + top.wave_hold,
                 "intermediates": inter_mem,
                 "remap_weights": weights_bytes,
             },

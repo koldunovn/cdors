@@ -957,10 +957,21 @@ pub fn build(cmd: &Command, cdo: CdoUse) -> Result<Plan> {
         .max()
         .unwrap_or(1);
     let (threads, io_threads) = (threads.min(tasks), io_threads.min(tasks));
+    // the last stage writes the output file: bytes per variable, in the type they are written in
+    let written: Vec<u64> = desc
+        .vars
+        .iter()
+        .map(|v| {
+            let n: usize = v.shape().iter().product();
+            n as u64 * crate::exec::out_dtype(cmd, v).size() as u64
+        })
+        .collect();
+    let out_stage = stages.len() - 1;
     for (i, st) in stages.iter_mut().enumerate() {
         let hold = intermediates.get(i).map_or(0, |im| im.bytes);
         let live = intermediate::live_bytes(&intermediates, i);
-        st.sched = schedule::schedule(st, threads, io_threads, budget - live, hold)?;
+        let w: &[u64] = if i == out_stage { &written } else { &[] };
+        st.sched = schedule::schedule(st, threads, io_threads, budget - live, hold, w)?;
         st.sched.bytes_read = explain::stage_stats(st).bytes_decoded;
     }
     Ok(Plan {

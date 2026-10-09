@@ -110,7 +110,14 @@ Details are in `docs/deviations.md`, under "cdo bugs observed".
   chunks spread over the whole 4.6 GB file (chunk offsets read with h5py), so reading it from Lustre cold takes
   4.6 s, against 0.24 s for cdo's output (chunks of 262144 cells). The last step of job 28007818,
   `cdo diffn` on the two outputs, took 30 min because of it. The single-field `timpctl` output reads quickly
-  despite its small chunks, because they lie in order. Being fixed: chunks that span many lanes.
+  despite its small chunks, because they lie in order. **Fixed:** in wave mode the output chunks now span as
+  many lanes as the usual chunks allow while staying inside one wave (one field per chunk for NetCDF, about
+  4 MiB for Zarr). A wave's chunks are complete only once all its lanes have finished, so the planner counts a
+  wave's share of the written output with the lane states (`--plan`: output buffers). On two months of the W4
+  store under `--mem 2G` (5 waves), one day is 4 chunks instead of 192 and reads cold in 0.07 s instead of
+  0.54 s; the values are bit-identical, and peak RSS stays within the budget (1.27 GB). For the full W4
+  `ydaymean` the waves and the chunks read are unchanged at `--mem 24G` (2 waves, now with 2.7 GB of output
+  buffers in the plan); at `--mem 16G` the planner needs 4 waves instead of 3, still reading every chunk once.
 
 ## Reads in flight
 

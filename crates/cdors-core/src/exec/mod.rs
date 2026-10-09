@@ -145,8 +145,20 @@ pub fn out_chunks(
     c
 }
 
+/// Type a variable is written in: `-b`, else float32 input stays float32 and everything else is
+/// written as float64.
+pub fn out_dtype(cmd: &Command, v: &VarDesc) -> DType {
+    match cmd.options.precision {
+        Some(Precision::F32) => DType::F32,
+        Some(Precision::F64) => DType::F64,
+        None if v.dtype == DType::F32 => DType::F32,
+        None => DType::F64,
+    }
+}
+
 /// Data-variable layouts of a plan's output. When the output stage runs in lane waves, the
-/// output chunks follow the lanes (`plan::schedule`), unless `--chunks` says otherwise.
+/// output chunks follow the lanes and the waves, as close to the usual chunks as they allow
+/// (`plan::schedule`), unless `--chunks` says otherwise.
 pub fn layout(plan: &Plan, cmd: &Command) -> Vec<OutVar> {
     let last = plan.stages.last();
     plan.desc
@@ -154,28 +166,24 @@ pub fn layout(plan: &Plan, cmd: &Command) -> Vec<OutVar> {
         .iter()
         .enumerate()
         .map(|(i, v)| {
+            let dtype = out_dtype(cmd, v);
+            let usual = out_chunks(
+                v,
+                plan.out_kind,
+                dtype.size(),
+                cmd.options.chunks.as_deref(),
+            );
             let lane_chunks = last.and_then(|st| {
                 let sv = st.vars.get(i)?;
-                plan::schedule::out_chunks_for(sv, st.sched.vars.get(i)?, &v.dims)
+                plan::schedule::out_chunks_for(sv, st.sched.vars.get(i)?, &v.dims, &usual)
             });
-            let dtype = match cmd.options.precision {
-                Some(Precision::F32) => DType::F32,
-                Some(Precision::F64) => DType::F64,
-                None if v.dtype == DType::F32 => DType::F32,
-                None => DType::F64,
-            };
             OutVar {
                 name: v.name.clone(),
                 dims: v.dims.iter().map(|d| d.name.clone()).collect(),
                 shape: v.shape(),
                 chunks: match lane_chunks {
                     Some(c) if cmd.options.chunks.is_none() => c,
-                    _ => out_chunks(
-                        v,
-                        plan.out_kind,
-                        dtype.size(),
-                        cmd.options.chunks.as_deref(),
-                    ),
+                    _ => usual,
                 },
                 dtype,
                 missval: v.missval,
