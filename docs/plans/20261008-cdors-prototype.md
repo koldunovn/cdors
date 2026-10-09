@@ -504,7 +504,7 @@ cached. Rows needing `cdo` are skipped with a notice where it isn't available.
 
 ### ➕ Task 12b: Performance rounds before the benchmarks
 
-- [ ] round 1 (running): allocation churn (buffer pool / malloc tuning), copy-free decode, branch-free kernel
+- [x] round 1: allocation churn (buffer pool / malloc tuning), copy-free decode, branch-free kernel
       loops, 64 reads in flight on login nodes
 - [ ] round 2 (after the Task 7 planner merge): O(1)/parallel tile construction, no blocking on fold-lane locks
       (≥ -P active lanes), NetCDF writer work moved to the compute pool
@@ -517,6 +517,9 @@ cached. Rows needing `cdo` are skipped with a notice where it isn't available.
       cold; `MALLOC_MMAP_THRESHOLD_=4G` alone gave ≈ 2× and reached the ceiling cold (5–7× cdo); decode copies
       (`convert`, `trim`) take ≈ 50 % of user time; tile construction caps throughput at 10–15 GB/s; fldmean blocks
       12 of 16 threads on lane locks; `copy` is limited by the single NetCDF writer thread.
+- ⚠️ 2026-10-09 round 1 merged (bit-identical outputs): W1 yearmean warm 7 → 14–17 GB/s, cold 4.4 → 9.8 GB/s (the
+      probe ceiling); timmean warm 4.6 → 15.8 GB/s; fldmean 3 → 4.1–4.6 GB/s (still lane-limited → round 2).
+      glibc needs both mallopt thresholds (mmap 32 MiB max on glibc 2.28, trim off); one alone is worse.
 
 ### Task 13: Benchmarks W1–W4
 
