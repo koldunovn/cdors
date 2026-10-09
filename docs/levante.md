@@ -20,7 +20,18 @@ Global data: the nextGEMS ICON run on a HEALPix grid of 3.1 million cells. The r
 read cold data, and cdo mostly read data that cdors had just read, which favours cdo. On tiny files cdo is faster,
 because cdors needs 0.2–0.3 s to start. Details: `doc/bench-results.md`.
 
+On the 6 km DestinE climate projections, an interactive node turns 60 years of monthly 2 m temperature (36 GB) into
+a global-mean series in 5.5–16 s, and two decades into a 6 km warming map in 15 s (see "DestinE at 6 km" below).
+
 ## Try it
+
+Work on an interactive node: cdors uses every core it gets, while a login node limits it to 16 threads and 64 GB
+read per command. `salloc` opens a shell on the node (replace the account with your project); `exit` ends the
+session, and Slurm bills the time it was open:
+
+```bash
+salloc -p interactive -A <your project> -c 128 --mem=200G -t 01:00:00     # half a node: 64 cores
+```
 
 One line makes `cdors` available. The example after it prints the July mean of 2 m temperature over Europe
 (10°W–40°E, 35–70°N), area-weighted, for five years, from 30 years of daily global data:
@@ -40,12 +51,101 @@ cdors outputtab,date,value -yearmean -fldmean -sellonlatbox,-10,40,35,70 -selmon
  2024-07-16 292.9499
 ```
 
-That took 0.6 s on a login node. The dataset is the nextGEMS ICON run `ngc4008`: daily means on a HEALPix grid at
+That took 1 s. The dataset is the nextGEMS ICON run `ngc4008`: daily means on a HEALPix grid at
 zoom 9, 3,145,728 cells per field, 2020–2049. Of the 17,568 chunks of `tas`, cdors read the 60 that cover Europe in
 July of these five years (0.47 GB).
 
-Every command in this guide was run on a Levante login node on 2026-10-09, and the outputs are copied from those
-runs.
+Every command in this guide was run on 2026-10-09 in such a session (128 CPUs of an interactive node), and the
+outputs are copied from those runs. The plans shown were made on a login node, which is where cdors applies its
+login-node limits.
+
+## DestinE at 6 km
+
+The Destination Earth climate projections of Generation 2 hold monthly means on a HEALPix grid of 12,582,912 cells
+(about 6 km), from IFS-FESOM, IFS-NEMO and ICON: a historical run for 1990–2014 and an SSP3-7.0 projection for
+2015–2049. Each variable of each run is a Zarr store of its own, named by experiment, model, output stream and ECMWF
+parameter ID; `228004` is 2 m temperature (`avg_2t`), 21 GB per variable over 35 years:
+
+```bash
+G=/work/ab0995/a270088/DestinE/GENERATION2_joint
+ls $G/2D | head        # surface variables (high resolution); $G/3D: pressure levels and the ocean
+H=$G/2D/baseline_hist_2_ifs-fesom_1_0001_clmn_high_sfc_228004.zarr
+P=$G/2D/projections_ssp3-7.0_2_ifs-fesom_1_0001_clmn_high_sfc_228004.zarr
+```
+
+### Global warming in three models
+
+`-mergetime` joins the historical run and the projection; one command per model reads 36 GB:
+
+```bash
+for m in ifs-fesom_1 ifs-nemo_1 icon_1; do
+  cdors outputtab,date,value -yearmean -fldmean -mergetime \
+    $G/2D/baseline_hist_2_${m}_0001_clmn_high_sfc_228004.zarr \
+    $G/2D/projections_ssp3-7.0_2_${m}_0001_clmn_high_sfc_228004.zarr
+done
+```
+
+Each prints 60 annual global means (`1990-06-16 287.522` ... `2049-06-16 289.0152` for IFS-FESOM), in 12 s, 16 s
+and 5.5 s. Their decadal means, in K:
+
+| Decade | IFS-FESOM | IFS-NEMO | ICON |
+|---|---|---|---|
+| 1990s | 287.35 | 287.15 | 286.47 |
+| 2000s | 287.55 | 287.26 | 286.75 |
+| 2010s | 287.72 | 287.53 | 286.95 |
+| 2020s | 288.11 | 287.72 | 287.14 |
+| 2030s | 288.42 | 287.92 | 287.35 |
+| 2040s | 288.88 | 288.31 | 287.52 |
+
+The stores have no cell bounds, so cdors warns and weights all cells equally, as cdo does. HEALPix cells have equal
+areas, so these are exact area means.
+
+### A warming map at 6 km
+
+The 2040s minus the 1990s, for every one of the 12.6 million cells, in 15 s (12 GB read):
+
+```bash
+cdors -sub -timmean -selyear,2040/2049 $P -timmean -selyear,1990/1999 $H dT.nc
+cdors infon dT.nc
+ushow dT.nc
+```
+```
+    -1 :       Date     Time   Level Gridsize    Miss :     Minimum        Mean     Maximum : Parameter name
+     1 : 2044-12-16 12:00:00       0 12582912       0 :     -3.1325      1.5266      8.8455 : avg_2t
+```
+
+The stores carry `latitude` and `longitude`, and so does `dT.nc`: ushow opens it as it is.
+
+![IFS-FESOM 2 m temperature change, 2040–2049 minus 1990–1999](img/destine_warming_2040s.png)
+
+*`dT.nc`, drawn with matplotlib after averaging the cells into 0.25° boxes.*
+
+### Hamburg, 60 years
+
+The nearest cell to Hamburg, annual means 1990–2049:
+
+```bash
+cdors outputtab,date,value -yearmean -remapnn,lon=10_lat=53.55 -mergetime $H $P
+```
+
+The first run took 21 s, because cdo made the nearest-neighbour weights for 12.6 million cells; later runs take
+3.3 s. The decadal means rise from 281.16 K in the 1990s to 283.92 K in the 2040s.
+
+### Ocean warming with depth
+
+The ocean temperature of IFS-FESOM (`avg_thetao`, 69 levels on a coarser HEALPix grid of 196,608 cells), 2045–2049
+minus 2015–2019, as a global mean for every level, in 1.4 s:
+
+```bash
+O=$G/3D/projections_ssp3-7.0_2_ifs-fesom_1_0001_clmn_standard_o3d_263501.zarr
+cdors outputtab,lev,value -fldmean -sub -timmean -selyear,2045/2049 $O -timmean -selyear,2015/2019 $O
+```
+
+`lev` is the level number; the depths are in `$G/levels.yaml` (`FESOM-NG5-full`). Some of the 69 levels:
+
+| Depth | 2.5 m | 47.5 m | 97.5 m | 195 m | 480 m | 950 m | 2035 m | 4025 m | 6175 m |
+|---|---|---|---|---|---|---|---|---|---|
+| Change (K) | +0.85 | +0.63 | +0.37 | +0.15 | +0.12 | +0.13 | +0.005 | +0.02 | +0.06 |
 
 ## Example 1: look at a dataset
 
@@ -102,10 +202,10 @@ settings: 16 compute threads, 64 reads in flight (login node)
 read limit: 64.0 GB (login-node default, no SLURM_JOB_ID)
 ```
 
-46 GB is under the login node's limit of 64 GB, so it can run here:
+46 GB is under the login node's limit of 64 GB, so it could run there too. On the interactive node:
 
 ```bash
-time cdors -ymonmean -selyear,2020/2029 -selname,tas $D tas_ymonmean.nc     # 5.8 s, 1.3 GB of memory
+time cdors -ymonmean -selyear,2020/2029 -selname,tas $D tas_ymonmean.nc     # 4.7 s
 cdors infon tas_ymonmean.nc
 ```
 ```
@@ -140,7 +240,8 @@ cdors outputtab,date,lon,lat,value -timpctl,95 -remapnn,lon=10_lat=53.55 -selyea
  2020-07-02     10  53.55   292.12
 ```
 
-That takes 2.3 s. `--plan` shows why it is fast: of the 67968 chunks of `tas`, cdors reads the 12 that hold this
+That took 2.3 s the first time, while cdo made the nearest-neighbour weights, and 0.15 s after that. `--plan` shows
+why it is fast: of the 67968 chunks of `tas`, cdors reads the 12 that hold this
 cell in 2020 (195 MB). cdors computes percentiles exactly, for any number of values. cdo switches to an
 approximation above 50 values per cell (`doc/deviations.md`).
 
@@ -163,7 +264,7 @@ cdors outputtab,date,value -mulc,86400 -monmean -fldmean -sellonlatbox,-60,0,20,
  1950-12-16 3.669047
 ```
 
-That is North Atlantic precipitation in mm/day for each month of 1950, in 1.8 s.
+That is North Atlantic precipitation in mm/day for each month of 1950, in 2 s.
 
 **Raw NetCDF files.** A quoted glob pattern is one input: cdors sorts the files and joins them along time.
 
@@ -172,9 +273,9 @@ R=/work/bm1344/k202193/ICON/erc2002/postprocessing/interpolation/control_1950/at
 cdors -fldmean -sellonlatbox,-60,0,20,60 -selname,pr "$R/run_199[1-5]*/*.nc" pr_natl.nc
 ```
 
-That is 120 files, five years of daily data, 7.6 GB to decode. The first run took 21 s: cdors opens each file once
-through netCDF-C and keeps a chunk index in `$CDORS_CACHE`. Later runs took 2.6 s. `--plan` does not write the index,
-so a `--plan` before the first run is slow too (35 s here). These raw files carry the model's own years: 1991 in
+That is 120 files, five years of daily data, 7.6 GB to decode. The first run took a minute: cdors opens each file
+once through netCDF-C and keeps a chunk index in `$CDORS_CACHE`. Later runs took 3.2 s. `--plan` does not write the
+index, so a `--plan` before the first run is slow too. These raw files carry the model's own years: 1991 in
 the files is 1950 in the catalog and the kerchunk references.
 
 **The EERIE cloud** over HTTPS. It is the same dataset, read from anywhere, also outside Levante:
@@ -189,7 +290,7 @@ cdors outputtab,date,value -timmean -fldmean -sellonlatbox,-10,40,35,70 -selmon,
  1950-01-16 274.6871
 ```
 
-That takes 1.8 s from the cloud and 0.8 s from the kerchunk references, with the same value. The server delivers
+That takes 2–3 s from the cloud and under 1 s from the kerchunk references, with the same value. The server delivers
 about 0.2 GB/s to any client, so tens of GB take minutes. The dataset list is at
 `https://eerie.cloud.dkrz.de/datasets`. cdo cannot read these URLs.
 
@@ -202,7 +303,7 @@ F=/work/ik1017/CMIP6/data/CMIP6/CMIP/MOHC/HadGEM3-GC31-LL/historical/r1i1p1f3/Om
 cdors -remapbil,r360x180 -timmean -selyear,2000/2014 $F tos_clim_1deg.nc
 ```
 
-The first run took 3.9 s, because cdo made the weights. cdors keeps them in `$CDORS_CACHE`, and the next run took
+The first run took 5 s, because cdo made the weights. cdors keeps them in `$CDORS_CACHE`, and the next run took
 0.5 s. `remapnn`, `remapdis`, `remapbil`, `remapcon` and `remapycon` work with cdo's grid names (`r360x180`,
 `global_1`, `hpz7`, `lon=10_lat=53.55`, ...), with grid description files and with the grid of another dataset.
 `remap,<grid>,<weights.nc>` uses weights you made yourself. Missing values (land) are treated as cdo treats them,
@@ -383,9 +484,9 @@ leave a hidden `.<output>.cdors-tmp-...` file or directory next to the output. R
 
 ## Version and feedback
 
-The installed version is 0.1.0, commit `c93cb33` of 2026-10-09. The binary is the build that passed the tests
-(`libexec/cdors-0.1.0-c93cb33`, checksum in `libexec/cdors-0.1.0-c93cb33.sha256`). New versions will be installed
-next to it, and `bin/cdors` will point at the newest one. The source is at
+The installed version is 0.1.0, commit `ac96a11` of 2026-10-09, which added `--lonlat`. The binary is the build that
+passed the tests (`libexec/cdors-0.1.0-ac96a11`, checksum in `libexec/cdors-0.1.0-ac96a11.sha256`); the previous one
+(`c93cb33`) stays next to it. New versions are installed the same way, and `bin/cdors` points at the newest one. The source is at
 [github.com/koldunovn/cdors](https://github.com/koldunovn/cdors).
 
 This is a prototype, and reports help. Send wrong numbers, confusing errors and slow commands to Nikolay Koldunov
