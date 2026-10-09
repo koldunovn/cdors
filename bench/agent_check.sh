@@ -23,6 +23,8 @@
 #   MAX_BUDGET_USD [] passed as --max-budget-usd when set (only enforced for API-key billing)
 #   MODEL [] / EFFORT []  passed as --model / --effort when set; use the same for both arms
 #   CDORS_BIN [/work/ab0995/a270088/cdors-target/release/cdors]  REPO [/home/a/a270088/cdo]
+#   DOCS [full]  documentation offered to arm A: full = README and docs/deviations.md copied into the
+#                session; guide = only `cdors guide` (the 5 kB guide for agents) besides help and ops
 #   BASE [/scratch/a/a270088/cdors-agentcheck]   sessions go to $BASE/<run-id>/<task>-<arm>/
 #   RESULTS_DIR [bench/agent]   CLAUDE_BIN [claude on PATH; a stub for testing the RUN path without claude]
 #
@@ -95,10 +97,15 @@ fi
 # answers. Its README and docs/deviations.md are copied into the session directory instead (docs/), and
 # the scorer flags any transcript that touches agent_tasks.md or the reference scripts.
 DOC_FILES=()
-if [ -f "$REPO/README.md" ]; then
+DOCS=${DOCS:-full}
+case $DOCS in full|guide) ;; *) die "unknown DOCS=$DOCS (full or guide)";; esac
+if [ "$DOCS" = guide ]; then
+  "$CDORS_BIN" guide >/dev/null 2>&1 || die "DOCS=guide but $CDORS_BIN has no 'guide' subcommand"
+  CDORS_DOCS="\`$CDORS_BIN guide\` (a short guide for agents: workflow, syntax, recipes, errors; start here), $CDORS_DOCS"
+elif [ -f "$REPO/README.md" ]; then
   CDORS_DOCS+=", the README in docs/README.md (in the current directory)"; DOC_FILES+=("$REPO/README.md")
 fi
-if [ -f "$REPO/docs/deviations.md" ]; then
+if [ "$DOCS" = full ] && [ -f "$REPO/docs/deviations.md" ]; then
   CDORS_DOCS+=", and docs/deviations.md (known differences from cdo)"; DOC_FILES+=("$REPO/docs/deviations.md")
 fi
 

@@ -360,9 +360,9 @@ Exit codes:
 | 3 | an I/O error worth retrying (timeouts, HTTP 5xx) |
 | 4 | refused (read limit, too many values, existing output) |
 
-AI agents (Claude Code, Codex, ...) use cdors well when they are pointed at `doc/reference.md`. Its section "For
-agents" describes `--plan --json`, `cdors ops --json` and the error codes. In a test, agents answered five of five
-analysis questions correctly with cdors (`doc/criteria.md`).
+AI agents (Claude Code, Codex, ...) can start with `cdors guide`: 5 kB written for them (workflow, syntax, recipes,
+errors, limits). `doc/reference.md` has the full reference, including `--plan --json` and the error codes. In a test,
+agents answered five of five analysis questions correctly with cdors (`doc/criteria.md`).
 
 ## Big jobs: compute nodes
 
@@ -493,9 +493,10 @@ leave a hidden `.<output>.cdors-tmp-...` file or directory next to the output. R
 
 ## Version and feedback
 
-The installed version is 0.1.0, commit `ac96a11` of 2026-10-09, which added `--lonlat`. The binary is the build that
-passed the tests (`libexec/cdors-0.1.0-ac96a11`, checksum in `libexec/cdors-0.1.0-ac96a11.sha256`); the previous one
-(`c93cb33`) stays next to it. New versions are installed the same way, and `bin/cdors` points at the newest one. The source is at
+The installed version is 0.1.0, commit `173f12a` of 2026-10-09, which added `cdors guide` and cdo's brackets around
+the inputs of `mergetime` and `cat` (`-mergetime [ a b ]`); `--lonlat` came with `ac96a11`. The binary is the build that
+passed the tests (`libexec/cdors-0.1.0-173f12a`, checksum in `libexec/cdors-0.1.0-173f12a.sha256`); the earlier ones
+stay next to it. New versions are installed the same way, and `bin/cdors` points at the newest one. The source is at
 [github.com/koldunovn/cdors](https://github.com/koldunovn/cdors).
 
 This is a prototype, and reports help. Send wrong numbers, confusing errors and slow commands to Nikolay Koldunov
