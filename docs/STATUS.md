@@ -1,6 +1,7 @@
 # cdors: status at the end of the prototype (2026-10-09)
 
-Briefing for Nikolay. Everything below is committed on `master` in `~/cdo` (local repository, no remote).
+Briefing for Nikolay. Everything below is committed on `master` in `~/cdo` and published at
+https://github.com/koldunovn/cdors.
 The plan with all checkboxes and per-task notes: `docs/plans/completed/20261008-cdors-prototype.md`. How the
 prototype meets its four criteria: `docs/criteria.md`.
 
@@ -23,7 +24,7 @@ prototype meets its four criteria: `docs/criteria.md`.
   and planning overhead.
 - Slurm: the baseline (job 27994857), W1–W3 plus one year of W4 (job 28000341), and W2, W3 plus the full W4
   (job 28007818) ran with your go-ahead, 3.1 node-hours together. Every speed mark is met (W2 10.8×, W3 8.6×, W4
-  `ydaymean` 72× on 1.1 TB within 23.7 GiB). Nothing was deleted, nothing was pushed.
+  `ydaymean` 72× on 1.1 TB within 23.7 GiB). Nothing was deleted.
 - Agent check (2026-10-09): all ten headless sessions correct, five tasks with cdors and five with cdo/Python. With
   cdors the agents needed 704 s of wall time against 1684 s, but 2.7× the tokens ($2.73 against $1.57), mostly
   for reading the docs (`docs/agent-check.md`). It also found a wrong reference (T3), now corrected.
@@ -90,7 +91,10 @@ Deliberate and observed differences from cdo: `docs/deviations.md` (including fo
    completed (and one wrong entry corrected), README status, plan moved to `docs/plans/completed/`. Found and
    fixed on the way: cdo options cdors lacks (`-z zip`, `-k`, ...) were taken for operators, and `-f nc` wrote
    CDF-1 instead of cdo's 64-bit offset format.
-5. **Next round or not** — your call; the candidates are in the plan's Post-Completion and under Known gaps below.
+5. ~~Publication~~ — **done** 2026-10-09 with your go-ahead: the public repository https://github.com/koldunovn/cdors
+   (BSD-3-Clause, CDO's license in `LICENSE-CDO`) and a shared install for Levante users in
+   `/work/ab0995/a270088/cdors` (guide: `docs/levante.md`).
+6. **Next round or not** — your call; the candidates are in the plan's Post-Completion and under Known gaps below.
 
 ## Open questions
 
@@ -148,9 +152,8 @@ while.
 | `/scratch/a/a270088/cdors-bench/{prelim,fixture-*,plan-20261009-*,plan-check-1}` | ≈ 2.1 GB | early cdo tests and smoke runs of `bench.sh` |
 | `/scratch/a/a270088/cdors-realdata/20261009-0*` | ≈ 0.7 GB | the three night runs of the real-data check; the latest run (`20261009-215314-…`) stays |
 | `/scratch/a/a270088/cdors-agentcheck/bin-0415117/`, `/scratch/a/a270088/cdors-bin/0415117/` | 140 MB each | frozen binaries of the agent check |
-| the Claude session's scratchpad under `/scratch/a/a270088/tmp/claude-24253/` | 5.5 GB | test outputs of this session |
 
-Commands (check the list first; the exact scratchpad path is in the session's last report):
+Commands (check the list first):
 
 ```bash
 # small things in the home directory
