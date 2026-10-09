@@ -63,14 +63,14 @@ Deliberate and observed differences from cdo: `docs/deviations.md` (including fo
    W4 10.1 against 0.19 GB/s. Details and what follows from them: `docs/baseline.md`, last section.
 2. **Benchmarks.** W1–W3 and one year of W4: **done** 2026-10-09 (job 28000341, 18 min, 0.3 node-hours), see
    `docs/bench-results.md`.
-   - Every pass mark met except W2 on the raw files, 4.9× against 5×. The cause is planning: the HDF5 metadata
-     of 240 files is read one file after another.
+   - Every pass mark met except W2 on the raw files, 4.9× against 5×. The cause was planning, which opened 240
+     files through netCDF-C one after another. **Fixed** (0415117): plan 6–9 s → 1.0–1.2 s on the login node.
    - Remote vs local is 0.05 because of the server cap; cdors is 1.3× faster than xarray on the same endpoint.
    - The one failed comparison is a cdo bug. On HEALPix Zarr, cdo rotates the steps of a partial last time
      chunk without any message; cdors matches zarr-python.
-   - **Still waiting:** the full 1.1 TB W4 (≈ 2.5 node-hours). cdo cannot read the store's last 120 steps, so
-     the W4 view should first be cut to 87544 steps (whole chunks), with cdors given the same
-     `-seltimestep,1/87544`.
+   - **Submitted:** W2, W3 and the full W4 as job 28007818, 2026-10-09 16:05 (limit 4 h, ≈ 2.5 node-hours
+     expected). The W4 view is cut to 87544 steps (whole chunks), because cdo cannot read the store's last 120
+     steps; cdors reads the same steps. Results go to `/scratch/a/a270088/cdors-bench/bench-28007818/summary.md`.
 3. **Agent check**: pilot one session first, `RUN=1 TASKS=T5 ARMS=A bash bench/agent_check.sh`, then re-estimate;
    the full check is 10 headless sessions, ≈ 0.6–1.2M fresh tokens plus 3–8M cache-read tokens.
 
@@ -93,9 +93,8 @@ Deliberate and observed differences from cdo: `docs/deviations.md` (including fo
 - Not implemented yet: `expr`, `trend/regres`, correlations, ETCCDI indices, `ydaypctl/ydrunpctl`, `intlevel`,
   ensemble statistics, EOFs, attribute editing, GRIB input (75 of 78 IFS-FESOM2 Parquet sets reference GRIB),
   bracket syntax, an MCP/JSON-plan layer.
-- Planning on inputs of many NetCDF-4 files reads each file's HDF5 metadata one file after another: W2 on 240 raw
-  files plans in 8 s (CPU 3 s), against 0.7 s on Parquet refs to the same bytes. Read them concurrently, or cache
-  them with the chunk index.
+- ~~Planning on inputs of many NetCDF-4 files~~: fixed (header cached with the chunk index, members opened
+  concurrently). The first run on a file still opens it through netCDF-C.
 - `ydaymean` on a whole HEALPix z9 year keeps about 16 of 128 cores busy (19.7 s, against 8.6 s for `timpctl`).
 - No rechunk-to-scratch stage: percentiles or daily climatologies on data stored one field per chunk need several
   passes over the input.
@@ -112,6 +111,7 @@ Deliberate and observed differences from cdo: `docs/deviations.md` (including fo
 | `/scratch/a/a270088/cdors-realdata/` | ≈ 0.6 GB | runs of the real-data check (each run in its own directory) |
 | `/work/ab0995/a270088/rust/rustup-init` | 21 MB | installer, no longer needed |
 | `~/cdo/.claude/worktrees/` (≈ 30 worktrees) | ≈ 30 MB | agent worktrees; all their branches are merged |
+| `~/cdo/nc4index/` | 1.2 MB, 15 files | NetCDF-4 index files written into the working directory by a test with an empty `CDORS_CACHE` (2026-10-09; that bug is fixed); untracked, counts against the home quota |
 
 Commands, if you want them (check the list first):
 
@@ -119,6 +119,7 @@ Commands, if you want them (check the list first):
 cd /work/ab0995/a270088 && ls -d cdors-target-*            # review
 rm -rf /work/ab0995/a270088/cdors-target-{area,catalog,docs,fsync,hard,pctl,perf,perf1,perf2,polish,probe,remap,remote,review,rplan,safety,t10,t10b,t12,t6,t7a,t7b,t8,t9,tg,usab,valid,vfix}
 rm -rf /work/ab0995/a270088/cdors-target/runs /scratch/a/a270088/cdors-bench/prelim /work/ab0995/a270088/rust/rustup-init
+rm -r ~/cdo/nc4index                                        # stray index files in the repository
 cd ~/cdo && git worktree list && git worktree prune          # after removing the worktree directories
 ```
 

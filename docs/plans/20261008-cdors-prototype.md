@@ -603,8 +603,13 @@ cached. Rows needing `cdo` are skipped with a notice where it isn't available.
       - Reads in flight: 128 beat 64 by 1.16× on cold decades.
       - The one failed comparison (W4Y `ydaymean`, 26 days) is a cdo bug: on HEALPix Zarr cdo rotates the steps of a
         partial last time chunk (`docs/deviations.md`). cdors matches zarr-python.
-- [ ] ➕ full W4 (≈ 2.5 node-hours, needs a go-ahead), after ending the W4 view on a whole chunk (87544 = 353 × 248
-      steps, cdors with the same `-seltimestep`), because cdo cannot read the store's last 120 steps
+- [x] ➕ planning on many NetCDF-4 files (Nikolay, 2026-10-09: "fix the planning"): the netCDF-C header is cached
+      with the chunk index, and multi-file inputs are opened 16 at a time. W2 raw plan 6–9 s → 1.0–1.2 s, W3 5.4 →
+      0.5–0.7 s, plans identical, harness 233/233 both ways (0415117). An empty `CDORS_CACHE` now means no cache: it
+      used to write `nc4index/` into the working directory.
+- [ ] ➕ full W4 (≈ 2.5 node-hours, approved 2026-10-09): W4 view cut to 87544 = 353 × 248 steps, cdors with the
+      same `-seltimestep`, because cdo cannot read the store's last 120 steps. W4Y reruns use 2976 steps. Submitted
+      with W2 and W3 as job 28007818 (limit 4 h, l50327 and l10683 excluded).
 
 ### Task 14: Agent check
 

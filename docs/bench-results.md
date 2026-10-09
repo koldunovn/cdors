@@ -1,8 +1,7 @@
 # Benchmark results (Task 13)
 
-Status 2026-10-09: W1–W3 and the first year of W4 (W4Y) are done (job 28000341). The full 1.1 TB W4 waits for a
-go-ahead and for a change to the benchmark inputs (see the last section), because cdo misreads the store's last time
-chunk.
+Status 2026-10-09: W1–W3 and the first year of W4 (W4Y) are done (job 28000341). After the planning fix below, W2,
+W3 and the full W4 (cut to whole time chunks, see the last section) were submitted as job 28007818.
 
 ## The run
 
@@ -91,6 +90,12 @@ Details are in `docs/deviations.md`, under "cdo bugs observed".
   CPU, about 18,600 reads. This explains W2's miss of the 5× mark (7.48 s against 4.10 s on the Parquet refs) and
   most of W3's time. Reading the files' metadata concurrently, or caching what the planner needs alongside the
   chunk index, should bring W2 on the raw files close to the Parquet time.
+  **Fixed** (commit 0415117). The netCDF-C header of each file, including the coordinate and time values the
+  planner reads, is now cached with its chunk index, and the files of a multi-file input are opened 16 at a time.
+  On the login node, planning W2 on the raw files went from 6–9 s to 1.0–1.2 s, and W3 from 5.4 s to 0.5–0.7 s,
+  with plans identical to the netCDF-C ones. The harness passes with and without the cached headers. The headers
+  are written by the first real run on a file (`--plan` writes nothing); the W2 and W3 files were cached before
+  job 28007818.
 - **`ydaymean` on a whole HEALPix z9 year** takes 19.7 s (1.9 GB/s), against 8.6 s for `timpctl` and 4.4 s for
   `-timmax`/`-timmin` on the same data. It keeps only about 16 of 128 cores busy and spends 137 s in the kernel.
   It is worth profiling before the full W4, which is 30 times the data.
@@ -103,9 +108,13 @@ The 2040s decade with the new default of 128 took 4.93 s (9.4 GB/s); the 2030s w
 were cold, and each was run once. That is 1.16× in favour of 128, in the direction the baseline predicted but
 smaller. The default stays at 128 inside Slurm jobs.
 
-## Before the full W4 run
+## The full W4 run
 
-The full W4 needs ≈ 2.5 node-hours and a go-ahead. It also needs one change to the inputs: cdo would rotate the
-store's last 120 steps, so the W4 view should end on a whole chunk (87544 steps = 353 × 248, dropping Dec 17–31 of
-the last year), with cdors given the same `-seltimestep,1/87544`. If W4Y is run again, the same rule gives 2976 steps
-(12 chunks, 2020 plus Jan 1–7 2021).
+The W4 view now ends on a whole chunk: 87544 steps (353 × 248), so the store's last 120 steps (from 2049-12-17 03:00)
+are left out, and cdors reads the same `-seltimestep,1/87544`. cdo reads the view's last step correctly. If W4Y is
+run again, it uses 2976 steps (12 chunks, 2020 to 2021-01-07). W1 stays as it is: its last chunk lies within 2029,
+where the yearly mean does not depend on the order of the steps.
+
+Job 28007818 (submitted 2026-10-09 16:05; time limit 4 h, so at most 4 node-hours, ≈ 2.5 expected) runs W2 and W3
+again, which shows the planning fix on a compute node, then W4. Nodes l50327 and l10683 are excluded, because the
+previous two jobs read the same data there.
