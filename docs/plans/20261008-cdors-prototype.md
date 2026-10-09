@@ -488,6 +488,20 @@ cached. Rows needing `cdo` are skipped with a notice where it isn't available.
       with cdo's text plus cdors notes; `--max-read` 64 GB default on login nodes, none in Slurm jobs; `--progress
       json`; README with an agent section. Pass count and memory model to be filled in by the Task 7 planner work.
 
+### ➕ Task 12a: Safety fixes from the code review (BLOCKS benchmarks and the agent check)
+
+- [ ] (running) failure cleanup only removes what this process created (unique temp names: host+pid+random,
+      `created` flag); atomic no-clobber publish without -O; refuse output == input / inside an input /
+      matched by an input glob; no materialised timestep/year ranges (a huge `seltimestep` reached 71 GB)
+- [ ] (running) panic hook with JSON error and own-temp cleanup; writer death cannot deadlock dispatch;
+      retryable only for transient errors; nc4index cache key with inode+ctime; `_Unsigned`, `valid_range`,
+      HEALPix order defaults (silent wrong numbers); minor items (JSON warnings, time fill values, missing
+      refs.N.parq, dangling-symlink outputs, NaN sellonlatbox args, `--plan` writes no cache)
+- ⚠️ 2026-10-09 review (report only) reproduced: `cdors -O -selname,tas in.nc in.nc` replaced in.nc; two
+      concurrent runs without -O on one output both exited 0 (one result silently overwritten); cleanup could
+      `remove_dir_all` a same-named temp of another process (same PID on another node). Do not use -O on real
+      data until this item is merged.
+
 ### ➕ Task 12b: Performance rounds before the benchmarks
 
 - [ ] round 1 (running): allocation churn (buffer pool / malloc tuning), copy-free decode, branch-free kernel
