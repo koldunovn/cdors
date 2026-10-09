@@ -868,12 +868,13 @@ pub struct WeightedSums {
 impl WeightedSums {
     #[inline]
     pub fn add(&mut self, w: f64, x: f64) {
-        if !x.is_nan() {
-            self.sum += w * x;
-            self.sumq += w * x * x;
-            self.sumw += w;
-            self.sumwq += w * w;
-        }
+        // branch-free: a missing value adds -0.0, which leaves every sum unchanged bitwise
+        let valid = !x.is_nan();
+        let keep = |v: f64| if valid { v } else { -0.0 };
+        self.sum += keep(w * x);
+        self.sumq += keep(w * x * x);
+        self.sumw += keep(w);
+        self.sumwq += keep(w * w);
     }
 
     /// Σw·x / Σw; NaN (missing) if Σw = 0.

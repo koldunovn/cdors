@@ -16,7 +16,7 @@ const USAGE: &str =
 options:
   -O                  overwrite existing outputs
   -P <n>              number of compute threads (default: all cores, at most 16 outside Slurm)
-  --io-threads <n>    blocking reads in flight (default: 64 in Slurm jobs, 32 otherwise)
+  --io-threads <n>    blocking reads in flight (default: 64)
   -f <fmt>            output format: nc4, nc4c, nc, zarr, zarr2
   -b <F32|F64>        output precision
   -s                  silent
@@ -74,7 +74,34 @@ fn run(cmd: &Command) -> Result<()> {
     write_stdout(&text)
 }
 
+/// glibc malloc tuning, before any thread starts. Chunks and tiles are a few MB each and are
+/// allocated and freed thousands of times per second from many threads. By default glibc serves
+/// such blocks with mmap/munmap (or trims the heap after each free), so every chunk costs fresh
+/// zeroed pages: millions of minor page faults and more system than user time. Raising the mmap
+/// threshold to its maximum (32 MiB on 64-bit) and not trimming keeps freed blocks in the
+/// arenas for reuse. Peak memory is still bounded by the tile window; memory freed after the
+/// peak is not handed back to the system before the process ends. Environment settings
+/// (`MALLOC_MMAP_THRESHOLD_`, `MALLOC_TRIM_THRESHOLD_`) take precedence.
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+fn tune_malloc() {
+    let set = |var: &str| std::env::var_os(var).is_some();
+    // SAFETY: mallopt only changes allocator parameters; called on the main thread before
+    // any other thread exists.
+    unsafe {
+        if !set("MALLOC_MMAP_THRESHOLD_") {
+            libc::mallopt(libc::M_MMAP_THRESHOLD, 32 << 20);
+        }
+        if !set("MALLOC_TRIM_THRESHOLD_") {
+            libc::mallopt(libc::M_TRIM_THRESHOLD, i32::MAX);
+        }
+    }
+}
+
+#[cfg(not(all(target_os = "linux", target_env = "gnu")))]
+fn tune_malloc() {}
+
 fn main() {
+    tune_malloc();
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         Some("--version" | "-V") => {

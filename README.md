@@ -93,7 +93,7 @@ output name never holds a partial file.
 the limit (`read_limit`, exit 4, with `bytes`, `limit` and a hint). The default is **64 GB on
 login nodes** (no `SLURM_JOB_ID` in the environment) and **no limit inside Slurm jobs**.
 `--max-read 2T` raises it, `--max-read none` removes it. Outside Slurm, cdors also uses at most 16
-compute threads and 32 reads in flight. Heavy runs belong on a compute node:
+compute threads (and 64 reads in flight, as in Slurm jobs). Heavy runs belong on a compute node:
 
 ```sh
 srun -p compute -A <account> -t 01:00:00 cdors -ydaymean in.zarr clim.nc

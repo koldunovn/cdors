@@ -284,48 +284,167 @@ macro_rules! impl_elem {
 }
 impl_elem!(i8, i16, i32, i64, u8, u16, u32, u64, f32, f64);
 
-/// Converts stored values to [`Values`]: masks missing values (compared in the stored type),
-/// unpacks with scale/offset, and returns f32 or f64 as the encoding says.
-pub(crate) fn convert<T: Elem>(raw: &[T], enc: &Encoding) -> Values {
-    let miss: Vec<T> = enc.missing.iter().map(|&m| T::from_f64(m)).collect();
-    let scale = enc.scale_factor.unwrap_or(1.0);
-    let offset = enc.add_offset.unwrap_or(0.0);
-    let packed = enc.is_packed();
-    let f = |x: T| -> f64 {
-        if miss.contains(&x) {
-            f64::NAN
-        } else if packed {
-            x.to_f64() * scale + offset
-        } else {
-            x.to_f64()
-        }
-    };
-    if enc.unpacked_f32 {
-        Values::F32(raw.iter().map(|&x| f(x) as f32).collect())
-    } else {
-        Values::F64(raw.iter().map(|&x| f(x)).collect())
+/// Calls `go` with a missing-value test specialised for the usual zero, one or two missing
+/// values, so that the per-element loop has no inner loop over the list (it vectorises).
+/// The test is `==` in the stored type, as `miss.contains(&x)` would do.
+fn with_miss<T: Elem, R>(miss: &[T], go: impl MissFn<T, R>) -> R {
+    match *miss {
+        [] => go.call(|_| false),
+        [m] => go.call(move |x| x == m),
+        [a, b] => go.call(move |x| x == a || x == b),
+        _ => go.call(|x| miss.contains(&x)),
     }
 }
 
-fn from_bytes<T: Elem>(bytes: &[u8]) -> Vec<T> {
-    bytes.chunks_exact(T::SIZE).map(T::from_ne).collect()
+/// A computation generic over the missing-value test (closures cannot be generic).
+trait MissFn<T, R> {
+    fn call(self, is_miss: impl Fn(T) -> bool + Copy) -> R;
 }
 
-/// [`convert`] for native-endian bytes of type `dtype`.
+/// One stored value to f64: NaN if missing, unpacked if packed (the operation order of the
+/// original per-element conversion, so results are bit-identical).
+#[inline(always)]
+fn unpack<T: Elem>(x: T, is_miss: bool, packed: bool, scale: f64, offset: f64) -> f64 {
+    if is_miss {
+        f64::NAN
+    } else if packed {
+        x.to_f64() * scale + offset
+    } else {
+        x.to_f64()
+    }
+}
+
+/// Converts the stored values produced by `raw` (an exact-size iterator) to [`Values`]: masks
+/// missing values (compared in the stored type), unpacks with scale/offset, and returns f32 or
+/// f64 as the encoding says. One pass, one allocation.
+fn convert_iter<T: Elem, I: ExactSizeIterator<Item = T>>(raw: I, enc: &Encoding) -> Values {
+    struct Go<'a, I> {
+        raw: I,
+        enc: &'a Encoding,
+    }
+    impl<T: Elem, I: ExactSizeIterator<Item = T>> MissFn<T, Values> for Go<'_, I> {
+        fn call(self, is_miss: impl Fn(T) -> bool + Copy) -> Values {
+            let enc = self.enc;
+            let scale = enc.scale_factor.unwrap_or(1.0);
+            let offset = enc.add_offset.unwrap_or(0.0);
+            let packed = enc.is_packed();
+            let f = |x: T| unpack(x, is_miss(x), packed, scale, offset);
+            if enc.unpacked_f32 {
+                Values::F32(self.raw.map(|x| f(x) as f32).collect())
+            } else {
+                Values::F64(self.raw.map(f).collect())
+            }
+        }
+    }
+    let miss: Vec<T> = enc.missing.iter().map(|&m| T::from_f64(m)).collect();
+    with_miss(&miss, Go { raw, enc })
+}
+
+/// Converts stored values to [`Values`]: masks missing values (compared in the stored type),
+/// unpacks with scale/offset, and returns f32 or f64 as the encoding says.
+pub(crate) fn convert<T: Elem>(raw: &[T], enc: &Encoding) -> Values {
+    convert_iter(raw.iter().copied(), enc)
+}
+
+/// [`convert`] taking ownership: when the values need neither unpacking nor a change of type
+/// (f32 stored and read as f32, f64 as f64), missing values are replaced by NaN in place and the
+/// buffer is reused; otherwise as [`convert`].
+pub(crate) fn convert_vec<T: Elem + 'static>(mut raw: Vec<T>, enc: &Encoding) -> Values {
+    use std::any::Any;
+    if !enc.is_packed() {
+        let any = &mut raw as &mut dyn Any;
+        if enc.unpacked_f32 {
+            if let Some(v) = any.downcast_mut::<Vec<f32>>() {
+                let miss: Vec<f32> = enc.missing.iter().map(|&m| m as f32).collect();
+                mask(v, &miss);
+                return Values::F32(std::mem::take(v));
+            }
+        } else if let Some(v) = any.downcast_mut::<Vec<f64>>() {
+            let miss: Vec<f64> = enc.missing.clone();
+            mask(v, &miss);
+            return Values::F64(std::mem::take(v));
+        }
+    }
+    convert(&raw, enc)
+}
+
+/// In place: missing values to NaN. Nothing else changes for f32 read as f32 or f64 read as
+/// f64: `x as f64 as f32` in [`convert`] is the identity for every value (the only possible
+/// exception, a signalling NaN gaining its quiet bit, is not something stored data holds, and
+/// LLVM folds the round trip anyway). Without missing values the buffer is not touched.
+fn mask<T: Elem + Float>(v: &mut [T], miss: &[T]) {
+    struct Go<'a, T>(&'a mut [T]);
+    impl<T: Elem + Float> MissFn<T, ()> for Go<'_, T> {
+        fn call(self, is_miss: impl Fn(T) -> bool + Copy) {
+            for x in self.0.iter_mut() {
+                *x = if is_miss(*x) { T::NAN } else { *x };
+            }
+        }
+    }
+    if !miss.is_empty() {
+        with_miss(miss, Go(v));
+    }
+}
+
+/// The NaN of f32 and f64.
+trait Float {
+    const NAN: Self;
+}
+
+impl Float for f32 {
+    const NAN: Self = f32::NAN;
+}
+
+impl Float for f64 {
+    const NAN: Self = f64::NAN;
+}
+
+/// [`convert`] for native-endian bytes of type `dtype` (one pass, no intermediate copy).
 pub(crate) fn convert_bytes(dtype: DType, bytes: &[u8], enc: &Encoding) -> Result<Values> {
+    fn go<T: Elem>(bytes: &[u8], enc: &Encoding) -> Values {
+        convert_iter(bytes.chunks_exact(T::SIZE).map(T::from_ne), enc)
+    }
     Ok(match dtype {
-        DType::I8 => convert(&from_bytes::<i8>(bytes), enc),
-        DType::I16 => convert(&from_bytes::<i16>(bytes), enc),
-        DType::I32 => convert(&from_bytes::<i32>(bytes), enc),
-        DType::I64 => convert(&from_bytes::<i64>(bytes), enc),
-        DType::U8 => convert(&from_bytes::<u8>(bytes), enc),
-        DType::U16 => convert(&from_bytes::<u16>(bytes), enc),
-        DType::U32 => convert(&from_bytes::<u32>(bytes), enc),
-        DType::U64 => convert(&from_bytes::<u64>(bytes), enc),
-        DType::F32 => convert(&from_bytes::<f32>(bytes), enc),
-        DType::F64 => convert(&from_bytes::<f64>(bytes), enc),
+        DType::I8 => go::<i8>(bytes, enc),
+        DType::I16 => go::<i16>(bytes, enc),
+        DType::I32 => go::<i32>(bytes, enc),
+        DType::I64 => go::<i64>(bytes, enc),
+        DType::U8 => go::<u8>(bytes, enc),
+        DType::U16 => go::<u16>(bytes, enc),
+        DType::U32 => go::<u32>(bytes, enc),
+        DType::U64 => go::<u64>(bytes, enc),
+        DType::F32 => go::<f32>(bytes, enc),
+        DType::F64 => go::<f64>(bytes, enc),
         DType::Other => return Err(Error::bad_data("non-numeric data type")),
     })
+}
+
+/// Decompresses one c-blosc frame straight into a buffer of `n` elements of `T` (no
+/// intermediate byte buffer). `None` if the frame does not hold exactly `n * T::SIZE` bytes or
+/// is invalid. Thread-safe: `blosc_decompress_ctx` keeps no global state; one internal thread,
+/// as zarrs uses.
+pub(crate) fn blosc_decompress_into<T: Elem>(frame: &[u8], n: usize) -> Option<Vec<T>> {
+    let want = n.checked_mul(T::SIZE)?;
+    let mut nbytes = 0usize;
+    let mut out: Vec<T> = Vec::with_capacity(n);
+    // SAFETY: c-blosc validates the header against `frame.len()` before trusting it; `nbytes`
+    // must equal the capacity in bytes, and `blosc_decompress_ctx` writes at most `want` bytes
+    // into the spare capacity. The length is set only after all `want` bytes were written, and
+    // every bit pattern is a valid `T` (plain integers and floats).
+    unsafe {
+        if blosc_src::blosc_cbuffer_validate(frame.as_ptr().cast(), frame.len(), &mut nbytes) != 0
+            || nbytes != want
+        {
+            return None;
+        }
+        let dst = out.spare_capacity_mut().as_mut_ptr();
+        let got = blosc_src::blosc_decompress_ctx(frame.as_ptr().cast(), dst.cast(), want, 1);
+        if got < 0 || got as usize != want {
+            return None;
+        }
+        out.set_len(n);
+    }
+    Some(out)
 }
 
 /// Builds the missing-value and packing description from CF attributes.

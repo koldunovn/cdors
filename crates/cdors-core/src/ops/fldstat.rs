@@ -164,10 +164,10 @@ impl Acc for MeanAcc {
     }
     #[inline(always)]
     fn add(&mut self, w: f64, x: f64) {
-        if !x.is_nan() {
-            self.sum += w * x;
-            self.sumw += w;
-        }
+        // branch-free: a missing value adds -0.0, which leaves every sum unchanged bitwise
+        let valid = !x.is_nan();
+        self.sum += if valid { w * x } else { -0.0 };
+        self.sumw += if valid { w } else { -0.0 };
     }
     fn value(&self, _: Stat) -> f64 {
         if self.sumw == 0.0 {
@@ -220,10 +220,9 @@ impl Acc for SumAcc {
     }
     #[inline(always)]
     fn add(&mut self, w: f64, x: f64) {
-        if !x.is_nan() {
-            self.sum += w * x;
-            self.n += 1;
-        }
+        let valid = !x.is_nan();
+        self.sum += if valid { w * x } else { -0.0 };
+        self.n += u64::from(valid);
     }
     fn value(&self, _: Stat) -> f64 {
         if self.n == 0 { f64::NAN } else { self.sum }
@@ -245,10 +244,9 @@ impl Acc for MinMaxAcc {
     }
     #[inline(always)]
     fn add(&mut self, _: f64, x: f64) {
-        if !x.is_nan() {
-            self.min = self.min.min(x);
-            self.max = self.max.max(x);
-        }
+        let valid = !x.is_nan();
+        self.min = if valid { self.min.min(x) } else { self.min };
+        self.max = if valid { self.max.max(x) } else { self.max };
     }
     fn value(&self, stat: Stat) -> f64 {
         if self.min > self.max {
@@ -461,33 +459,23 @@ const GROUP: usize = 8;
 fn fold_cells<T: Copy + Into<f64>, A: Acc>(v: &[T], c: &Cells, p: &VarPlan, acc: &mut [A]) {
     let (o_n, i_n, n, f0) = (c.o_n, c.i_n, c.n, c.f0);
     if p.nrows == 1 && i_n == 1 {
-        // field statistics: one accumulator per timestep (and level), GROUP of them at a time
+        // field statistics: one accumulator per timestep (and level), GROUP of them at a time,
+        // the leftover ones in groups of 4, 2 and 1
         let mut o = 0;
         while o + GROUP <= o_n {
-            let rows: [&[T]; GROUP] =
-                std::array::from_fn(|g| &v[c.base + (o + g) * c.ostride..][..n]);
-            let mut a: [A; GROUP] = std::array::from_fn(|g| acc[o + g]);
-            match &p.weights {
-                Weights::Const(w) => {
-                    for k in 0..n {
-                        for g in 0..GROUP {
-                            a[g].add(*w, rows[g][k].into());
-                        }
-                    }
-                }
-                Weights::Each(ws) => {
-                    for (k, &w) in ws[f0..f0 + n].iter().enumerate() {
-                        for g in 0..GROUP {
-                            a[g].add(w, rows[g][k].into());
-                        }
-                    }
-                }
-            }
-            acc[o..o + GROUP].copy_from_slice(&a);
+            fold_group::<T, A, GROUP>(v, c, p, &mut acc[o..o + GROUP], o);
             o += GROUP;
         }
-        for o in o..o_n {
-            fold_row(v, c.base + o * c.ostride, 1, n, f0, p, &mut acc[o..o + 1]);
+        if o + 4 <= o_n {
+            fold_group::<T, A, 4>(v, c, p, &mut acc[o..o + 4], o);
+            o += 4;
+        }
+        if o + 2 <= o_n {
+            fold_group::<T, A, 2>(v, c, p, &mut acc[o..o + 2], o);
+            o += 2;
+        }
+        if o < o_n {
+            fold_group::<T, A, 1>(v, c, p, &mut acc[o..o + 1], o);
         }
     } else if p.nrows == 1 {
         // vertical statistics: cells (inner) side by side, levels in order
@@ -513,6 +501,39 @@ fn fold_cells<T: Copy + Into<f64>, A: Acc>(v: &[T], c: &Cells, p: &VarPlan, acc:
             }
         }
     }
+}
+
+/// Folds the cells of `G` field-statistic accumulators (outer indices `o..o + G`) side by side:
+/// `G` independent dependency chains, each adding its cells in order.
+#[inline(always)]
+#[allow(clippy::needless_range_loop)]
+fn fold_group<T: Copy + Into<f64>, A: Acc, const G: usize>(
+    v: &[T],
+    c: &Cells,
+    p: &VarPlan,
+    acc: &mut [A],
+    o: usize,
+) {
+    let (n, f0) = (c.n, c.f0);
+    let rows: [&[T]; G] = std::array::from_fn(|g| &v[c.base + (o + g) * c.ostride..][..n]);
+    let mut a: [A; G] = std::array::from_fn(|g| acc[g]);
+    match &p.weights {
+        Weights::Const(w) => {
+            for k in 0..n {
+                for g in 0..G {
+                    a[g].add(*w, rows[g][k].into());
+                }
+            }
+        }
+        Weights::Each(ws) => {
+            for (k, &w) in ws[f0..f0 + n].iter().enumerate() {
+                for g in 0..G {
+                    a[g].add(w, rows[g][k].into());
+                }
+            }
+        }
+    }
+    acc[..G].copy_from_slice(&a);
 }
 
 /// Folds `n` consecutive cells of the block (flat index `f0..f0+n`) whose values are

@@ -32,15 +32,20 @@ struct ZarrVar {
     dtype: DType,
     encoding: Encoding,
     grid: ChunkGrid,
+    /// The codec chain is just c-blosc over native-order, C-order elements: chunks are
+    /// decompressed straight into the value buffer, bypassing `zarrs`' intermediate copies.
+    direct_blosc: bool,
 }
 
 fn zerr(e: impl std::fmt::Display) -> Error {
     Error::bad_data(format!("zarr: {e}"))
 }
 
-pub(crate) fn trim<T: Copy>(v: &[T], full: &[usize], ext: &[usize]) -> Vec<T> {
+/// The part of a full chunk (`full`, C order) inside the array extent `ext`; the buffer itself
+/// when the chunk is not cut by the array edge.
+pub(crate) fn trim<T: Copy>(v: Vec<T>, full: &[usize], ext: &[usize]) -> Vec<T> {
     if full == ext {
-        return v.to_vec();
+        return v;
     }
     let n: usize = ext.iter().product();
     let mut out = Vec::with_capacity(n);
@@ -75,6 +80,34 @@ pub(crate) fn trim<T: Copy>(v: &[T], full: &[usize], ext: &[usize]) -> Vec<T> {
 
 impl ZarrVar {
     fn decode_bytes(&self, indices: &[u64], bytes: Option<&[u8]>) -> Result<Values> {
+        if self.direct_blosc
+            && let Some(b) = bytes
+        {
+            let n: usize = self.grid.chunk_shape.iter().product();
+            macro_rules! direct {
+                ($t:ty) => {
+                    super::blosc_decompress_into::<$t>(b, n)
+                        .map(|v| super::convert_vec(v, &self.encoding))
+                };
+            }
+            let v = match self.dtype {
+                DType::I8 => direct!(i8),
+                DType::I16 => direct!(i16),
+                DType::I32 => direct!(i32),
+                DType::I64 => direct!(i64),
+                DType::U8 => direct!(u8),
+                DType::U16 => direct!(u16),
+                DType::U32 => direct!(u32),
+                DType::U64 => direct!(u64),
+                DType::F32 => direct!(f32),
+                DType::F64 => direct!(f64),
+                DType::Other => None,
+            };
+            // anything unexpected (size mismatch, invalid frame): zarrs decodes and reports it
+            if let Some(v) = v {
+                return Ok(v);
+            }
+        }
         let shape = self.array.chunk_shape(indices).map_err(zerr)?;
         let dt = self.array.data_type();
         let fv = self.array.fill_value();
@@ -100,8 +133,8 @@ impl ChunkDecoder for ZarrVar {
         let full = &self.grid.chunk_shape;
         let ext = self.grid.extent(indices);
         let values = match values {
-            Values::F32(v) => Values::F32(trim(&v, full, &ext)),
-            Values::F64(v) => Values::F64(trim(&v, full, &ext)),
+            Values::F32(v) => Values::F32(trim(v, full, &ext)),
+            Values::F64(v) => Values::F64(trim(v, full, &ext)),
         };
         Ok(DecodedChunk {
             origin: self.grid.origin(indices),
@@ -112,6 +145,46 @@ impl ChunkDecoder for ZarrVar {
 
     fn codecs(&self) -> String {
         codec_names(self.array.metadata()).join(",")
+    }
+}
+
+/// Whether chunks of an array with metadata `m` (as JSON) are one c-blosc frame of
+/// little-endian, C-order elements of a numeric type, with no other codec: Zarr v2 with a blosc
+/// compressor and no filters, or Zarr v3 with exactly the codecs `bytes` (little endian) and
+/// `blosc`. Such chunks can be decompressed straight into the value buffer.
+fn direct_blosc(m: &Value, dtype: DType) -> bool {
+    if !cfg!(target_endian = "little") || dtype == DType::Other {
+        return false;
+    }
+    let name = |c: &Value| -> Option<String> {
+        c.get("name")
+            .or_else(|| c.get("id"))
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+    };
+    if let Some(cs) = m.get("codecs").and_then(Value::as_array) {
+        // v3
+        let [bytes, blosc] = cs.as_slice() else {
+            return false;
+        };
+        let endian = bytes
+            .pointer("/configuration/endian")
+            .and_then(Value::as_str);
+        name(bytes).as_deref() == Some("bytes")
+            && matches!(endian, None | Some("little"))
+            && name(blosc).as_deref() == Some("blosc")
+    } else {
+        // v2
+        let dt = m.get("dtype").and_then(Value::as_str).unwrap_or("");
+        let no_filters = match m.get("filters") {
+            None | Some(Value::Null) => true,
+            Some(Value::Array(a)) => a.is_empty(),
+            Some(_) => false,
+        };
+        (dt.starts_with('<') || dt.starts_with('|'))
+            && m.get("order").and_then(Value::as_str) == Some("C")
+            && no_filters
+            && m.get("compressor").and_then(name).as_deref() == Some("blosc")
     }
 }
 
@@ -472,6 +545,7 @@ impl ZarrSource {
             vars_map.insert(
                 name,
                 Arc::new(ZarrVar {
+                    direct_blosc: direct_blosc(&raw, dtype),
                     array,
                     dtype,
                     encoding,
