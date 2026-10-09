@@ -41,7 +41,7 @@ runner's original scores. Wall time is the whole session; USD is the API list pr
 - **Speed.** Arm A was faster on four tasks: T1 6.2× (arm B's cdo run on the decade hit the agent's own 500 s
   timeout, and it switched to a zarr/numpy script), T2 1.5×, T3 2.1×, T5 1.9×. On T4, arm B was faster (65 s
   against 96 s): it wrote one numpy/healpy script, while arm A first read the documentation.
-- **Cost.** Arm A used 1.7× more tool calls and about 2.4× the tokens ($2.73 against $1.57 at list price). Every
+- **Cost.** Arm A used 1.7× more tool calls and 2.7× the tokens (2.42M against 0.91M; $2.73 against $1.57). Every
   arm-A session read the README and `docs/deviations.md` (34 kB) before working, and that text stays in the
   context of every later turn as cache reads. Agents know cdo and xarray from training; cdors they learn on the
   spot. A shorter agent-facing guide, or an MCP layer that describes the operators, would cut most of this.

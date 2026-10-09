@@ -20,7 +20,7 @@ The plan with all checkboxes and per-task notes: `docs/plans/20261008-cdors-prot
   (job 28007818) ran with your go-ahead, 3.1 node-hours together. Every speed mark is met (W2 10.8×, W3 8.6×, W4
   `ydaymean` 72× on 1.1 TB within 23.7 GiB). Nothing was deleted, nothing was pushed.
 - Agent check (2026-10-09): all ten headless sessions correct, five tasks with cdors and five with cdo/Python. With
-  cdors the agents needed 704 s of wall time against 1684 s, but 2.4× the tokens ($2.73 against $1.57), mostly
+  cdors the agents needed 704 s of wall time against 1684 s, but 2.7× the tokens ($2.73 against $1.57), mostly
   for reading the docs (`docs/agent-check.md`). It also found a wrong reference (T3), now corrected.
 
 ## What exists
