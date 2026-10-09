@@ -537,6 +537,16 @@ cached. Rows needing `cdo` are skipped with a notice where it isn't available.
       steps 0.41 s (cdo 4.0 s); W1 decade plan 1.17 → 0.04 s; agent-check T4 (2020 p95 at Hamburg via
       `remapnn,lon=10.0_lat=53.55`) 1.5 s, 355 MB, 292.11996 K (reference 292.119965 K).
 
+### ➕ Task 12c: Real-data validation
+
+- [x] sweep on real data (report only): W1 HEALPix Zarr, W2 raw blosc NetCDF via mergetime and Parquet refs, W3
+      remap, W4 ydaymean, EERIE cloud vs local, native ICON R2B8 and FESOM with -setgrid, HadGEM3 ORCA1 — values
+      and timestamps identical to cdo (or exact xarray) in all but three cases; cdors 5–170× faster where reads
+      dominate (W4 ydaymean 0.8 s vs cdo 139 s), slower than cdo on ICON R2B8/FESOM because of planning time
+- [ ] (running) fixes: HEALPix sellonlatbox edge cells (cdo's centre formula), `param` attribute in
+      info/outputtab, curvilinear remapbil fallback cell (fix or document), planning time on large unstructured
+      grids, memory-budget enforcement when the estimate exceeds --mem, re-runnable bench/realdata_check.sh
+
 ### Task 13: Benchmarks W1–W4
 
 **Files:**
