@@ -370,11 +370,12 @@ impl Acc {
         let x = row.iter().map(|&v| -> f64 { v.into() });
         match stat {
             Stat::Mean | Stat::Sum => {
+                // branch-free: a missing value adds -0.0, which leaves every sum unchanged
+                // (x + -0.0 == x bitwise, also for x = ±0.0), and 0 to the count
                 for ((a, n), v) in self.a.iter_mut().zip(&mut self.n).zip(x) {
-                    if !v.is_nan() {
-                        *a += v;
-                        *n += 1;
-                    }
+                    let valid = !v.is_nan();
+                    *a += if valid { v } else { -0.0 };
+                    *n += u32::from(valid);
                 }
             }
             Stat::Avg => {
@@ -408,14 +409,18 @@ impl Acc {
                 }
             }
             Stat::Std | Stat::Std1 | Stat::Var | Stat::Var1 => {
+                // branch-free: the update is computed for every cell and kept only for valid
+                // values (same operations, in the same order, as the conditional update)
                 for (((m, m2), n), v) in self.a.iter_mut().zip(&mut self.b).zip(&mut self.n).zip(x)
                 {
-                    if !v.is_nan() {
-                        *n += 1;
-                        let d = v - *m;
-                        *m += d / f64::from(*n);
-                        *m2 += d * (v - *m);
-                    }
+                    let valid = !v.is_nan();
+                    let n1 = *n + 1;
+                    let d = v - *m;
+                    let m1 = *m + d / f64::from(n1);
+                    let m21 = *m2 + d * (v - m1);
+                    *n = if valid { n1 } else { *n };
+                    *m = if valid { m1 } else { *m };
+                    *m2 = if valid { m21 } else { *m2 };
                 }
             }
         }

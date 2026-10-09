@@ -115,8 +115,8 @@ impl ChunkDecoder for DirectVar {
             values
         } else {
             match values {
-                Values::F32(v) => Values::F32(super::zarr::trim(&v, full, &ext)),
-                Values::F64(v) => Values::F64(super::zarr::trim(&v, full, &ext)),
+                Values::F32(v) => Values::F32(super::zarr::trim(v, full, &ext)),
+                Values::F64(v) => Values::F64(super::zarr::trim(v, full, &ext)),
             }
         };
         Ok(DecodedChunk {

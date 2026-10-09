@@ -65,15 +65,11 @@ pub fn default_threads(cmd: &Command) -> usize {
     }
 }
 
-/// Blocking reads in flight: `--io-threads`, else 64 in Slurm jobs and 32 on login nodes.
+/// Blocking reads in flight: `--io-threads`, else 64, in Slurm jobs and on login nodes alike
+/// (cold Lustre reads are latency-bound: on a login node W1 decodes about 5.5 GB/s with 32
+/// reads in flight and 9-10 GB/s with 64, see `docs/baseline.md`).
 pub fn default_io_threads(cmd: &Command) -> usize {
-    cmd.options.io_threads.unwrap_or({
-        if std::env::var_os("SLURM_JOB_ID").is_some() {
-            64
-        } else {
-            32
-        }
-    })
+    cmd.options.io_threads.unwrap_or(64)
 }
 
 /// Output chunks: `--chunks dim=n` where given; otherwise one timestep per chunk, and for Zarr

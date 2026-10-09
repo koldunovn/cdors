@@ -103,7 +103,7 @@ fn read_slab(
     };
     macro_rules! get {
         ($t:ty) => {
-            super::convert(&var.get_values::<$t, _>(ext)?, enc)
+            super::convert_vec(var.get_values::<$t, _>(ext)?, enc)
         };
     }
     Ok(match dtype {
