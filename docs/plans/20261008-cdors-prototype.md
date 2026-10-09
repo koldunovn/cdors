@@ -504,8 +504,9 @@ cached. Rows needing `cdo` are skipped with a notice where it isn't available.
 - ⚠️ 2026-10-09 merged (230/230 rows on both read paths). Verified on the merged binary: `-O … in.nc in.nc` is
       refused with in.nc unchanged; `seltimestep,9223372036854775807` returns at once. Lustre: renameat2(NOREPLACE)
       is unusable (EINVAL), so files publish via link()+unlink() and Zarr via an exclusive mkdir reservation.
-- [ ] ➕ `--plan` still runs cdo to make remap grid templates (needs a native parser for r<nx>x<ny>, global_<inc>,
-      hpz<z>, hp<nside>)
+- [x] ➕ `--plan` still runs cdo to make remap grid templates (needs a native parser for r<nx>x<ny>, global_<inc>,
+      hpz<z>, hp<nside>). Fixed: native parser (remap/target.rs) equal to cdo's templates for 24 names; --plan and
+      refused runs never call cdo or write caches; output/limit checks run before weight generation
 - [x] ➕ zarrs FilesystemStore fsyncs every chunk: a `--mem 1M` Zarr output took 65–80 s vs 0.2 s for NetCDF. Fixed: a wrapper store writes without fsync, one syncfs before publish
       (1M-chunk runs 7–15 s → 1.4–3.6 s; open: the scalar `healpix` mapping variable decodes differently in xarray
       from the zarr2 output than from NetCDF)
