@@ -494,6 +494,11 @@ cached. Rows needing `cdo` are skipped with a notice where it isn't available.
       loops, 64 reads in flight on login nodes
 - [ ] round 2 (after the Task 7 planner merge): O(1)/parallel tile construction, no blocking on fold-lane locks
       (≥ -P active lanes), NetCDF writer work moved to the compute pool
+- [ ] ➕ value-printing operators for agents (`outputtab`, `info`/`infon`, `output`/`outputf`, with `--json`): the
+      Task 14 prep found that agents had to fall back to ncdump (planned in Task 3, never built)
+- [ ] ➕ broken-pipe handling: `cdors --version | head -1` panics (agents pipe output into head)
+- [ ] ➕ remap reads only the source chunks its weights touch (point extraction with remapnn read a whole
+      year of every cell: 21 s, 9 GB RSS on the login node)
 - ⚠️ 2026-10-09 profile (login node, W1): yearmean reaches ≈ 20 % of the read+decode ceiling warm and 50–62 %
       cold; `MALLOC_MMAP_THRESHOLD_=4G` alone gave ≈ 2× and reached the ceiling cold (5–7× cdo); decode copies
       (`convert`, `trim`) take ≈ 50 % of user time; tile construction caps throughput at 10–15 GB/s; fldmean blocks
@@ -523,14 +528,19 @@ cached. Rows needing `cdo` are skipped with a notice where it isn't available.
 - Create: `bench/agent_tasks.md`, `bench/agent_check.sh`
 - Create: `docs/agent-check.md`
 
-- [ ] five plain-language tasks covering climatologies and anomalies, regional means, model–obs comparison on a common
+- [x] five plain-language tasks covering climatologies and anomalies, regional means, model–obs comparison on a common
       grid, and percentiles; reference answers computed beforehand with cdo or xarray; each reads at most a few tens
       of GB
-- [ ] `agent_check.sh`: runs `claude -p` headless, one session after another, once with cdors and once with cdo/xarray
+- [x] `agent_check.sh`: runs `claude -p` headless, one session after another, once with cdors and once with cdo/xarray
       per task; records correctness, number of commands, wall time and tokens
 - [ ] **only after Task 13 justifies it, and with Nikolay's go-ahead:** run a one-session pilot, re-estimate the token
       cost from it, then ask again before the remaining nine sessions
 - [ ] write `docs/agent-check.md`
+- ⚠️ 2026-10-09: tasks, independent reference answers (xarray, cross-checked with cdo) and the runner are merged
+      (`bench/agent_tasks.md`, `bench/agent_check.sh`: dry run by default, `RUN=1 TASKS=T5 ARMS=A` is the pilot).
+      Estimated 0.6–1.2M fresh tokens + 3–8M cache reads for 10 sessions. EERIE prompts use the kerchunk/cloud
+      time axis (raw files are labelled 41 years later). Open for Nikolay: T3's global mean barely depends on the
+      remapping (no remap misses by ≈ 2× the tolerance) — keep or change.
 
 ### Task 15: Verify acceptance criteria
 
