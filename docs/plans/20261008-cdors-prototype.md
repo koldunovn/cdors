@@ -506,7 +506,9 @@ cached. Rows needing `cdo` are skipped with a notice where it isn't available.
       is unusable (EINVAL), so files publish via link()+unlink() and Zarr via an exclusive mkdir reservation.
 - [ ] ➕ `--plan` still runs cdo to make remap grid templates (needs a native parser for r<nx>x<ny>, global_<inc>,
       hpz<z>, hp<nside>)
-- [ ] ➕ zarrs FilesystemStore fsyncs every chunk: a `--mem 1M` Zarr output took 65–80 s vs 0.2 s for NetCDF
+- [x] ➕ zarrs FilesystemStore fsyncs every chunk: a `--mem 1M` Zarr output took 65–80 s vs 0.2 s for NetCDF. Fixed: a wrapper store writes without fsync, one syncfs before publish
+      (1M-chunk runs 7–15 s → 1.4–3.6 s; open: the scalar `healpix` mapping variable decodes differently in xarray
+      from the zarr2 output than from NetCDF)
 
 ### ➕ Task 12b: Performance rounds before the benchmarks
 
