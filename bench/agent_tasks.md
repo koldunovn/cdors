@@ -92,7 +92,7 @@ Spot checks, not part of the reference (the references above are cdors-free):
 - Findings that will shape arm A's transcripts: cdors cannot yet chain two statistics
   (`-timmean -fldmean …`, and even `-mulc -timmean …`, fail with `not_implemented` and the hint "run two
   commands"); it has no operator that prints values (`outputf`, `infon`, `output` are not implemented), so
-  the arm-A note offers `ncdump`; `remapnn`/`remapbil` need `CDORS_CACHE` and call cdo for the weights
+  arm A prints values with cdors' own operators (info/outputtab, --json); `remapnn`/`remapbil` need `CDORS_CACHE` and call cdo for the weights
   (the runner sets `CDORS_CACHE` to a fresh directory per session and `CDO` to cdo 2.6.0);
   `cdors --version | head -1` panics on the broken pipe (println!).
 - T1, T2 and T3 were not run with cdors; each needs two or three cdors commands because of the chaining limit.
@@ -165,7 +165,7 @@ The EERIE cloud serves the daily-mean atmosphere output of the ICON-ESM-ER contr
 
 <!-- arm A -->
 ```text
-Tools: do the data reading and the computation with the command-line tool cdors ({CDORS}). cdors re-implements a subset of CDO's operators (same operator names, arguments and operator chaining) and reads Zarr stores and kerchunk references, locally and over HTTPS. Its documentation: {CDORS_DOCS}. cdors writes its results to NetCDF or Zarr files; to look at the values in a small result file, use ncdump ({NCDUMP}). Do not use cdo, Python or other programs to read or compute the data; shell tools for looking at text output and small calculations that read no data are fine.
+Tools: do the data reading and the computation with the command-line tool cdors ({CDORS}). cdors re-implements a subset of CDO's operators (same operator names, arguments and operator chaining) and reads Zarr stores and kerchunk references, locally and over HTTPS. Its documentation: {CDORS_DOCS}. cdors writes results to NetCDF or Zarr files, and prints values directly with its information operators (info, infon, output, outputf, outputtab; add --json for machine-readable output). Do not use cdo, Python or other programs to read or compute the data; shell tools for looking at text output and small calculations that read no data are fine.
 ```
 
 <!-- arm B -->

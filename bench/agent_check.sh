@@ -131,8 +131,8 @@ claude_args() {  # arm -> fills the array CLAUDE_ARGS. The prompt goes first, ri
   return 0
 }
 
-arm_path() {  # ncdump in both arms: cdors has no operator that prints values (no outputf/infon yet)
-  if [ "$1" = A ]; then echo "$(dirname "$CDORS_BIN"):$(dirname "$NCDUMP_BIN"):$SYS_PATH"
+arm_path() {  # arm A: cdors only (it prints values itself: info/outputtab --json); arm B: cdo, Python, ncdump
+  if [ "$1" = A ]; then echo "$(dirname "$CDORS_BIN"):$SYS_PATH"
   else echo "$(dirname "$CDO_BIN"):$(dirname "$PY_BIN"):$(dirname "$NCDUMP_BIN"):$SYS_PATH"; fi
 }
 
