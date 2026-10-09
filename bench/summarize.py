@@ -144,7 +144,8 @@ def main():
         return None
 
     def values_ok(test):
-        cs = cmp_by_test.get(test["run"], []) if test else []
+        # a skipped comparison (no reference output) leaves the values unchecked, not different
+        cs = [c for c in cmp_by_test.get(test["run"], []) if c["values"] != "SKIP"] if test else []
         if not cs:
             return None
         return all(c["values"] == "PASS" for c in cs)
@@ -191,6 +192,8 @@ def main():
         v = values_ok(test)
         if v is False:
             res += ", values differ"
+        elif v is None:
+            res += ", values unchecked"
         marks.append((label, f"{gib:.1f} GiB peak RSS, {fmt(test['wall'])} s", "≤ 32 GiB", res))
 
     speed("W1 yearmean: cdors (store) vs cdo (view)", pick("w1_cdo", "fx1_cdo"), pick("w1_cdors_store", "fx1_cdors_store"), 5)

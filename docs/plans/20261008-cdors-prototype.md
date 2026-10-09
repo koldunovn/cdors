@@ -607,9 +607,15 @@ cached. Rows needing `cdo` are skipped with a notice where it isn't available.
       with the chunk index, and multi-file inputs are opened 16 at a time. W2 raw plan 6–9 s → 1.0–1.2 s, W3 5.4 →
       0.5–0.7 s, plans identical, harness 233/233 both ways (0415117). An empty `CDORS_CACHE` now means no cache: it
       used to write `nc4index/` into the working directory.
-- [ ] ➕ full W4 (≈ 2.5 node-hours, approved 2026-10-09): W4 view cut to 87544 = 353 × 248 steps, cdors with the
+- [x] ➕ full W4 (≈ 2.5 node-hours, approved 2026-10-09): W4 view cut to 87544 = 353 × 248 steps, cdors with the
       same `-seltimestep`, because cdo cannot read the store's last 120 steps. W4Y reruns use 2976 steps. Submitted
-      with W2 and W3 as job 28007818 (limit 4 h, l50327 and l10683 excluded).
+      with W2 and W3 as job 28007818 (limit 4 h, l50327 and l10683 excluded). Done 16:04–18:24, 2.3 node-hours:
+      W2 raw 10.8×, W3 8.6× / 10.0×, W4 `ydaymean` 72× (78.8 s against 5673 s), `timpctl` 332 s; peak 23.7 GiB
+      under `--mem 32G`; all 8 comparisons pass, full-W4 percentiles match numpy to 0.0008 K on 1536 cells.
+      Written up in `docs/bench-results.md`.
+- [ ] ➕ output chunks of folds that run in lane waves (found in job 28007818): the output was chunked by lane
+      (8192 cells for W4 `ydaymean`, 128 for `timpctl`), one day spread over 384 chunks across the file, 19×
+      slower to read cold than cdo's output; write chunks that span many lanes
 
 ### Task 14: Agent check
 
@@ -622,8 +628,15 @@ cached. Rows needing `cdo` are skipped with a notice where it isn't available.
       of GB
 - [x] `agent_check.sh`: runs `claude -p` headless, one session after another, once with cdors and once with cdo/xarray
       per task; records correctness, number of commands, wall time and tokens
-- [ ] **only after Task 13 justifies it, and with Nikolay's go-ahead:** run a one-session pilot, re-estimate the token
-      cost from it, then ask again before the remaining nine sessions
+- [x] **only after Task 13 justifies it, and with Nikolay's go-ahead:** run a one-session pilot, re-estimate the token
+      cost from it, then ask again before the remaining nine sessions — pilot T5-A 2026-10-09 (run 20261009-181750,
+      `bench/agent/results-20261009-181750.md`): correct (2.341089 against 2.341090), 10 turns, 9 tool calls (7 cdors),
+      141 s, 39.7k fresh tokens (35.9k cache creation, 3.7k output) + 262k cache reads, $0.41 at list price. The
+      "peeked" flag is a false positive: the binary copy sat under `cdors-agentcheck/`, which the scorer reserves
+      for sessions, so the full run keeps the binary elsewhere. The session saved one oversized tool output (35 kB)
+      under `~/.claude/projects/` despite `--no-session-persistence`.
+- [ ] ➕ the remaining nine sessions: re-estimated ≈ 0.4–0.9M fresh tokens + 2.5–9M cache reads (≈ $4–13 at list
+      price), 1–3 h on the login node, one after another; waits for Nikolay's go-ahead
 - [ ] write `docs/agent-check.md`
 - ⚠️ 2026-10-09: tasks, independent reference answers (xarray, cross-checked with cdo) and the runner are merged
       (`bench/agent_tasks.md`, `bench/agent_check.sh`: dry run by default, `RUN=1 TASKS=T5 ARMS=A` is the pilot).

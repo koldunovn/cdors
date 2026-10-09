@@ -16,8 +16,10 @@ The plan with all checkboxes and per-task notes: `docs/plans/20261008-cdors-prot
 - Speed on the login node (indications, not the benchmark): typically 5–30× faster than cdo where reading
   dominates (up to 170× on W4 `ydaymean`); on tiny inputs cdo is faster, because cdors has ≈ 0.2–0.3 s of start-up
   and planning overhead.
-- Slurm: the baseline (job 27994857) and W1–W3 plus one year of W4 (job 28000341) ran with your go-ahead, 0.8
-  node-hours together. The agent check was not run, nothing was deleted, nothing was pushed.
+- Slurm: the baseline (job 27994857), W1–W3 plus one year of W4 (job 28000341), and W2, W3 plus the full W4
+  (job 28007818) ran with your go-ahead, 3.1 node-hours together. Every speed mark is met (W2 10.8×, W3 8.6×, W4
+  `ydaymean` 72× on 1.1 TB within 23.7 GiB). Nothing was deleted, nothing was pushed.
+- Agent check: the one-session pilot was correct (2026-10-09); the other nine sessions run with your go-ahead.
 
 ## What exists
 
@@ -55,6 +57,8 @@ Deliberate and observed differences from cdo: `docs/deviations.md` (including fo
 | EERIE cloud over HTTPS | ≈ 0.19 GB/s | cdo cannot read it | server-side cap, independent of concurrency |
 | Benchmark on a compute node (job 28000341): W1, W2 Parquet / raw, W3 | 7.8 s, 4.1 / 7.5 s, 5.3 s | 42.8 s, 36.4 s, 19.3 s (warm) | 5.5×, 8.9× / 4.9×, 3.7×; `docs/bench-results.md` |
 | Same job, W4Y (2020): `timpctl,95`, `ydaymean` | 8.6 s, 19.7 s | 416 s, 86 s | 48.6×, 4.4×; cdo's `ydaymean` is wrong on 26 days (cdo bug) |
+| Job 28007818 (after the planning fix): W2 raw, W3 `remap` / `remapbil` | 3.56 s, 2.76 / 2.36 s | 38.5 s, 23.7 s | 10.8×, 8.6× / 10.0×; all pass `diffn` |
+| Same job, full W4 (1.1 TB, 87544 steps, `--mem 32G`): `ydaymean`, `timpctl,95` | 78.8 s, 332 s | 5673 s, not run | 72×, 37–57× extrapolated; 14.3 / 23.7 GiB peak |
 
 ## Waiting for your decision
 
@@ -68,11 +72,15 @@ Deliberate and observed differences from cdo: `docs/deviations.md` (including fo
    - Remote vs local is 0.05 because of the server cap; cdors is 1.3× faster than xarray on the same endpoint.
    - The one failed comparison is a cdo bug. On HEALPix Zarr, cdo rotates the steps of a partial last time
      chunk without any message; cdors matches zarr-python.
-   - **Submitted:** W2, W3 and the full W4 as job 28007818, 2026-10-09 16:05 (limit 4 h, ≈ 2.5 node-hours
-     expected). The W4 view is cut to 87544 steps (whole chunks), because cdo cannot read the store's last 120
-     steps; cdors reads the same steps. Results go to `/scratch/a/a270088/cdors-bench/bench-28007818/summary.md`.
-3. **Agent check**: pilot one session first, `RUN=1 TASKS=T5 ARMS=A bash bench/agent_check.sh`, then re-estimate;
-   the full check is 10 headless sessions, ≈ 0.6–1.2M fresh tokens plus 3–8M cache-read tokens.
+   - ~~Submitted~~ **done**: W2, W3 and the full W4 as job 28007818, 2026-10-09 16:04–18:24 (2.3 node-hours).
+     W2 on the raw files is now 10.8× (pass), W3 8.6× / 10.0×, the full W4 `ydaymean` 72× and within 14.3 GiB,
+     `timpctl` within 23.7 GiB; all 8 comparisons pass, and cdors' full-W4 percentiles match numpy on 1536 cells
+     to 0.0008 K. The W4 view is cut to 87544 steps (whole chunks), because cdo cannot read the store's last 120
+     steps. Details: `docs/bench-results.md`, last section.
+3. **Agent check**: the pilot (T5 with cdors) was correct, 10 turns, 141 s, 40k fresh tokens + 262k cache reads
+   ($0.41 at list price), `bench/agent/results-20261009-181750.md`. With your go-ahead the other nine sessions
+   run one after another since 2026-10-09 19:00 (re-estimated 0.4–0.9M fresh tokens + 2.5–9M cache reads,
+   1–3 h), with a frozen binary of 0415117 in `/scratch/a/a270088/cdors-bin/0415117/`.
 
 ## Open questions
 
@@ -85,8 +93,8 @@ Deliberate and observed differences from cdo: `docs/deviations.md` (including fo
   from the baseline year; `CDO_W4_TIMPCTL=1` runs it), cdo `ydaymean` keeps its 2 h timeout (≈ 1.6 h expected).
 - ~~Reads in flight on compute nodes~~ — done 2026-10-09: 128 by default inside Slurm jobs, 64 on login nodes and
   for URLs; the benchmark compares 64 and the default on two cold W1 decades.
-- **Agent-check task T3**: its global mean barely depends on the remapping (skipping the remap misses the tolerance
-  by only ≈ 2×). Keep, or ask for a regional value instead?
+- ~~Agent-check task T3~~ — decided 2026-10-09: kept as it is (skipping the remap still fails, by ≈ 2× the
+  tolerance, and the scorer names the variant an answer matches).
 
 ## Known gaps (next round)
 
@@ -95,7 +103,10 @@ Deliberate and observed differences from cdo: `docs/deviations.md` (including fo
   bracket syntax, an MCP/JSON-plan layer.
 - ~~Planning on inputs of many NetCDF-4 files~~: fixed (header cached with the chunk index, members opened
   concurrently). The first run on a file still opens it through netCDF-C.
-- `ydaymean` on a whole HEALPix z9 year keeps about 16 of 128 cores busy (19.7 s, against 8.6 s for `timpctl`).
+- ~~`ydaymean` on a whole HEALPix z9 year keeps about 16 of 128 cores busy~~: a fixed cost of ≈ 18 s (the 4.6 GB
+  output and 16 GB of daily sums); the full W4 runs at 14 GB/s decoded.
+- Full-W4 `timpctl` keeps about 35 of 128 cores busy (139 waves, two reads each); not profiled.
+- NetCDF output is uncompressed (no `-z zip` yet); `-f nc4c` writes the same as `nc4`.
 - No rechunk-to-scratch stage: percentiles or daily climatologies on data stored one field per chunk need several
   passes over the input.
 - Remap weights are generated by cdo (first run per grid pair needs cdo on the machine; cdors calls it with `-L`,
@@ -112,6 +123,9 @@ Deliberate and observed differences from cdo: `docs/deviations.md` (including fo
 | `/work/ab0995/a270088/rust/rustup-init` | 21 MB | installer, no longer needed |
 | `~/cdo/.claude/worktrees/` (≈ 30 worktrees) | ≈ 30 MB | agent worktrees; all their branches are merged |
 | `~/cdo/nc4index/` | 1.2 MB, 15 files | NetCDF-4 index files written into the working directory by a test with an empty `CDORS_CACHE` (2026-10-09; that bug is fixed); untracked, counts against the home quota |
+| `/scratch/a/a270088/cdors-bench/bench-28000341/*.nc`, `bench-28007818/*.nc` | ≈ 11 GB each | benchmark outputs; the `.tsv`, `.md`, `.time` and `.log` files next to them are the record and stay |
+| `~/.claude/projects/-scratch-a-a270088-cdors-agentcheck-*` | ≈ 35 kB per agent-check session | oversized tool outputs that headless sessions save despite `--no-session-persistence`; counts against the home quota |
+| `/scratch/a/a270088/cdors-agentcheck/bin-0415117/`, `/scratch/a/a270088/cdors-bin/0415117/` | 146 MB each | frozen cdors binaries for the agent check; keep until it is written up |
 
 Commands, if you want them (check the list first):
 
@@ -120,6 +134,8 @@ cd /work/ab0995/a270088 && ls -d cdors-target-*            # review
 rm -rf /work/ab0995/a270088/cdors-target-{area,catalog,docs,fsync,hard,pctl,perf,perf1,perf2,polish,probe,remap,remote,review,rplan,safety,t10,t10b,t12,t6,t7a,t7b,t8,t9,tg,usab,valid,vfix}
 rm -rf /work/ab0995/a270088/cdors-target/runs /scratch/a/a270088/cdors-bench/prelim /work/ab0995/a270088/rust/rustup-init
 rm -r ~/cdo/nc4index                                        # stray index files in the repository
+rm /scratch/a/a270088/cdors-bench/bench-28000341/*.nc /scratch/a/a270088/cdors-bench/bench-28007818/*.nc
+rm -r ~/.claude/projects/-scratch-a-a270088-cdors-agentcheck-*   # after the agent check
 cd ~/cdo && git worktree list && git worktree prune          # after removing the worktree directories
 ```
 

@@ -1,7 +1,7 @@
 # Benchmark results (Task 13)
 
-Status 2026-10-09: W1–W3 and the first year of W4 (W4Y) are done (job 28000341). After the planning fix below, W2,
-W3 and the full W4 (cut to whole time chunks, see the last section) were submitted as job 28007818.
+Status 2026-10-09: all four workloads are done. W1–W3 and the first year of W4 (W4Y) ran as job 28000341. After
+the planning fix below, job 28007818 ran W2 and W3 again and the full W4, cut to whole time chunks (last section).
 
 ## The run
 
@@ -95,12 +95,22 @@ Details are in `docs/deviations.md`, under "cdo bugs observed".
   On the login node, planning W2 on the raw files went from 6–9 s to 1.0–1.2 s, and W3 from 5.4 s to 0.5–0.7 s,
   with plans identical to the netCDF-C ones. The harness passes with and without the cached headers. The headers
   are written by the first real run on a file (`--plan` writes nothing); the W2 and W3 files were cached before
-  job 28007818.
+  job 28007818. On its compute node, W2 on the raw files took 3.56 s in total (7.48 s before), and planning in
+  the plan-only pass, the first touch of the files on that node, took 2.5 s (8.1 s).
 - **`ydaymean` on a whole HEALPix z9 year** takes 19.7 s (1.9 GB/s), against 8.6 s for `timpctl` and 4.4 s for
   `-timmax`/`-timmin` on the same data. It keeps only about 16 of 128 cores busy and spends 137 s in the kernel.
   It is worth profiling before the full W4, which is 30 times the data.
+  **Explained** by job 28007818: the full W4 (29.4× the data) took 78.8 s, so about 18 s of the 19.7 s is a fixed
+  cost. Both runs write the same 4.6 GB output and hold the same 16 GB of daily sums in two waves.
 - **The first cdors run of the job** (W1 on the store, 7.81 s) was 1.6× slower than the same command on another
   cold decade (4.93 s). The cause is not known. W1 passes even with it.
+- **Output chunks of a fold that runs in waves.** When the per-cell state does not fit the memory budget, cdors
+  splits the cells into lanes and runs them in waves, and it wrote the output in chunks of one lane: 8192 cells
+  (32 KB) for the full W4 `ydaymean`, 128 cells for W4 `timpctl`. One day of that `ydaymean` output is 384
+  chunks spread over the whole 4.6 GB file (chunk offsets read with h5py), so reading it from Lustre cold takes
+  4.6 s, against 0.24 s for cdo's output (chunks of 262144 cells). The last step of job 28007818,
+  `cdo diffn` on the two outputs, took 30 min because of it. The single-field `timpctl` output reads quickly
+  despite its small chunks, because they lie in order. Being fixed: chunks that span many lanes.
 
 ## Reads in flight
 
@@ -108,13 +118,60 @@ The 2040s decade with the new default of 128 took 4.93 s (9.4 GB/s); the 2030s w
 were cold, and each was run once. That is 1.16× in favour of 128, in the direction the baseline predicted but
 smaller. The default stays at 128 inside Slurm jobs.
 
-## The full W4 run
+## Job 28007818: W2 and W3 again, and the full W4
 
-The W4 view now ends on a whole chunk: 87544 steps (353 × 248), so the store's last 120 steps (from 2049-12-17 03:00)
-are left out, and cdors reads the same `-seltimestep,1/87544`. cdo reads the view's last step correctly. If W4Y is
-run again, it uses 2976 steps (12 chunks, 2020 to 2021-01-07). W1 stays as it is: its last chunk lies within 2029,
-where the yearly mean does not depend on the order of the steps.
+Job 28007818, 2026-10-09 16:04–18:24 (2 h 20 min, 2.3 node-hours; the estimate was ≈ 2.5), node l30636, settings
+as above, `--mem 32G` on W4. W2 and W3 ran again to measure the planning fix on a compute node. W4 is 87544 steps
+(353 whole time chunks of 248): the view leaves out the store's last 120 steps, from 2049-12-17 03:00, because cdo
+misreads a partial last chunk (see Correctness), and cdors reads the same `-seltimestep,1/87544`. cdo `timpctl` on
+the full W4 was not run. Outputs: `/scratch/a/a270088/cdors-bench/bench-28007818/`.
 
-Job 28007818 (submitted 2026-10-09 16:05; time limit 4 h, so at most 4 node-hours, ≈ 2.5 expected) runs W2 and W3
-again, which shows the planning fix on a compute node, then W4. Nodes l50327 and l10683 are excluded, because the
-previous two jobs read the same data there.
+| Run | Wall | Decoded GB | GB/s | Peak RSS (GiB) | vs cdo (`diffn`) |
+|---|---|---|---|---|---|
+| W2 `fldmean -sellonlatbox` `pr`, 1950s: cdors on the Parquet refs (cold) | 4.38 s | 15.2 | 3.5 | 1.0 | PASS |
+| … cdors on the 240 raw files | 3.56 s | 15.2 | 4.3 | 3.0 | PASS |
+| … cdo on the raw files | 38.5 s | 15.2 | 0.39 | 0.1 | – |
+| … xarray on the Parquet refs | 43.4 s | 15.2 | 0.35 | 3.1 | PASS |
+| … cdors from the EERIE cloud | 97.1 s | 15.2 | 0.16 | 0.2 | PASS |
+| … xarray from the EERIE cloud | 119 s | 15.2 | 0.13 | 1.7 | PASS |
+| W3 `remap,r360x180` `to`, 5 years, 120 raw files: cdors with cdo's weights (cold) | 2.76 s | 7.6 | 2.7 | 1.0 | PASS |
+| … cdors `remapbil` (own weight cache) | 2.36 s | 7.6 | 3.2 | 1.8 | PASS |
+| … cdo `remap` with the same weights | 23.7 s | 7.6 | 0.32 | 0.1 | – |
+| W4 `timpctl,95`, HEALPix z9 3-hourly `tas`, 2020–2049 (cold) | 332 s | 1882 (two reads) | 5.7 | 23.7 | no cdo run; numpy check below |
+| W4 `ydaymean`: cdors (cold) | 78.8 s | 1102 | 14.0 | 14.3 | PASS |
+| … cdo (cold) | 5673 s | 1101 | 0.19 | 11.8 | – |
+
+| Mark | Measured | Target | Result |
+|---|---|---|---|
+| W2: cdors vs cdo, both on the raw files | 10.8× | ≥ 5× | PASS (4.9× in job 28000341) |
+| W2: cdors on the Parquet refs vs cdo on the raw files | 8.8× | ≥ 5× | PASS |
+| W3: cdors vs cdo, both with cdo's weights | 8.6× | ≥ 3× | PASS (3.7×) |
+| W3: cdors `remapbil` vs cdo `remap` | 10.0× | ≥ 3× | PASS (5.0×) |
+| W4: peak memory under `--mem 32G` | ≤ 23.7 GiB | ≤ 32 GB | PASS |
+| W4 `ydaymean`: cdors vs cdo | 72× | – | info |
+| W4 `timpctl,95`: cdors vs cdo, extrapolated | 37–57× | – | info: cdo's 416 s for 2020 (job 28000341) or 632 s (Task 2 baseline), times 30 |
+| Remote vs local throughput (cdors cloud / cdors Parquet) | 0.05 | ≥ 0.5 (proposed) | FAIL; under revision, the server's cap as before |
+| Same endpoint: cdors vs xarray from the EERIE cloud | 1.2× | – | info |
+
+- cdo was slower on this node than in job 28000341 (38.5 s against 36.4 s on W2, 23.7 s against 19.3 s on W3).
+  With job 28000341's cdo times, the factors would be 10.2× on W2 and 7.0× / 8.2× on W3: still clear passes.
+- Every speed mark is now met; only the remote mark fails, and it measures the EERIE server (cdors 0.16 GB/s,
+  xarray 0.13 GB/s from the same endpoint).
+- **Correctness.** All 8 comparisons pass `cdo --pedantic diffn`, including the full W4 `ydaymean` (366 days ×
+  3.1M cells, within 3.8e-5 K): with whole chunks, cdo reads the data correctly. With no cdo `timpctl` to compare
+  with, cdors' 95th percentiles were checked against numpy's exact percentile on 1536 cells, every 32nd cell of
+  three 16384-cell chunks (one across the boundary of the first two waves, one in the middle, the last one). They
+  differ by at most 0.0008 K; cdo's own histogram method allows one bin, 0.22 K at the median. At 139 waves × 2
+  reads, this is the largest percentile schedule run so far (W4Y had 5 waves).
+- The job's `summary.md` reads "PASS, values differ" for the W4 `timpctl` memory mark. That is a summarizer bug: it
+  counted the skipped comparison as a difference. Fixed in `bench/summarize.py`; the correct reading is "values
+  unchecked" by `diffn` (the numpy check above covers them).
+- **W4 `ydaymean`** read 620 GB from Lustre in 78.8 s (7.9 GB/s, 14 GB/s decoded), with 44 of 128 cores busy on
+  average. cdo took 1 h 35 min on 16 threads, 1.2 cores busy on average, reading the same 620 GB at 0.11 GB/s.
+- **W4 `timpctl`** decoded 1.88 TB in 332 s (5.7 GB/s) with about 35 of 128 cores busy on average (user 9678 s,
+  sys 1821 s). The plan splits the cells into 139 waves to fit 16 GB of per-cell state into the 32 GB budget, and
+  each wave reads its cells' 353 time chunks twice. Lustre input was 658 GB, against 620 GB for the single-read
+  `ydaymean`, so the second read came almost entirely from the page cache. Not profiled; a larger budget means
+  fewer waves.
+- The job's last step, `cdo diffn` on the two `ydaymean` outputs, took 30 min: see the output chunks under
+  "Where cdors loses time".
