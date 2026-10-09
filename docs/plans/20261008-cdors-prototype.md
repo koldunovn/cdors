@@ -555,10 +555,12 @@ cached. Rows needing `cdo` are skipped with a notice where it isn't available.
 
 - [x] README and docs/deviations.md checked against the binary (every README example run; agent section rewritten as
       9 steps; --help exit codes completed; wrong ops notes fixed; duplicate deviation entries merged)
-- [ ] (running) behaviour bugs found by the docs pass: remap to a Zarr/dataset target grid fails on the first runs
+- [x] behaviour bugs found by the docs pass: remap to a Zarr/dataset target grid fails on the first runs
       (race after writing the target template); `remap,<grid>,<weights>` should not need CDORS_CACHE; clear error when
       cdo is missing; `--plan` JSON lists glob/mergetime inputs as one string; plan text repeats operators and lists
-      timpctl's ignored inputs; `-s` does not silence warnings; `ops --json` uses `cdo_section` and `section`
+      timpctl's ignored inputs; `-s` does not silence warnings; `ops --json` uses `cdo_section` and `section`.
+      Merged: the "race" was cdo itself segfaulting (two of its threads in non-thread-safe HDF5) — weights are now
+      generated with `cdo -L`; warnings follow cdo (`-w` silences them, `-s` does not). Harness 233/233.
 
 ### Task 13: Benchmarks W1–W4
 
