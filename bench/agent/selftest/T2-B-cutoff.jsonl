@@ -1,0 +1,5 @@
+{"type":"system","subtype":"init","cwd":"/scratch/x","session_id":"00000000-0000-0000-0000-000000000000","tools":["Bash","Read"],"model":"synthetic-model"}
+{"type":"assistant","message":{"id":"msg_1","role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"/work/ab0995/a270088/mambaforge/envs/hk25/bin/python -I t2.py"}}],"usage":{"input_tokens":10,"cache_creation_input_tokens":5000,"cache_read_input_tokens":0,"output_tokens":400}}}
+{"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_1","type":"tool_result","content":"Traceback ..."}]}}
+{"type":"assistant","message":{"id":"msg_2","role":"assistant","content":[{"type":"tool_use","id":"toolu_2","name":"Bash","input":{"command":"cdo -s sinfon -select,name=pr [ run_1991*/*.nc ]"}}],"usage":{"input_tokens":5,"cache_creation_input_tokens":200,"cache_read_input_tokens":5000,"output_tokens":50}}}
+{"type":"assistant","message":{"id":"msg_3","role":"assi
