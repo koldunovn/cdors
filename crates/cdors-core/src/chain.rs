@@ -92,6 +92,8 @@ pub struct Options {
     pub mem: Option<u64>,
     /// `--max-read <size>` in bytes.
     pub max_read: Option<u64>,
+    /// `--max-values <n>`: values a printing operator may print (`u64::MAX`: no limit).
+    pub max_values: Option<u64>,
     /// `--chunks <spec>`: output chunking, `dim=n[,dim=n...]`.
     pub chunks: Option<Vec<(String, usize)>>,
     /// `--timestat_date` (None: the environment, then the operator's default).

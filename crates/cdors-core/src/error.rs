@@ -32,6 +32,8 @@ pub enum ErrorCode {
     UnsupportedDimension,
     /// The planned read exceeds `--max-read`.
     ReadLimit,
+    /// A value-printing operator would print more than `--max-values` values.
+    TooManyValues,
     /// An intermediate result between stages does not fit in memory.
     IntermediateTooLarge,
     /// The running state of one lane (one block of cells) does not fit in the memory budget.
@@ -57,6 +59,7 @@ impl ErrorCode {
             Self::UnsupportedGrid => "unsupported_grid",
             Self::UnsupportedDimension => "unsupported_dimension",
             Self::ReadLimit => "read_limit",
+            Self::TooManyValues => "too_many_values",
             Self::IntermediateTooLarge => "intermediate_too_large",
             Self::MemoryLimit => "memory_limit",
             Self::IoError => "io_error",
@@ -80,7 +83,7 @@ impl ErrorCode {
             | Self::BadData
             | Self::Internal => 2,
             Self::IoError => 3,
-            Self::ReadLimit | Self::OutputExists => 4,
+            Self::ReadLimit | Self::TooManyValues | Self::OutputExists => 4,
         }
     }
 

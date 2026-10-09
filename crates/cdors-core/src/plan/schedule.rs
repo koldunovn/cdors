@@ -4,8 +4,9 @@
 //! - the **tile window**: tiles in flight (reads, decoded chunks, gathered values) — at most half
 //!   the budget, at least two tiles;
 //! - the **lane states** of all live lanes ([`super::stage::FoldKernel::state_bytes`]);
-//! - the **intermediates** (in-memory results of inner stages, `plan::intermediate`), kept for
-//!   the whole run, and the output an intermediate-producing stage assembles.
+//! - the **intermediates** (in-memory results of inner stages, `plan::intermediate`) alive while
+//!   the stage runs (each is freed when the stage reading it has finished), and the output an
+//!   intermediate-producing stage assembles.
 //!
 //! **Finer tiles.** A fold stage's tiles are chunk-aligned, so data stored one complete field per
 //! chunk gives a time fold a single lane. The lanes are therefore cut finer: the non-folded
@@ -174,7 +175,7 @@ pub struct Schedule {
     pub state_bytes: u64,
     /// Output held while being assembled (stages that produce an intermediate).
     pub out_hold: u64,
-    /// Budget of the stage (the run's budget minus the intermediates).
+    /// Budget of the stage (the run's budget minus the intermediates alive while it runs).
     pub budget: u64,
     /// Estimated peak: window + states + held output (+ intermediates, added by the plan).
     pub peak_bytes: u64,

@@ -129,4 +129,23 @@ ulp      | -sub -yearmean {in} -timmean {in}           | r36x18_std hpz2_noleap
 ulp      | -timmean -remapnn,r18x9 -selmon,1 {in}      | r36x18_std hpz2_noleap   # small enough for the --mem 1M planner check
 ulp      | -remapnn,r18x9 -ymonmean {in}               | r36x18_std hpz2_noleap
 ulp      | -ymonsub {in} -ymonmean {in}                | r36x18_std hpz2_noleap
+ulp      | -fldmean -yearmean -remapnn,r18x9 {in}        | r36x18_std   # first intermediate freed after the second stage
 err:intermediate_too_large | --mem 10k -fldmean -ydaymean {in} | r36x18_std
+
+# Task 12b: value-printing operators on operator chains (text vs cdo, --json forms), the
+# --max-values flood guard, --plan without an output file on a variadic chain
+text     | info -seltimestep,1/2 -sellonlatbox,-30,40,30,75 {in} | r36x18_std
+text     | infon -seltimestep,1/2 -sellonlatbox,-30,40,30,75 {in} | r36x18_std r36x18_2lev
+text     | outputtab,date,lon,lat,value -seltimestep,1/2 -sellonlatbox,-30,40,30,75 {in} | r36x18_std
+text     | outputtab,name,date,value -fldmean -seltimestep,1/3 {in} | r36x18_std
+text     | output -seltimestep,1/2 -sellonlatbox,-30,40,30,75 {in} | r36x18_std
+text     | outputf,%8.3f -seltimestep,1/2 -sellonlatbox,-30,40,30,75 {in} | r36x18_std
+text     | outputf,%.9g,4 -seltimestep,1/2 -sellonlatbox,0,40,0,30 {in} | unst_360
+text     | outputtab,name,date,lon,lat,value -seltimestep,1/2 -sellonlatbox,0,30,40,60 -selname,tas {in} | hpz2_noleap
+text     | infon -seltimestep,1/3 -selname,tas {in}               | hpz2_noleap
+text     | outputtab,date,value -fldmean -yearmean -selname,tas {in} | r36x18_std hpz2_noleap
+json     | --json outputtab,date,lon,lat,value -seltimestep,1 -sellonlatbox,0,20,40,50 {in} | r36x18_std
+json     | --json info -seltimestep,1/2 -sellonlatbox,-30,40,30,75 {in} | r36x18_std hpz2_noleap
+json     | --json output -fldmean -seltimestep,1/2 {in}          | r36x18_std
+err:too_many_values | --max-values 1000 output {in} {noout}  | r36x18_std
+json     | --plan --json -yearmean -mergetime {fx}/r36x18_std_y2*.nc | r36x18_std

@@ -191,6 +191,36 @@ fn remove_own_temp(tmp: &Path) {
     }
 }
 
+/// Runs the stages of `plan`: inner stages first, each into its in-memory intermediate, then
+/// the output stage into `writer` (laid out as `lay`; not finished here). Each intermediate is
+/// freed as soon as the stage reading it has finished.
+pub fn run_stages(plan: &Plan, lay: &[OutVar], writer: Arc<dyn Writer>) -> Result<()> {
+    for (i, stage) in plan.stages.iter().enumerate() {
+        progress::set_stage(i);
+        let settings = pipeline::Settings {
+            threads: plan.threads,
+            io_threads: plan.io_threads,
+            window: stage.sched.window,
+            any_order: stage.sched.any_order(),
+        };
+        match plan.intermediates.get(i) {
+            Some(im) => {
+                pipeline::run(stage, &im.lay, im.writer.clone(), settings)?;
+                im.writer.finish()?;
+            }
+            None => pipeline::run(stage, lay, writer.clone(), settings)?,
+        }
+        for im in plan
+            .intermediates
+            .iter()
+            .filter(|im| im.consumer_stage == i)
+        {
+            im.release();
+        }
+    }
+    Ok(())
+}
+
 /// Plans and runs a command that writes one output.
 pub fn run(cmd: &Command) -> Result<String> {
     let plan = plan::build(cmd)?;
@@ -206,7 +236,10 @@ pub fn run(cmd: &Command) -> Result<String> {
     }
     let stats = plan::explain::read_stats(&plan);
     let bytes_decoded: u64 = stats.iter().map(|s| s.bytes_decoded).sum();
-    plan::explain::check_read_limit(bytes_decoded, plan::explain::read_limit(cmd))?;
+    plan::explain::check_read_limit(
+        plan::explain::source_bytes(&plan, &stats),
+        plan::explain::read_limit(cmd),
+    )?;
     let out = PathBuf::from(&plan.output);
     if out.exists() {
         if !cmd.options.overwrite {
@@ -264,23 +297,7 @@ pub fn run(cmd: &Command) -> Result<String> {
                 history.as_deref(),
             )?),
         };
-        // inner stages first, each into its in-memory intermediate; then the output stage
-        for (i, stage) in plan.stages.iter().enumerate() {
-            progress::set_stage(i);
-            let settings = pipeline::Settings {
-                threads,
-                io_threads,
-                window: stage.sched.window,
-                any_order: stage.sched.any_order(),
-            };
-            match plan.intermediates.get(i) {
-                Some(im) => {
-                    pipeline::run(stage, &im.lay, im.writer.clone(), settings)?;
-                    im.writer.finish()?;
-                }
-                None => pipeline::run(stage, &lay, writer.clone(), settings)?,
-            }
-        }
+        run_stages(&plan, &lay, writer.clone())?;
         writer.finish()
     })();
     let result = result.and_then(|()| {

@@ -100,6 +100,26 @@ except for the points below. Each entry says what cdo does, what cdors does, and
 - **`--force` is accepted and ignored.** cdo needs it for `remapcon` from or to HEALPix grids;
   cdors always passes it to `cdo gencon`.
 
+## Printing values (`info`, `infon`, `output`, `outputf`, `outputtab`)
+
+- **Flood guard.** cdo prints whatever it is asked to. cdors refuses, before reading, to print
+  more than `--max-values` values (default 1,000,000; for `info`/`infon` the limit counts
+  fields, one line each) with `too_many_values`, exit code 4; `--max-values none` removes it.
+- **`--json`.** cdo has no structured form; cdors prints one JSON object (README, "Print
+  values"). Values of float32 variables appear there in their shortest float32 form, also the
+  `info` mean (cdo's text shows 5 significant digits of the double mean).
+- **Parameter IDs** (`info`, `outputtab` keys `param` and `code`). cdo numbers NetCDF variables
+  −1, −2, … in file order (CDI). cdors uses the position among the data variables of the first
+  input, which matches cdo for NetCDF; Zarr stores have no variable order, so the IDs of Zarr
+  inputs follow the order in which cdors lists their variables.
+- **Several grids.** cdo's `output*` operators refuse a dataset whose variables are on different
+  grids (`Output.cc`: "Too many different grids!"); cdors prints each variable on its own grid.
+- **`outputf` formats** must hold exactly one floating-point conversion (`%[flags][width]
+  [.precision](e|f|g|a)`, plus literal text and `%%`); cdo passes any string to `printf`.
+- **HEALPix `x`, `y`, `xind`, `yind`** (`outputtab`): cdo 2.6.0 treats HEALPix as a projection
+  grid; on a subset it prints the cell centres in degrees and `yind` 1, which cdors matches; on
+  a complete HEALPix grid cdo 2.6.0 crashes (see below), cdors prints the same columns.
+
 ## cdo bugs observed (cdors does not reproduce them)
 
 - **Percentiles near p = 100.** For the methods hazen, weibull, median_unbiased and
@@ -108,3 +128,6 @@ except for the points below. Each entry says what cdo does, what cdors does, and
 - **Partial last chunk of a Zarr store read through NCZarr.** On a single-variable view of the
   nextGEMS W1 store with 731 timesteps (the last time chunk partial), cdo returned wrong values for
   11 timesteps (up to 0.21 K); cdors and xarray agree with each other.
+- **`outputtab` with coordinate keys on a complete HEALPix grid.** cdo 2.6.0 ends with a
+  segmentation fault on `outputtab,lon,lat,value -selname,tas hpz2_noleap.nc` (and with `x`,
+  `y`); on a `sellonlatbox` subset it works. cdors prints the cell centres.

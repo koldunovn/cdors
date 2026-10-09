@@ -228,6 +228,16 @@ pub fn notes(name: &str) -> Vec<String> {
              file) [Time axis: empty time selection]",
         );
     }
+    if ops::output::handles(name) {
+        n.push(
+            "takes any operator chain as input; refuses to print more than --max-values values \
+             (default 1000000; info/infon: fields) [Printing values: Flood guard]",
+        );
+        n.push(
+            "--json prints one JSON object: records with ISO dates, numbers, null for missing \
+             values [Printing values: --json]",
+        );
+    }
     if matches!(name, "cat" | "mergetime" | "copy") {
         n.push("never appends to an existing output [Files and outputs: no append]");
     }

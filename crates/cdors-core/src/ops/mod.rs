@@ -11,6 +11,9 @@
 //! | reduction | state folded in a fixed order, carried across chunk boundaries |
 //! | whole_extent | tiles complete along one dimension (percentiles, running means, remapping) |
 //! | info | reads metadata (and possibly data) and prints to stdout; no output file |
+//!
+//! The value-printing operators (`info`, `infon`, `output`, `outputf`, `outputtab`) are of class
+//! info but take an operator chain as input (`ops::output`).
 
 pub mod arith;
 pub mod catalog;
@@ -18,6 +21,7 @@ pub mod files;
 pub mod fldstat;
 pub mod healpix;
 pub mod info;
+pub mod output;
 pub mod pctl;
 pub mod remap;
 pub mod runstat;
@@ -279,6 +283,54 @@ fn build_registry() -> Vec<OpSpec> {
             vec![],
             Info,
             "Grid description (cdo's text format)",
+            true,
+        ),
+        // value-printing operators: the input may be an operator chain (`ops::output`)
+        op(
+            "info",
+            one,
+            0,
+            vec![],
+            Info,
+            "Per field: date, level, size, missing values, minimum, mean, maximum, parameter ID",
+            true,
+        ),
+        op(
+            "infon",
+            one,
+            0,
+            vec![],
+            Info,
+            "Per field: date, level, size, missing values, minimum, mean, maximum, name",
+            true,
+        ),
+        op(
+            "output",
+            one,
+            0,
+            vec![],
+            Info,
+            "Print all values (six per line, %12.6g)",
+            true,
+        ),
+        op(
+            "outputf",
+            one,
+            0,
+            vec![arg("format", Str), opt("nelem", Int, "1")],
+            Info,
+            "Print all values with a C format (one floating-point conversion), nelem per line",
+            true,
+        ),
+        op(
+            "outputtab",
+            one,
+            0,
+            vec![args_of("keys", Str)],
+            Info,
+            "Print a table, one line per value: keys value, name, param, code, lon, lat, x, y, \
+             xind, yind, lev, timestep, date, time, year, month, day, nohead (key:width sets \
+             the column width)",
             true,
         ),
         // selections
@@ -575,6 +627,9 @@ fn build_registry() -> Vec<OpSpec> {
         }
         if o.name == "showname" {
             o.aliases.push("showvar");
+        }
+        if o.name == "outputtab" {
+            o.aliases.push("outputkey");
         }
     }
     r

@@ -9,7 +9,9 @@
 //!   (`mergetime`, `cat`, `copy`) take all remaining inputs except the outputs of the outermost
 //!   operator.
 //! - Information operators have no output and print to stdout; they cannot be nested.
-//! - After the outermost operator and its inputs, exactly its number of outputs must remain.
+//! - After the outermost operator and its inputs, exactly its number of outputs must remain;
+//!   with `--plan` the output may be left out (then a last token that is an existing input,
+//!   a URL or a glob pattern is never taken as the output).
 
 use cdors_core::chain::{Command, Input, OpNode, Options, OutFormat, Precision, TimestatDate};
 use cdors_core::error::{Error, Result};
@@ -28,6 +30,7 @@ const OPTIONS: &[&str] = &[
     "--plan",
     "--mem",
     "--max-read",
+    "--max-values",
     "--chunks",
     "--timestat_date",
     "--percentile",
@@ -225,6 +228,16 @@ fn parse_options(args: &[String]) -> Result<(Options, usize)> {
                     _ => parse_size(&v)?,
                 });
             }
+            "--max-values" | "--max_values" => {
+                let v = take(&mut i)?;
+                o.max_values = Some(match v.as_str() {
+                    "none" | "unlimited" => u64::MAX,
+                    _ => parse_size(&v).map_err(|_| {
+                        Error::bad_arguments(format!("invalid --max-values '{v}'"))
+                            .with_hint("--max-values takes a count (e.g. 5000000 or 5M) or none")
+                    })?,
+                });
+            }
             "--chunks" => o.chunks = Some(parse_chunks(&take(&mut i)?)?),
             "--timestat_date" => {
                 let v = take(&mut i)?;
@@ -272,6 +285,19 @@ struct Parser<'a> {
     pos: usize,
     /// Tokens that must remain for the outputs of the outermost operator.
     reserve: usize,
+    /// `--plan` without an output file: variadic operators take all remaining tokens.
+    no_output: bool,
+}
+
+/// Whether the last token of a `--plan` command is an input rather than an output name: a URL,
+/// a glob pattern, or an existing file or store (unless `-O` says it is to be overwritten).
+fn plan_last_is_input(tok: Option<&String>, overwrite: bool) -> bool {
+    let Some(t) = tok.filter(|t| !t.starts_with('-')) else {
+        return false;
+    };
+    t.contains("://")
+        || t.contains(['*', '?', '['])
+        || (!overwrite && std::path::Path::new(t).exists())
 }
 
 impl Parser<'_> {
@@ -297,7 +323,7 @@ impl Parser<'_> {
             )));
         }
         if root {
-            self.reserve = spec.outputs;
+            self.reserve = if self.no_output { 0 } else { spec.outputs };
         }
         let mut node = OpNode {
             name: spec.name.clone(),
@@ -333,6 +359,7 @@ impl Parser<'_> {
                         toks: self.toks,
                         pos: self.pos,
                         reserve: self.reserve,
+                        no_output: self.no_output,
                     };
                     let mut is_op = |suffix: &str| {
                         probe.pos < probe.toks.len()
@@ -385,6 +412,8 @@ fn long_options_first(args: &[String]) -> (Vec<String>, usize) {
         "--mem",
         "--max-read",
         "--max_read",
+        "--max-values",
+        "--max_values",
         "--chunks",
         "--timestat_date",
         "--percentile",
@@ -441,14 +470,24 @@ pub fn parse(args: &[String]) -> Result<Command> {
             "usage: cdors [options] operator[,args] [-operator2 ...] inputs... [output]",
         ));
     }
-    let mut p = Parser {
-        toks,
-        pos: 0,
-        reserve: 0,
+    let parse_root = |no_output: bool| -> Result<(OpNode, usize)> {
+        let mut p = Parser {
+            toks,
+            pos: 0,
+            reserve: 0,
+            no_output,
+        };
+        let root = p.op(true)?;
+        Ok((root, p.pos))
     };
-    let root = p.op(true)?;
+    // `--plan` needs no output file: when the last token is an existing input, a variadic
+    // operator (`-yearmean -mergetime a.nc b.nc c.nc`) takes it as an input, not as the output
+    let (root, pos) = match options.plan && plan_last_is_input(toks.last(), options.overwrite) {
+        true => parse_root(true).or_else(|_| parse_root(false))?,
+        false => parse_root(false)?,
+    };
     let spec = ops::lookup(&root.name).expect("parsed operator exists");
-    let rest = &toks[p.pos..];
+    let rest = &toks[pos..];
     // `--plan` reads no data and writes nothing: the output file may be left out
     let plan_only = options.plan && spec.outputs == 1 && rest.is_empty();
     if rest.len() < spec.outputs && !plan_only {

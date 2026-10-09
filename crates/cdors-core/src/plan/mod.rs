@@ -773,6 +773,18 @@ impl Plan {
         self.intermediates.iter().map(|i| i.bytes).sum()
     }
 
+    /// Bytes of the intermediates alive while stage `i` runs, besides the one it writes (that
+    /// one is part of the stage's own estimate, `out_hold`).
+    pub fn live_intermediate_bytes(&self, i: usize) -> u64 {
+        intermediate::live_bytes(&self.intermediates, i)
+    }
+
+    /// Index of the stage with the largest estimate (alive intermediates plus the stage).
+    pub fn peak_stage(&self) -> Option<usize> {
+        (0..self.stages.len())
+            .max_by_key(|&i| self.live_intermediate_bytes(i) + self.stages[i].sched.peak_bytes)
+    }
+
     /// Largest number of passes over the input of any stage.
     pub fn passes(&self) -> usize {
         self.stages
@@ -782,15 +794,12 @@ impl Plan {
             .unwrap_or(1)
     }
 
-    /// Estimated peak memory: the intermediates plus the largest stage.
+    /// Estimated peak memory: the largest stage plus the intermediates alive while it runs
+    /// (each intermediate is freed when the stage reading it has finished).
     pub fn peak_bytes(&self) -> u64 {
-        self.intermediate_bytes()
-            + self
-                .stages
-                .iter()
-                .map(|s| s.sched.peak_bytes)
-                .max()
-                .unwrap_or(0)
+        self.peak_stage().map_or(0, |i| {
+            self.live_intermediate_bytes(i) + self.stages[i].sched.peak_bytes
+        })
     }
 }
 
@@ -891,11 +900,21 @@ pub fn build(cmd: &Command) -> Result<Plan> {
         .map(|i| std::mem::replace(&mut i.stage, stage::Stage::empty()))
         .collect();
     stages.push(last);
+    // the stage reading each intermediate (it is freed when that stage has finished)
+    for im in &mut intermediates {
+        im.consumer_stage = stages
+            .iter()
+            .rposition(|st| {
+                st.vars
+                    .iter()
+                    .any(|sv| sv.leaves.iter().any(|li| li.leaf.src == im.src))
+            })
+            .unwrap_or(stages.len() - 1);
+    }
 
     // memory budget, threads, and the schedule of every stage
     let budget = cmd.options.mem.unwrap_or_else(schedule::default_mem);
     intermediate::check_budget(&intermediates, budget)?;
-    let ibytes: u64 = intermediates.iter().map(|i| i.bytes).sum();
     let (threads, io_threads) = (
         crate::exec::default_threads(cmd).max(1),
         crate::exec::default_io_threads(cmd).max(1),
@@ -909,7 +928,8 @@ pub fn build(cmd: &Command) -> Result<Plan> {
     let (threads, io_threads) = (threads.min(tasks), io_threads.min(tasks));
     for (i, st) in stages.iter_mut().enumerate() {
         let hold = intermediates.get(i).map_or(0, |im| im.bytes);
-        st.sched = schedule::schedule(st, threads, io_threads, budget - ibytes, hold)?;
+        let live = intermediate::live_bytes(&intermediates, i);
+        st.sched = schedule::schedule(st, threads, io_threads, budget - live, hold)?;
         st.sched.bytes_read = explain::stage_stats(st).bytes_decoded;
     }
     Ok(Plan {
