@@ -2,6 +2,7 @@
 
 mod ops_cmd;
 mod parse;
+mod sigpipe;
 
 use cdors_core::chain::{Command, Input};
 use cdors_core::error::{Error, Result};
@@ -27,6 +28,7 @@ options:
                       on login nodes 1/4 of available memory, at most 4G)
   --max-read <size>   refuse runs that decode more than this (default 64G on login nodes,
                       no limit inside Slurm jobs; `none` for no limit)
+  --max-values <n>    refuse to print more values (info, output*: default 1000000; `none`)
   --chunks <spec>     output chunks, dim=n[,dim=n...]
   --timestat_date <first|middle|midhigh|last>
   --percentile <method>
@@ -35,7 +37,7 @@ options:
 
 exit codes: 0 success, 1 usage (unknown operator, bad arguments, not implemented),
             2 data (coordinates, grid, dimension), 3 I/O (worth retrying),
-            4 refused (--max-read limit, existing output without -O)";
+            4 refused (--max-read or --max-values limit, existing output without -O)";
 
 fn write_stdout(s: &str) -> Result<()> {
     let mut out = std::io::stdout().lock();
@@ -47,6 +49,9 @@ fn write_stdout(s: &str) -> Result<()> {
 }
 
 fn run(cmd: &Command) -> Result<()> {
+    if ops::output::handles(&cmd.root.name) {
+        return write_stdout(&ops::output::run(cmd)?);
+    }
     let spec = ops::lookup(&cmd.root.name).expect("parsed operator exists");
     if spec.class == AccessClass::Info {
         let src = match &cmd.root.inputs[0] {
@@ -75,6 +80,7 @@ fn run(cmd: &Command) -> Result<()> {
 }
 
 fn main() {
+    sigpipe::reset();
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         Some("--version" | "-V") => {

@@ -61,6 +61,22 @@ pub fn read_stats(plan: &Plan) -> Vec<StageStats> {
     plan.stages.iter().map(stage_stats).collect()
 }
 
+/// Decoded bytes read from real sources (files, stores, URLs), not from the in-memory
+/// intermediates of a multi-stage chain: what `--max-read` limits.
+pub fn source_bytes(plan: &Plan, stats: &[StageStats]) -> u64 {
+    let ims: Vec<usize> = plan.intermediates.iter().map(|i| i.src).collect();
+    stats
+        .iter()
+        .zip(&plan.stages)
+        .flat_map(|(st, stage)| {
+            st.leaves
+                .iter()
+                .filter(|l| !ims.contains(&stage.vars[l.var].leaves[l.leaf].leaf.src))
+                .map(|l| l.bytes_decoded)
+        })
+        .sum()
+}
+
 /// Chunks of one stored dimension (chunk length `c`, length `n`) that the output indices `r`
 /// read through `map`: their number and summed extent. Same chunk sets as `LeafRead::new`.
 fn dim_read(map: &IndexMap, r: Range<usize>, c: usize, n: usize) -> (u64, u64) {
@@ -393,22 +409,23 @@ pub fn to_json(plan: &Plan, cmd: &Command, threads: usize, io_threads: usize) ->
         .filter_map(|p| std::fs::metadata(p).ok())
         .map(|m| m.len())
         .sum();
-    // the stage with the largest estimate decides the peak; intermediates live throughout
-    let top = plan
-        .stages
-        .iter()
-        .max_by_key(|s| s.sched.peak_bytes)
-        .map(|s| s.sched.clone())
+    // the stage with the largest estimate (with the intermediates alive while it runs) decides
+    // the peak
+    let top_i = plan.peak_stage();
+    let top = top_i
+        .map(|i| plan.stages[i].sched.clone())
         .unwrap_or_default();
     let tiles_mem = top.window as u64 * top.tile_bytes;
-    let inter_mem = plan.intermediate_bytes();
+    let inter_mem = top_i.map_or(0, |i| plan.live_intermediate_bytes(i));
     let peak = plan.peak_bytes() + weights_bytes;
     let window = plan.stages.last().map_or(2, |s| s.sched.window);
     let lim = read_limit(cmd);
     let total_dec: u64 = stats.iter().map(|s| s.bytes_decoded).sum();
+    let src_dec = source_bytes(plan, &stats);
     json!({
         "cdors_plan": SCHEMA,
-        "output": plan.output,
+        // null when no output file was given (`--plan` needs none)
+        "output": (!plan.output.is_empty()).then_some(&plan.output),
         "format": format!("{:?}", plan.out_kind).to_ascii_lowercase(),
         "inputs": plan.sources.iter().map(|s| s.dataset().source.clone()).collect::<Vec<_>>(),
         "stages": stages,
@@ -445,7 +462,8 @@ pub fn to_json(plan: &Plan, cmd: &Command, threads: usize, io_threads: usize) ->
         "read_limit": {
             "limit": lim.limit,
             "source": lim.source,
-            "exceeded": lim.limit.is_some_and(|l| total_dec > l),
+            "bytes": src_dec,
+            "exceeded": lim.limit.is_some_and(|l| src_dec > l),
         },
     })
 }

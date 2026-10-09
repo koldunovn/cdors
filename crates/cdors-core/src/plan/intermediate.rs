@@ -18,9 +18,11 @@
 //! of cells for time folds (statistics, percentiles, running statistics), one complete field
 //! per timestep otherwise (field statistics, remapping, pointwise operators).
 //!
-//! Stages run one after another, inner first. All intermediates stay in memory until the run
-//! ends; together they may take at most half of the memory budget, otherwise planning fails with
-//! `intermediate_too_large` (no spilling to disk in the prototype).
+//! Stages run one after another, inner first. An intermediate is freed as soon as the stage that
+//! reads it has finished ([`Intermediate::release`]); the intermediates alive at the same time
+//! (those read by a later stage, plus the one being written) may take at most half of the memory
+//! budget, otherwise planning fails with `intermediate_too_large` (no spilling to disk in the
+//! prototype).
 
 use super::stage::Stage;
 use super::{Desc, Expr, IndexMap, Leaf, OutKind, Plan, Sources};
@@ -30,6 +32,7 @@ use crate::io::ChunkSource;
 use crate::model::{DType, DimRole};
 use std::sync::Arc;
 use zarrs::storage::store::MemoryStore;
+use zarrs::storage::{StorePrefix, WritableStorageTraits};
 
 /// An inner stage whose output is kept in memory.
 pub struct Intermediate {
@@ -48,6 +51,32 @@ pub struct Intermediate {
     pub bytes: u64,
     /// Operator that consumes it (chunking).
     pub consumer: String,
+    /// The in-memory store (also held by the writer and the reader).
+    pub store: Arc<MemoryStore>,
+    /// Index of the stage that reads it (set by `plan::build`; `usize::MAX` until then).
+    pub consumer_stage: usize,
+}
+
+impl Intermediate {
+    /// Frees the stored values once the consuming stage has finished; metadata and coordinates
+    /// stay readable.
+    pub fn release(&self) {
+        for o in &self.lay {
+            if let Ok(prefix) = StorePrefix::new(format!("{}/c/", o.name)) {
+                let _ = self.store.erase_prefix(&prefix);
+            }
+        }
+    }
+}
+
+/// Bytes of the intermediates alive while stage `stage` runs: those computed by earlier stages
+/// and read by this stage or a later one (the one this stage writes is counted by the caller).
+pub fn live_bytes(ims: &[Intermediate], stage: usize) -> u64 {
+    ims.iter()
+        .enumerate()
+        .filter(|(k, im)| *k < stage && im.consumer_stage >= stage)
+        .map(|(_, im)| im.bytes)
+        .sum()
 }
 
 /// How the consuming operator walks through its input.
@@ -143,7 +172,7 @@ pub fn materialize(d: Desc, consumer: &str, srcs: &mut Sources) -> Result<Desc> 
         None,
         false,
     )?;
-    let reader = crate::io::zarr::ZarrSource::open_store(&name, store, &Vec::new)?;
+    let reader = crate::io::zarr::ZarrSource::open_store(&name, store.clone(), &Vec::new)?;
     let reader: Arc<dyn ChunkSource> = Arc::new(reader);
     srcs.paths.push(name.clone());
     srcs.srcs.push(reader);
@@ -173,13 +202,19 @@ pub fn materialize(d: Desc, consumer: &str, srcs: &mut Sources) -> Result<Desc> 
         writer: Arc::new(writer),
         bytes,
         consumer: consumer.to_owned(),
+        store,
+        consumer_stage: usize::MAX,
     });
     Ok(out)
 }
 
-/// `intermediate_too_large` if the intermediates take more than half of `budget`.
+/// `intermediate_too_large` if the intermediates alive at the same time (see [`live_bytes`])
+/// take more than half of `budget`.
 pub fn check_budget(ims: &[Intermediate], budget: u64) -> Result<()> {
-    let total: u64 = ims.iter().map(|i| i.bytes).sum();
+    let total: u64 = (0..=ims.len())
+        .map(|s| live_bytes(ims, s) + ims.get(s).map_or(0, |im| im.bytes))
+        .max()
+        .unwrap_or(0);
     if total <= budget / 2 {
         return Ok(());
     }
