@@ -239,11 +239,28 @@ pub struct Encoding {
     pub add_offset: Option<f64>,
     /// Whether unpacked values are 32-bit (scale/offset stored as float32 or stored type float32).
     pub unpacked_f32: bool,
+    /// `_Unsigned = "true"` on signed integer storage: values are read as unsigned.
+    pub unsigned: bool,
+    /// Stored values (after the unsigned interpretation, before unpacking) outside
+    /// `[valid_min, valid_max]` are missing (`valid_range`, `valid_min`, `valid_max`).
+    pub valid_min: Option<f64>,
+    pub valid_max: Option<f64>,
 }
 
 impl Encoding {
     pub fn is_packed(&self) -> bool {
         self.scale_factor.is_some() || self.add_offset.is_some()
+    }
+
+    /// Whether a valid range (`valid_range`, `valid_min`, `valid_max`) applies.
+    pub fn has_range(&self) -> bool {
+        self.valid_min.is_some() || self.valid_max.is_some()
+    }
+
+    /// Whether a stored value (as f64) lies outside the valid range.
+    pub fn out_of_range(&self, v: f64) -> bool {
+        self.has_range()
+            && (self.valid_min.is_some_and(|m| v < m) || self.valid_max.is_some_and(|m| v > m))
     }
 }
 

@@ -625,11 +625,8 @@ impl ParquetRefs {
             return Ok(r.clone());
         }
         let path = self.root.join(array).join(format!("refs.{file_no}.parq"));
-        let rows = if path.exists() {
-            Arc::new(read_parquet_refs(&path)?)
-        } else {
-            Arc::new(Vec::new())
-        };
+        // a missing reference file is a broken reference set, not missing data (fsspec fails too)
+        let rows = Arc::new(read_parquet_refs(&path)?);
         records.insert(cache_key, rows.clone());
         Ok(rows)
     }

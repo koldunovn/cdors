@@ -270,6 +270,7 @@ dependencies = [
  "glob",
  "hdf5-metno",
  "hdf5-metno-sys",
+ "libc",
  "netcdf",
  "object_store",
  "parquet",

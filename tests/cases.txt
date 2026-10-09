@@ -29,7 +29,11 @@ exact    | -copy {in}                                  | r36x18_std hpz2_noleap 
 exact    | -setgrid,{in2} {in}                         | r36x18_std hpz2_noleap unst_360
 exact    | -selname,tas -seltimestep,5/40 -sellonlatbox,0,120,-20,50 -mulc,2 {in} | r36x18_std hpz2_noleap unst_360
 err:unknown_operator | -yearmeans {in}                 | r36x18_std
-err:output_exists    | -addc,1 {in} {in} {noout}       | r36x18_std
+err:bad_arguments    | -addc,1 {in} {in} {noout}       | r36x18_std   # output is an input
+err:output_exists    | -addc,1 {in} {fx}/r36x18_std_y2001.nc {noout} | r36x18_std
+err:bad_arguments    | -seltimestep,9223372036854775807 {in} | r36x18_std   # ranges are never expanded
+err:bad_arguments    | -selyear,3000/400000000 {in}    | r36x18_std
+err:bad_arguments    | -sellonlatbox,nan,10,0,10 {in}  | r36x18_std
 #
 # Task 6: time statistics by period and over multi-year groups
 ulp      | -timmean {in}                               | r36x18_std hpz2_noleap unst_360

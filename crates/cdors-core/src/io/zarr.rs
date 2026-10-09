@@ -462,7 +462,10 @@ impl ZarrSource {
                 Ok(a) => a,
                 Err(e) => {
                     // unsupported data type or codec: skip the array, keep the dataset usable
-                    eprintln!("cdors: warning: skipping Zarr array '{name}': {e}");
+                    crate::exec::threads::warn(
+                        "array_skipped",
+                        &format!("skipping Zarr array '{name}': {e}"),
+                    );
                     continue;
                 }
             };

@@ -10,6 +10,7 @@
 
 pub mod pipeline;
 pub mod progress;
+pub mod publish;
 pub mod threads;
 
 use crate::chain::{Command, Precision};
@@ -171,24 +172,25 @@ fn history_line() -> String {
     )
 }
 
-fn temp_path(out: &Path) -> PathBuf {
-    let dir = out
-        .parent()
-        .filter(|p| !p.as_os_str().is_empty())
-        .unwrap_or(Path::new("."));
-    let name = out
-        .file_name()
-        .map_or_else(|| "out".into(), |s| s.to_string_lossy().into_owned());
-    dir.join(format!(".{name}.cdors-tmp-{}", std::process::id()))
-}
-
-/// Removes this run's own temporary output (part of the design: a failed run leaves nothing).
-fn remove_own_temp(tmp: &Path) {
-    if tmp.is_dir() {
-        let _ = std::fs::remove_dir_all(tmp);
-    } else {
-        let _ = std::fs::remove_file(tmp);
+/// Everything the command reads that the output must not replace: input paths and glob
+/// patterns, and operator arguments naming existing files (grids, weights).
+fn input_paths(cmd: &Command) -> Vec<&str> {
+    fn args<'a>(n: &'a crate::chain::OpNode, out: &mut Vec<&'a str>) {
+        out.extend(
+            n.args
+                .iter()
+                .map(String::as_str)
+                .filter(|a| Path::new(a).exists()),
+        );
+        for i in &n.inputs {
+            if let crate::chain::Input::Op(o) = i {
+                args(o, out);
+            }
+        }
     }
+    let mut v = cmd.root.paths();
+    args(&cmd.root, &mut v);
+    v
 }
 
 /// Runs the stages of `plan`: inner stages first, each into its in-memory intermediate, then
@@ -241,26 +243,8 @@ pub fn run(cmd: &Command) -> Result<String> {
         plan::explain::read_limit(cmd),
     )?;
     let out = PathBuf::from(&plan.output);
-    if out.exists() {
-        if !cmd.options.overwrite {
-            return Err(Error::new(
-                ErrorCode::OutputExists,
-                format!("output '{}' exists", plan.output),
-            )
-            .with("path", plan.output.clone())
-            .with_hint("add -O to overwrite it, or choose another output name"));
-        }
-        if out.is_dir() {
-            return Err(Error::new(
-                ErrorCode::OutputExists,
-                format!("output '{}' is an existing directory", plan.output),
-            )
-            .with("path", plan.output.clone())
-            .with_hint(
-                "-O replaces files only; remove the existing store first or choose another name",
-            ));
-        }
-    }
+    publish::check_not_input(&out, &input_paths(cmd))?;
+    publish::check_output(&out, cmd.options.overwrite)?;
     if let Some(dir) = out.parent().filter(|p| !p.as_os_str().is_empty())
         && !dir.is_dir()
     {
@@ -270,9 +254,14 @@ pub fn run(cmd: &Command) -> Result<String> {
         ))
         .with("path", plan.output.clone()));
     }
+    let is_dir = matches!(plan.out_kind, OutKind::Zarr3 | OutKind::Zarr2);
+    if is_dir {
+        // the output name is reserved (exclusive mkdir) before anything is written
+        publish::reserve_dir(&out, cmd.options.overwrite)?;
+    }
     let lay = layout(&plan, cmd);
     let history = (!cmd.options.no_history).then(history_line);
-    let tmp = temp_path(&out);
+    let tmp = publish::temp_path(&out);
     progress::start(plan.stages.len(), stats.iter().map(|s| s.chunks_read).sum());
     let reporter = cmd
         .options
@@ -300,10 +289,7 @@ pub fn run(cmd: &Command) -> Result<String> {
         run_stages(&plan, &lay, writer.clone())?;
         writer.finish()
     })();
-    let result = result.and_then(|()| {
-        std::fs::rename(&tmp, &out)
-            .map_err(|e| Error::io(format!("renaming the output into place: {e}")))
-    });
+    let result = result.and_then(|()| publish::publish(&tmp, &out, is_dir, cmd.options.overwrite));
     match result {
         Ok(()) => {
             if let Some(r) = reporter {
@@ -312,13 +298,13 @@ pub fn run(cmd: &Command) -> Result<String> {
             Ok(String::new())
         }
         Err(e) => {
-            remove_own_temp(&tmp);
+            let removed = publish::remove_own(&tmp, &out);
             let (stage, done, total, _) = progress::snapshot();
             let e = e
                 .with("stage", stage)
                 .with("chunks_done", done)
                 .with("chunks_total", total)
-                .with("temporary_output_removed", true);
+                .with("temporary_output_removed", removed);
             if let Some(r) = reporter {
                 r.finish("failed", Some(e.code.as_str()), &plan.output);
             }

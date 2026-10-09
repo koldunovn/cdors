@@ -415,6 +415,29 @@ impl TimeUnits {
         if !value.is_finite() {
             return Err(Error::bad_data(format!("non-finite time value {value}")));
         }
+        // about 100 million years either way: beyond that the value is a fill value or garbage,
+        // and the date arithmetic below would overflow
+        const MAX_SECONDS: f64 = 3e15;
+        let seconds = match self {
+            Self::AbsoluteDay => value / 10_000.0 * 365.0 * 86_400.0,
+            Self::Relative { unit, .. } => {
+                value
+                    * match unit {
+                        TimeUnit::Second => 1.0,
+                        TimeUnit::Minute => 60.0,
+                        TimeUnit::Hour => 3_600.0,
+                        TimeUnit::Day => 86_400.0,
+                        TimeUnit::Month => 31.0 * 86_400.0,
+                        TimeUnit::Year => 366.0 * 86_400.0,
+                    }
+            }
+        };
+        if seconds.abs() > MAX_SECONDS {
+            return Err(Error::bad_data(format!(
+                "time value {value} is out of range (a fill value in the time axis?)"
+            ))
+            .with_hint("time values must be valid dates; check the time variable and its units"));
+        }
         match self {
             Self::AbsoluteDay => {
                 let date = value.trunc() as i64;

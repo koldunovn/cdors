@@ -128,6 +128,8 @@ fn main() {
     // Errors raised while parsing need to know about --json too.
     let json = args.iter().any(|a| a == "--json");
     cdors_core::exec::threads::set_json(json);
+    // every panic: `internal`, own temporary output removed, exit code 2
+    cdors_core::exec::publish::install_panic_hook(json);
     // subcommands `ops`, `help <op>`, `-h <op>`: the first token after the global options
     if let Some((sub, rest)) = parse::subcommand(&args) {
         let r = match sub {

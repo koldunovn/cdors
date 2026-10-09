@@ -31,7 +31,7 @@ use zarrs::storage::Bytes;
 use super::kerchunk::{KerchunkStore, Ref};
 
 /// Bumped whenever the index layout or its derivation changes, so old cache entries are not used.
-const INDEX_FORMAT: u32 = 1;
+const INDEX_FORMAT: u32 = 2;
 /// Target size of the virtual chunks a contiguous variable is split into.
 const CONTIGUOUS_TARGET_BYTES: u64 = 16 << 20;
 
@@ -242,6 +242,12 @@ impl Nc4Variable {
                     data
                 }
                 Nc4Filter::Deflate { .. } => inflate(&data, expect)?,
+                Nc4Filter::Shuffle if data.len() != expect => {
+                    return Err(format!(
+                        "shuffle: {} bytes before unshuffling, expected {expect}",
+                        data.len()
+                    ));
+                }
                 Nc4Filter::Shuffle => unshuffle(&data, esize),
                 Nc4Filter::Blosc { .. } => blosc_decompress(&data)?,
             };
@@ -282,6 +288,12 @@ pub struct Nc4Index {
     pub file_size: u64,
     /// Modification time, nanoseconds since the Unix epoch.
     pub mtime_ns: i128,
+    /// Inode number and status-change time (nanoseconds): a file replaced by another one of
+    /// the same size and modification time (`cp -p`, `rsync -t`) gets a new inode and ctime.
+    #[serde(default)]
+    pub inode: u64,
+    #[serde(default)]
+    pub ctime_ns: i128,
     pub variables: Vec<Nc4Variable>,
 }
 
@@ -289,20 +301,28 @@ impl Nc4Index {
     /// Load the cached index of `path`, or build it through HDF5 and cache it
     /// (in `$CDORS_CACHE/nc4index/`; without `CDORS_CACHE` nothing is cached).
     pub fn open(path: &Path) -> Result<Self, Nc4Error> {
-        let (canon, size, mtime_ns) = file_identity(path)?;
-        let cache = cache_path(&canon, size, mtime_ns);
+        let id = file_identity(path)?;
+        let cache = cache_path(&id);
         if let Some(cache) = &cache
             && let Ok(text) = std::fs::read(cache)
             && let Ok(index) = serde_json::from_slice::<Nc4Index>(&text)
             && index.format == INDEX_FORMAT
-            && index.path == canon
-            && index.file_size == size
-            && index.mtime_ns == mtime_ns
+            && index.path == id.canon
+            && index.file_size == id.size
+            && index.mtime_ns == id.mtime_ns
+            && index.inode == id.inode
+            && index.ctime_ns == id.ctime_ns
         {
             return Ok(index);
         }
         let index = Self::build(path)?;
-        if let Some(cache) = &cache {
+        // A file changed within the last seconds may still be written to without changing its
+        // mtime (Lustre keeps mtime to the second): not cached.
+        if let Some(cache) = &cache
+            && !id.recent()
+            && index.mtime_ns == id.mtime_ns
+            && index.ctime_ns == id.ctime_ns
+        {
             // A cache that cannot be written only costs a rebuild next time.
             let _ = write_atomic(cache, &serde_json::to_vec(&index).unwrap_or_default());
         }
@@ -312,7 +332,8 @@ impl Nc4Index {
     /// Build the index through HDF5 (no cache), under [`super::hdf5_lock`] from opening the file
     /// to dropping the last HDF5 handle.
     pub fn build(path: &Path) -> Result<Self, Nc4Error> {
-        let (canon, file_size, mtime_ns) = file_identity(path)?;
+        let id = file_identity(path)?;
+        let canon = id.canon;
         let _hdf5 = super::hdf5_lock();
         let herr = |e: hdf5_metno::Error| Nc4Error::Hdf5 {
             path: canon.display().to_string(),
@@ -332,8 +353,10 @@ impl Nc4Index {
         Ok(Self {
             format: INDEX_FORMAT,
             path: canon,
-            file_size,
-            mtime_ns,
+            file_size: id.size,
+            mtime_ns: id.mtime_ns,
+            inode: id.inode,
+            ctime_ns: id.ctime_ns,
             variables,
         })
     }
@@ -491,27 +514,53 @@ impl Nc4File {
     }
 }
 
-fn file_identity(path: &Path) -> Result<(PathBuf, u64, i128), Nc4Error> {
+/// What identifies one version of a file: canonical path, size, mtime, inode and ctime.
+struct Identity {
+    canon: PathBuf,
+    size: u64,
+    mtime_ns: i128,
+    inode: u64,
+    ctime_ns: i128,
+}
+
+impl Identity {
+    /// Modified (or its status changed) less than 2 s ago, or in the future.
+    fn recent(&self) -> bool {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos() as i128);
+        now - self.mtime_ns.max(self.ctime_ns) < 2_000_000_000
+    }
+}
+
+fn file_identity(path: &Path) -> Result<Identity, Nc4Error> {
+    use std::os::unix::fs::MetadataExt;
     let ioerr = |source| Nc4Error::Io {
         path: path.display().to_string(),
         source,
     };
     let canon = std::fs::canonicalize(path).map_err(ioerr)?;
     let meta = std::fs::metadata(&canon).map_err(ioerr)?;
-    let mtime_ns = meta
-        .modified()
-        .ok()
-        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-        .map_or(0, |d| d.as_nanos() as i128);
-    Ok((canon, meta.len(), mtime_ns))
+    let ns = |s: i64, n: i64| i128::from(s) * 1_000_000_000 + i128::from(n);
+    Ok(Identity {
+        canon,
+        size: meta.len(),
+        mtime_ns: ns(meta.mtime(), meta.mtime_nsec()),
+        inode: meta.ino(),
+        ctime_ns: ns(meta.ctime(), meta.ctime_nsec()),
+    })
 }
 
 /// `$CDORS_CACHE/nc4index/<fnv1a64>.json`, `None` without `CDORS_CACHE`.
-fn cache_path(canon: &Path, size: u64, mtime_ns: i128) -> Option<PathBuf> {
+fn cache_path(id: &Identity) -> Option<PathBuf> {
     let dir = std::env::var_os("CDORS_CACHE")?;
     let key = format!(
-        "{INDEX_FORMAT}\0{}\0{size}\0{mtime_ns}",
-        canon.to_string_lossy()
+        "{INDEX_FORMAT}\0{}\0{}\0{}\0{}\0{}",
+        id.canon.to_string_lossy(),
+        id.size,
+        id.mtime_ns,
+        id.inode,
+        id.ctime_ns
     );
     // FNV-1a: stable across Rust versions, unlike `DefaultHasher`.
     let hash = key.bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, b| {
@@ -529,7 +578,8 @@ fn write_atomic(path: &Path, data: &[u8]) -> std::io::Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    let tmp = path.with_extension(format!("json.tmp{}", std::process::id()));
+    // unique across hosts and processes
+    let tmp = crate::exec::publish::temp_path(path);
     std::fs::write(&tmp, data)?;
     std::fs::rename(&tmp, path)
 }
@@ -805,10 +855,11 @@ fn inflate(data: &[u8], expect: usize) -> Result<Vec<u8>, String> {
 /// Undo HDF5 byte shuffle: the stored bytes are all first bytes, then all second bytes, ...
 /// Trailing bytes that do not fill a whole element are stored unshuffled.
 fn unshuffle(data: &[u8], esize: usize) -> Vec<u8> {
-    if esize <= 1 {
+    let n = data.len() / esize.max(1);
+    if esize <= 1 || n <= 1 {
+        // as HDF5's shuffle filter: fewer than two elements are stored as they are
         return data.to_vec();
     }
-    let n = data.len() / esize;
     let mut out = vec![0u8; data.len()];
     for (b, plane) in data[..n * esize].chunks_exact(n).enumerate() {
         for (i, &v) in plane.iter().enumerate() {

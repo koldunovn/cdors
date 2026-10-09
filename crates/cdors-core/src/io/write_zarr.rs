@@ -154,7 +154,9 @@ impl ZarrWriter {
         v2: bool,
         history: Option<&str>,
     ) -> Result<Self> {
+        // exclusive: never writes into a directory this process did not create
         std::fs::create_dir(path)?;
+        crate::exec::publish::mark_created(path, true);
         let store: Arc<Store> = Arc::new(FilesystemStore::new(path).map_err(zerr)?);
         Self::create_in(store, plan, lay, v2, history, true)
     }
@@ -261,6 +263,9 @@ impl Writer for ZarrWriter {
     }
 
     fn write(&self, var: usize, origin: &[usize], shape: &[usize], data: Values) -> Result<()> {
+        if crate::exec::publish::cancelled() {
+            return Err(Error::internal("cancelled"));
+        }
         let ov = &self.vars[var];
         let idx: Vec<u64> = origin
             .iter()

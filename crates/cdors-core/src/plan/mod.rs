@@ -580,6 +580,11 @@ const ENCODING_ATTRS: &[&str] = &[
     "missing_value",
     "scale_factor",
     "add_offset",
+    "_Unsigned",
+    // values written by cdors may violate the input's valid range (e.g. after -addc)
+    "valid_range",
+    "valid_min",
+    "valid_max",
     "coordinates",
     "grid_mapping",
     "CDI_grid_type",

@@ -19,7 +19,7 @@ pub use grid::{CoordAxis, Grid, GridKind, GridMapping, Healpix, HealpixOrder};
 pub use time::{CalDateTime, Calendar, TimeAxis, TimeStep, TimeUnit, TimeUnits};
 pub use zaxis::ZAxis;
 
-use crate::error::Result;
+use crate::error::{Error, Result};
 use std::collections::{HashMap, HashSet};
 
 /// Reads all values of a stored variable as f64 (unpacked, missing values as NaN).
@@ -482,15 +482,47 @@ fn detect_grid(
         };
         if gmn == "healpix" {
             let size = v.dims[last].size;
-            let nside = m
-                .attrs
-                .get_f64("healpix_nside")
-                .map(|x| x as u64)
-                .unwrap_or_else(|| ((size / 12) as f64).sqrt().round() as u64);
-            let order = match m.attrs.get_str("healpix_order") {
-                Some(o) if o.to_ascii_lowercase().starts_with("nest") => HealpixOrder::Nested,
-                _ => HealpixOrder::Ring,
+            let bad = |msg: String| {
+                Err(Error::bad_data(format!("grid mapping '{gm}' of '{}': {msg}", v.name))
+                    .with("variable", v.name.clone())
+                    .with_hint(
+                        "a HEALPix grid mapping needs healpix_nside (or CF refinement_level) and \
+                         healpix_order (or CF indexing_scheme) = \"nested\" or \"ring\"",
+                    ))
             };
+            // healpix_nside (cdo, easygems), else CF's refinement_level (nside = 2^level), else
+            // from the size of a complete map
+            let nside_f = m.attrs.get_f64("healpix_nside").or_else(|| {
+                m.attrs
+                    .get_f64("refinement_level")
+                    .filter(|l| (0.0..=29.0).contains(l) && l.fract() == 0.0)
+                    .map(|l| 2f64.powi(l as i32))
+            });
+            let nside = match nside_f {
+                Some(x) if x >= 1.0 && x <= (1u64 << 29) as f64 && x.fract() == 0.0 => x as u64,
+                Some(x) => return bad(format!("invalid nside {x}")),
+                None => ((size / 12) as f64).sqrt().round() as u64,
+            };
+            if nside == 0 || size as u128 > 12 * (nside as u128) * (nside as u128) {
+                return bad(format!(
+                    "nside {nside} does not fit the dimension of {size} cells"
+                ));
+            }
+            let order_attr = m
+                .attrs
+                .get_str("healpix_order")
+                .or_else(|| m.attrs.get_str("indexing_scheme"));
+            let order = match order_attr.map(|o| o.trim().to_ascii_lowercase()) {
+                Some(o) if o == "nested" || o == "nest" => HealpixOrder::Nested,
+                Some(o) if o == "ring" => HealpixOrder::Ring,
+                Some(o) => return bad(format!("unknown HEALPix order '{o}'")),
+                None => return bad("no healpix_order or indexing_scheme".into()),
+            };
+            if order == HealpixOrder::Nested && !nside.is_power_of_two() {
+                return bad(format!(
+                    "nside {nside} of a nested grid is not a power of 2"
+                ));
+            }
             let index_var = ds
                 .vars
                 .iter()

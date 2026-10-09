@@ -73,8 +73,15 @@ impl NcWriter {
         } else {
             netcdf::Options::NETCDF4 | netcdf::Options::NOCLOBBER
         };
-        let mut f = netcdf::create_with(path, opts)
-            .map_err(|e| Error::io(format!("cannot create '{}': {e}", path.display())))?;
+        let mut f = netcdf::create_with(path, opts).map_err(|e| {
+            let e = Error::from(e);
+            Error::new(
+                e.code,
+                format!("cannot create '{}': {}", path.display(), e.message),
+            )
+        })?;
+        // NOCLOBBER: the file did not exist before, so it is this process's own
+        crate::exec::publish::mark_created(path, false);
         for (name, n, unl) in &meta.dims {
             if *unl {
                 f.add_unlimited_dimension(name)?;

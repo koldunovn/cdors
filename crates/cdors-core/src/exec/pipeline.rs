@@ -63,6 +63,16 @@ impl Semaphore {
         self.cv.notify_one();
     }
 
+    /// Opens the semaphore for good (no `acquire` blocks any more): the writer is gone and
+    /// dispatch must not wait for permits it would release.
+    fn close(&self) {
+        *self
+            .n
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = usize::MAX / 2;
+        self.cv.notify_all();
+    }
+
     /// Waits until all `total` permits are back.
     fn wait_all(&self, total: usize) {
         let mut n = self.n.lock().expect("semaphore");
@@ -99,7 +109,10 @@ struct Shared {
 
 impl Shared {
     fn fail(&self, e: Error) {
-        let mut g = self.error.lock().expect("error lock");
+        let mut g = self
+            .error
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if g.is_none() {
             *g = Some(e);
         }
@@ -693,6 +706,17 @@ fn write_loop(
     threads: usize,
     any_order: bool,
 ) -> Result<()> {
+    // if this thread dies, dispatch must not block on window permits it would have released
+    struct Gone(Arc<Shared>);
+    impl Drop for Gone {
+        fn drop(&mut self) {
+            if std::thread::panicking() {
+                self.0.fail(Error::internal("writer thread panicked"));
+                self.0.window.close();
+            }
+        }
+    }
+    let _gone = Gone(shared.clone());
     let mut asm = Assembler {
         vars: out.to_vec(),
         open: HashMap::new(),

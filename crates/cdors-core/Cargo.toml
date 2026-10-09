@@ -24,4 +24,5 @@ glob.workspace = true
 parquet.workspace = true
 base64.workspace = true
 flate2.workspace = true
+libc.workspace = true
 blosc-src.workspace = true
