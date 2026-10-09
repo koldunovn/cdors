@@ -488,6 +488,17 @@ cached. Rows needing `cdo` are skipped with a notice where it isn't available.
       with cdo's text plus cdors notes; `--max-read` 64 GB default on login nodes, none in Slurm jobs; `--progress
       json`; README with an agent section. Pass count and memory model to be filled in by the Task 7 planner work.
 
+### ➕ Task 12b: Performance rounds before the benchmarks
+
+- [ ] round 1 (running): allocation churn (buffer pool / malloc tuning), copy-free decode, branch-free kernel
+      loops, 64 reads in flight on login nodes
+- [ ] round 2 (after the Task 7 planner merge): O(1)/parallel tile construction, no blocking on fold-lane locks
+      (≥ -P active lanes), NetCDF writer work moved to the compute pool
+- ⚠️ 2026-10-09 profile (login node, W1): yearmean reaches ≈ 20 % of the read+decode ceiling warm and 50–62 %
+      cold; `MALLOC_MMAP_THRESHOLD_=4G` alone gave ≈ 2× and reached the ceiling cold (5–7× cdo); decode copies
+      (`convert`, `trim`) take ≈ 50 % of user time; tile construction caps throughput at 10–15 GB/s; fldmean blocks
+      12 of 16 threads on lane locks; `copy` is limited by the single NetCDF writer thread.
+
 ### Task 13: Benchmarks W1–W4
 
 **Files:**
