@@ -4,7 +4,8 @@
 //! coordinate variable, dimension names in `dimension_names` (v3) or `_ARRAY_DIMENSIONS` (v2),
 //! zstd compression, NaN as the fill value of float arrays (missing values stay NaN), and CF
 //! attributes (time units and calendar, `coordinates`, `grid_mapping`). Zarr v2 stores also get
-//! consolidated metadata (`.zmetadata`). Chunks are encoded and stored in parallel.
+//! consolidated metadata (`.zmetadata`). Chunks are encoded and stored in parallel, without a
+//! per-chunk fsync: the store is synced once in `finish` (see [`OutputStore`]).
 
 use crate::error::{Error, Result};
 use crate::exec::{OutMeta, OutVar, Writer, out_meta};
@@ -12,11 +13,18 @@ use crate::io::Values;
 use crate::model::{Attrs, DType};
 use crate::plan::Plan;
 use serde_json::{Map, Value, json};
-use std::path::Path;
+use std::io::Write;
+use std::os::fd::{AsRawFd, IntoRawFd};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use zarrs::array::{Array, ArrayMetadata, ArrayMetadataV2, ArrayMetadataV3};
 use zarrs::filesystem::FilesystemStore;
-use zarrs::storage::{ReadableWritableStorageTraits, StoreKey};
+use zarrs::storage::byte_range::ByteRangeIterator;
+use zarrs::storage::{
+    Bytes, MaybeBytesIterator, OffsetBytesIterator, ReadableStorageTraits,
+    ReadableWritableStorageTraits, StorageError, StoreKey, StorePrefix, WritableStorageTraits,
+    store_set_partial_many,
+};
 
 type Store = dyn ReadableWritableStorageTraits;
 
@@ -26,6 +34,113 @@ const ZSTD_LEVEL: i32 = 1;
 pub struct ZarrWriter {
     arrays: Vec<Array<Store>>,
     vars: Vec<OutVar>,
+    /// The filesystem store (None for in-memory intermediates), synced by `finish`.
+    fs: Option<Arc<OutputStore>>,
+}
+
+/// The output's filesystem store: zarrs' [`FilesystemStore`], but writes skip its per-file
+/// `fsync`.
+///
+/// `FilesystemStore::set` calls `sync_all` on every file it writes. On Lustre each of these is a
+/// synchronous server round trip, so an output of many small chunks took seconds (up to a minute
+/// on a loaded file system) where the same NetCDF output took a fraction of a second. Here a
+/// write is `open` + `write` + a checked `close` (Lustre and NFS report deferred write errors on
+/// close), and [`OutputStore::sync`] flushes the whole store once, after the last chunk, with a
+/// single `syncfs(2)` on its file system. (Fsyncing each file once at the end instead was
+/// measured to be as slow as before: the cost is the per-file sync itself.)
+///
+/// One sync at the end is enough for durability: the store is the temporary output directory,
+/// which becomes visible under the output name only through the rename in `exec::publish`, and
+/// that runs after `Writer::finish`. A crash before the rename leaves only the temporary
+/// directory; after it, the data of every chunk has already been flushed.
+/// Reads and erases go to the wrapped `FilesystemStore`.
+struct OutputStore {
+    inner: FilesystemStore,
+    root: PathBuf,
+}
+
+impl OutputStore {
+    fn new(path: &Path) -> Result<Self> {
+        Ok(Self {
+            inner: FilesystemStore::new(path).map_err(zerr)?,
+            root: path.to_path_buf(),
+        })
+    }
+
+    fn write_file(path: &Path, value: &[u8]) -> std::io::Result<()> {
+        // `create_dir_all` copes with another thread creating the same directory meanwhile
+        if let Some(parent) = path.parent()
+            && !parent.exists()
+        {
+            std::fs::create_dir_all(parent)?;
+        }
+        let mut f = std::fs::File::create(path)?;
+        f.write_all(value)?;
+        // `drop` ignores the result of close(2), which can carry deferred write errors
+        let fd = f.into_raw_fd();
+        // SAFETY: `fd` was just released by `into_raw_fd` and is closed exactly once here.
+        if unsafe { libc::close(fd) } != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(())
+    }
+
+    /// Flushes the file system holding the store with one `syncfs(2)` (which also returns
+    /// write-back errors on Linux >= 5.8).
+    fn sync(&self) -> Result<()> {
+        let io = |e: std::io::Error| Error::from(e).with("path", self.root.display().to_string());
+        let dir = std::fs::File::open(&self.root).map_err(io)?;
+        // SAFETY: `dir` is an open descriptor for the duration of the call.
+        if unsafe { libc::syncfs(dir.as_raw_fd()) } != 0 {
+            return Err(io(std::io::Error::last_os_error()));
+        }
+        Ok(())
+    }
+}
+
+impl ReadableStorageTraits for OutputStore {
+    fn get_partial_many<'a>(
+        &'a self,
+        key: &StoreKey,
+        byte_ranges: ByteRangeIterator<'a>,
+    ) -> std::result::Result<MaybeBytesIterator<'a>, StorageError> {
+        self.inner.get_partial_many(key, byte_ranges)
+    }
+
+    fn size_key(&self, key: &StoreKey) -> std::result::Result<Option<u64>, StorageError> {
+        self.inner.size_key(key)
+    }
+
+    fn supports_get_partial(&self) -> bool {
+        self.inner.supports_get_partial()
+    }
+}
+
+impl WritableStorageTraits for OutputStore {
+    fn set(&self, key: &StoreKey, value: Bytes) -> std::result::Result<(), StorageError> {
+        Ok(Self::write_file(&self.inner.key_to_fspath(key), &value)?)
+    }
+
+    fn set_partial_many(
+        &self,
+        key: &StoreKey,
+        offset_values: OffsetBytesIterator,
+    ) -> std::result::Result<(), StorageError> {
+        // read-modify-write through `set` (not used by the writer: chunks are stored whole)
+        store_set_partial_many(self, key, offset_values)
+    }
+
+    fn erase(&self, key: &StoreKey) -> std::result::Result<(), StorageError> {
+        self.inner.erase(key)
+    }
+
+    fn erase_prefix(&self, prefix: &StorePrefix) -> std::result::Result<(), StorageError> {
+        self.inner.erase_prefix(prefix)
+    }
+
+    fn supports_set_partial(&self) -> bool {
+        false
+    }
 }
 
 fn zerr(e: impl std::fmt::Display) -> Error {
@@ -157,8 +272,10 @@ impl ZarrWriter {
         // exclusive: never writes into a directory this process did not create
         std::fs::create_dir(path)?;
         crate::exec::publish::mark_created(path, true);
-        let store: Arc<Store> = Arc::new(FilesystemStore::new(path).map_err(zerr)?);
-        Self::create_in(store, plan, lay, v2, history, true)
+        let fs = Arc::new(OutputStore::new(path)?);
+        let mut w = Self::create_in(fs.clone(), plan, lay, v2, history, true)?;
+        w.fs = Some(fs);
+        Ok(w)
     }
 
     /// Writes the metadata and coordinates into any store (the filesystem, or memory for the
@@ -253,6 +370,7 @@ impl ZarrWriter {
         Ok(Self {
             arrays,
             vars: lay.to_vec(),
+            fs: None,
         })
     }
 }
@@ -283,7 +401,11 @@ impl Writer for ZarrWriter {
         }
     }
 
+    /// Makes the written store durable (before `exec::publish` renames it into place).
     fn finish(&self) -> Result<()> {
-        Ok(())
+        match &self.fs {
+            Some(fs) => fs.sync(),
+            None => Ok(()),
+        }
     }
 }
