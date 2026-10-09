@@ -490,10 +490,10 @@ cached. Rows needing `cdo` are skipped with a notice where it isn't available.
 
 ### ➕ Task 12a: Safety fixes from the code review (BLOCKS benchmarks and the agent check)
 
-- [ ] (running) failure cleanup only removes what this process created (unique temp names: host+pid+random,
+- [x] failure cleanup only removes what this process created (unique temp names: host+pid+random,
       `created` flag); atomic no-clobber publish without -O; refuse output == input / inside an input /
       matched by an input glob; no materialised timestep/year ranges (a huge `seltimestep` reached 71 GB)
-- [ ] (running) panic hook with JSON error and own-temp cleanup; writer death cannot deadlock dispatch;
+- [x] panic hook with JSON error and own-temp cleanup; writer death cannot deadlock dispatch;
       retryable only for transient errors; nc4index cache key with inode+ctime; `_Unsigned`, `valid_range`,
       HEALPix order defaults (silent wrong numbers); minor items (JSON warnings, time fill values, missing
       refs.N.parq, dangling-symlink outputs, NaN sellonlatbox args, `--plan` writes no cache)
@@ -501,6 +501,12 @@ cached. Rows needing `cdo` are skipped with a notice where it isn't available.
       concurrent runs without -O on one output both exited 0 (one result silently overwritten); cleanup could
       `remove_dir_all` a same-named temp of another process (same PID on another node). Do not use -O on real
       data until this item is merged.
+- ⚠️ 2026-10-09 merged (230/230 rows on both read paths). Verified on the merged binary: `-O … in.nc in.nc` is
+      refused with in.nc unchanged; `seltimestep,9223372036854775807` returns at once. Lustre: renameat2(NOREPLACE)
+      is unusable (EINVAL), so files publish via link()+unlink() and Zarr via an exclusive mkdir reservation.
+- [ ] ➕ `--plan` still runs cdo to make remap grid templates (needs a native parser for r<nx>x<ny>, global_<inc>,
+      hpz<z>, hp<nside>)
+- [ ] ➕ zarrs FilesystemStore fsyncs every chunk: a `--mem 1M` Zarr output took 65–80 s vs 0.2 s for NetCDF
 
 ### ➕ Task 12b: Performance rounds before the benchmarks
 
