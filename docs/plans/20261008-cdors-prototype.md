@@ -514,12 +514,12 @@ cached. Rows needing `cdo` are skipped with a notice where it isn't available.
 
 - [x] round 1: allocation churn (buffer pool / malloc tuning), copy-free decode, branch-free kernel
       loops, 64 reads in flight on login nodes
-- [ ] round 2 (after the Task 7 planner merge): O(1)/parallel tile construction, no blocking on fold-lane locks
+- [x] round 2 (after the Task 7 planner merge): O(1)/parallel tile construction, no blocking on fold-lane locks
       (≥ -P active lanes), NetCDF writer work moved to the compute pool
 - [x] ➕ value-printing operators for agents (`outputtab`, `info`/`infon`, `output`/`outputf`, with `--json`): the
       Task 14 prep found that agents had to fall back to ncdump (planned in Task 3, never built)
 - [x] ➕ broken-pipe handling: `cdors --version | head -1` panics (agents pipe output into head)
-- [ ] ➕ remap reads only the source chunks its weights touch (point extraction with remapnn read a whole
+- [x] ➕ remap reads only the source chunks its weights touch (point extraction with remapnn read a whole
       year of every cell: 21 s, 9 GB RSS on the login node)
 - ⚠️ 2026-10-09 profile (login node, W1): yearmean reaches ≈ 20 % of the read+decode ceiling warm and 50–62 %
       cold; `MALLOC_MMAP_THRESHOLD_=4G` alone gave ≈ 2× and reached the ceiling cold (5–7× cdo); decode copies
@@ -532,6 +532,10 @@ cached. Rows needing `cdo` are skipped with a notice where it isn't available.
       compared, `--json` records (missing = null), `--max-values` flood guard (1e6), SIGPIPE → quiet exit 141,
       `--plan` keeps variadic inputs, intermediates freed after their stage, `--max-read` counts only real sources.
       Harness 226/226. Agent-check arm A now prints values with cdors (no ncdump).
+- ⚠️ 2026-10-09 round 2 merged (bit-identical; 230/230 both read paths; no-clobber race test: one winner, one
+      exit 4 in each of 3 rounds). Login node, merged master: W1 yearmean 2 years 0.77 s (cdo ≈ 9 s), fldmean 240
+      steps 0.41 s (cdo 4.0 s); W1 decade plan 1.17 → 0.04 s; agent-check T4 (2020 p95 at Hamburg via
+      `remapnn,lon=10.0_lat=53.55`) 1.5 s, 355 MB, 292.11996 K (reference 292.119965 K).
 
 ### Task 13: Benchmarks W1–W4
 
