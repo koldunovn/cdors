@@ -10,10 +10,12 @@ The plan with all checkboxes and per-task notes: `docs/plans/20261008-cdors-prot
   one-time chunk index) and multi-file inputs, and runs about 180 CDO operators.
 - Correctness: every operator is compared with cdo 2.6.0 by `tests/run_cases.sh` (230 rows, about 30 s, both
   NetCDF read paths, and a planner check that forces tiny chunks, tiny memory and several passes and must give
-  bit-identical output). A sweep on the real datasets matched cdo or exact xarray in all but three cases (below).
-- Speed on the login node (indications, not the benchmark): typically 5–15× faster than cdo where reading
-  dominates, up to 170× on W4 `ydaymean`; slower than cdo only where planning large unstructured grids still costs
-  seconds (being fixed).
+  bit-identical output). The real-data check (`bench/realdata_check.sh`, 23 cases on small slices of W1–W4, ICON
+  R2B8, FESOM, HadGEM3 ORCA1, the EERIE cloud) on the final master: 17 identical, 2 within tolerance (a percentile
+  vs cdo's histogram method; a mean vs numpy at 6.6e-10 relative), 4 plan/memory checks ok, 0 different.
+- Speed on the login node (indications, not the benchmark): typically 5–30× faster than cdo where reading
+  dominates (up to 170× on W4 `ydaymean`); on tiny inputs cdo is faster, because cdors has ≈ 0.2–0.3 s of start-up
+  and planning overhead.
 - Nothing was submitted to Slurm, the agent check was not run, nothing was deleted, nothing was pushed.
 
 ## What exists
@@ -45,6 +47,8 @@ Deliberate and observed differences from cdo: `docs/deviations.md` (including fo
 | W3 `timmean -remapbil,r360x180 -selmon,1` | 0.8 s | 5.6 s | identical |
 | W4 `ydaymean -sellonlatbox… -selmon,1/2` | 0.8 s | 139 s | identical |
 | Agent task T4: p95 of 2020 at Hamburg, one command | 0.38–1.5 s | — | 292.11996 K (reference 292.119965 K) |
+| HEALPix `timpctl,95` on a box, 1 year (realdata check) | 0.37 s | 9.9 s | identical to exact xarray |
+| ICON R2B8 native `fldmean` (realdata check) | 1.9 s | 3.7 s | identical; planning 4.3 → 0.7 s after fixes |
 | Raw read ceiling (probe) | 9.6 GB/s cold, 64 reads in flight | cdo ≈ 0.95 GB/s | `docs/baseline.md` |
 | EERIE cloud over HTTPS | ≈ 0.19 GB/s | cdo cannot read it | server-side cap, independent of concurrency |
 
