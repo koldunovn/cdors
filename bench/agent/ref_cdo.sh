@@ -39,11 +39,14 @@ T3)
   # model January 1991 = reference January 1950: directory run_19910101T000000-* (31 daily means)
   files=$(ls $OCE/run_19910101T000000-*/*.nc | sort)
   c -P 8 -f nc4 -O -timmean -select,name=to [ $files ] t3_to_timmean_src.nc
-  c -P 8 -O -remapbil,r360x180 t3_to_timmean_src.nc t3_to_timmean_r360x180.nc
-  echo "remapbil then fldmean:"; c -outputf,%.6f -fldmean t3_to_timmean_r360x180.nc
+  # the prompt's grid: centres 0.5 .. 359.5 E (cdo's r360x180 starts at 0 E: 17.973827, the value before
+  # the 2026-10-09 correction)
+  printf 'gridtype  = lonlat\nxsize     = 360\nysize     = 180\nxfirst    = 0.5\nxinc      = 1\nyfirst    = -89.5\nyinc      = 1\n' > t3_grid_1x1.txt
+  c -P 8 -O -remapbil,t3_grid_1x1.txt t3_to_timmean_src.nc t3_to_timmean_1x1.nc
+  echo "remapbil then fldmean:"; c -outputf,%.6f -fldmean t3_to_timmean_1x1.nc
   echo "fldmean on the source grid (for comparison):"; c -outputf,%.6f -fldmean t3_to_timmean_src.nc
   # order check: remap each day first, then the time mean (same weights, same mask -> same result)
-  c -P 8 -outputf,%.6f -fldmean -timmean -remapbil,r360x180 -select,name=to [ $files ]
+  c -P 8 -outputf,%.6f -fldmean -timmean -remapbil,t3_grid_1x1.txt -select,name=to [ $files ]
   ;;
 T5)
   # same dataset as T2, raw files, reference January 1950 = model January 1991

@@ -613,9 +613,11 @@ cached. Rows needing `cdo` are skipped with a notice where it isn't available.
       W2 raw 10.8×, W3 8.6× / 10.0×, W4 `ydaymean` 72× (78.8 s against 5673 s), `timpctl` 332 s; peak 23.7 GiB
       under `--mem 32G`; all 8 comparisons pass, full-W4 percentiles match numpy to 0.0008 K on 1536 cells.
       Written up in `docs/bench-results.md`.
-- [ ] ➕ output chunks of folds that run in lane waves (found in job 28007818): the output was chunked by lane
+- [x] ➕ output chunks of folds that run in lane waves (found in job 28007818): the output was chunked by lane
       (8192 cells for W4 `ydaymean`, 128 for `timpctl`), one day spread over 384 chunks across the file, 19×
-      slower to read cold than cdo's output; write chunks that span many lanes
+      slower to read cold than cdo's output; write chunks that span many lanes — done: chunks span the lanes of
+      a wave up to the usual chunks (`plan::schedule::out_chunks_for`), and a wave's share of the written output
+      counts with the lane states (`--plan`: output buffers); bit-identical values, harness 233/233
 
 ### Task 14: Agent check
 
@@ -635,9 +637,11 @@ cached. Rows needing `cdo` are skipped with a notice where it isn't available.
       "peeked" flag is a false positive: the binary copy sat under `cdors-agentcheck/`, which the scorer reserves
       for sessions, so the full run keeps the binary elsewhere. The session saved one oversized tool output (35 kB)
       under `~/.claude/projects/` despite `--no-session-persistence`.
-- [ ] ➕ the remaining nine sessions: re-estimated ≈ 0.4–0.9M fresh tokens + 2.5–9M cache reads (≈ $4–13 at list
-      price), 1–3 h on the login node, one after another; waits for Nikolay's go-ahead
-- [ ] write `docs/agent-check.md`
+- [x] ➕ the remaining nine sessions: re-estimated ≈ 0.4–0.9M fresh tokens + 2.5–9M cache reads (≈ $4–13 at list
+      price), 1–3 h on the login node, one after another; go-ahead 2026-10-09 — run 19:00–19:38, all correct,
+      0.32M fresh + 2.7M cache reads ($3.88); T3's reference corrected (cdo's `r360x180` starts at 0°, the prompt
+      asks for 0.5°); two scorer patterns fixed and all sessions re-scored (`bench/agent/rescored/`)
+- [x] write `docs/agent-check.md`
 - ⚠️ 2026-10-09: tasks, independent reference answers (xarray, cross-checked with cdo) and the runner are merged
       (`bench/agent_tasks.md`, `bench/agent_check.sh`: dry run by default, `RUN=1 TASKS=T5 ARMS=A` is the pilot).
       Estimated 0.6–1.2M fresh tokens + 3–8M cache reads for 10 sessions. EERIE prompts use the kerchunk/cloud

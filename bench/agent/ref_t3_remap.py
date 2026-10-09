@@ -4,7 +4,7 @@
 EERIE ICON-ESM-ER control-1950 ocean, variable `to` at depth 1 m (degC), regular 0.25 deg grid,
 January 1950 of the reference time axis (31 daily means = raw directory run_19910101*).
 Bilinear remapping to the regular 1 deg grid with cell centres 0.5..359.5 E, 89.5S..89.5N
-(cdo r360x180), time mean, global area-weighted mean over the valid (ocean) target cells
+(not cdo's r360x180, whose first longitude is 0), time mean, global area-weighted mean over the valid (ocean) target cells
 (weights cos(lat), proportional to the exact cell area on a regular grid).
 
 The 1 deg centres coincide with 0.25 deg source nodes, so bilinear interpolation returns the

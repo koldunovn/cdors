@@ -48,7 +48,7 @@ Each ran in under 2 minutes (cdo T1 116 s, everything else < 30 s).
 |---|---|---|---|---|---|---|
 | T1 | July of the 2020–2024 monthly climatology, global mean | ngc4008 daily `tas`, HEALPix z9 Zarr (W1) | 288.695417 K | rel 1e-4 (0.029 K) | 2.1 GB on disk (3.8 GB decoded): 2 time blocks per July × 5 | 25.6 GB (decade view, cdo `selmon` reads every step) |
 | T2 | annual means 1950–1954, North-Atlantic box | ICON-ESM-ER `pr` daily 0.25°, Parquet refs / raw NetCDF (W2) | 2.911299 2.882307 2.918659 2.897558 2.995661 mm/day | rel 2e-4 each | 6.6 GB on disk (1826 whole-field chunks) | same |
-| T3 | bilinear to 1°, time mean, global mean | ICON-ESM-ER ocean `to` at 1 m, Jan 1950 (W3) | 17.973827 °C | rel 1.5e-3 (0.027 °C) | 64 MB (31 chunks) | ~1.5 GB if a tool reads all 33 variables of the raw month |
+| T3 | bilinear to 1°, time mean, global mean | ICON-ESM-ER ocean `to` at 1 m, Jan 1950 (W3) | 17.979334 °C | rel 1.5e-3 (0.027 °C) | 64 MB (31 chunks) | ~1.5 GB if a tool reads all 33 variables of the raw month |
 | T4 | 95th percentile at Hamburg, 2020 | ngc4008 3-hourly `tas`, HEALPix z9, chunked in space (W4) | 292.119965 K | abs 0.006 K | 0.11 GB on disk (12 chunks of one cell block) | 21 GB on disk (a whole year of all cells) |
 | T5 | January 1950 European box mean from the cloud | EERIE cloud `/kerchunk`, `pr` (W2 remote) | 2.341090 mm/day | rel 3e-4 | 0.11 GB over HTTPS (31 chunks) | same |
 
@@ -62,13 +62,17 @@ Per-task notes (what was computed, cross-checks, variants):
   2.897558 2.995661**. cdo on the 1991–1995 raw files, daily box means then yearly means by step index:
   2.911299 2.882307 2.918659 2.897557 2.995660 (≤ 4e-7). Variants: years cut by raw model year
   (1951: 2.883519, 1952: 2.917542; 4e-4 off), edges excluded (2.923745 …; 4e-3), unweighted (2.969027 …; 2 %).
-- **T3.** cdo: `-timmean -select,name=to` on the raw January directory, `-remapbil,r360x180`, `-fldmean` →
-  **17.973827 °C** (42763 valid 1° cells); remapping each day before the time mean gives the same value. The 1°
-  centres coincide with 0.25° source nodes, so bilinear interpolation returns node values and methods differ
-  only in which coastal 1° cells become missing: xarray `.interp(method="linear")` 17.979147 (3.0e-4 from cdo,
-  42754 cells), the same rule with the cell above/right of each node 17.958381 (8.6e-4). Not remapping at all
-  (0.25° area-weighted mean) gives 17.924268 (2.8e-3) and node values without any corner rule 17.920180
-  (3.0e-3); both fail. The unweighted mean of the remapped field (13.830, from `cdo infon`) fails too. The
+- **T3.** cdo: `-fldmean -timmean -remapbil,<grid file> -select,name=to` on the raw January directory, with a
+  grid file of the prompt's grid (centres 0.5 … 359.5 E, 89.5 S … 89.5 N) → **17.979334 °C**. **Corrected
+  2026-10-09:** the value was 17.973827 until the agent check, computed with cdo's `r360x180`, whose first
+  longitude is 0°, not 0.5°: a different grid from the one the prompt asks for. Both arms of the check answered
+  17.979334 (cdors) and 17.9793339 (cdo) on the prompt's grid; cdo on a grid file reproduces it. No verdict
+  changed (17.973827 is 3.1e-4 off, within the tolerance; listed as a variant). The 1° centres coincide with
+  0.25° source nodes, so bilinear interpolation returns node values and methods differ only in which coastal 1°
+  cells become missing: xarray `.interp(method="linear")` 17.979147 (1.0e-5 from the reference, 42754 cells),
+  the same rule with the cell above/right of each node 17.958381 (1.2e-3). Not remapping at all (0.25°
+  area-weighted mean) gives 17.924268 (3.1e-3) and node values without any corner rule 17.920180 (3.3e-3); both
+  fail. The unweighted mean of the remapped field (13.830, from `cdo infon`) fails too. The
   reference is cdo's value because cdo `remapbil` is the conventional definition of "bilinear" for this
   community; the tolerance admits the other bilinear conventions. **Weakness:** a global mean barely depends
   on the remapping, so the margin between "remapped" and "not remapped" is only about 2×.
@@ -194,8 +198,9 @@ giving only the requested numbers, in the requested order, without units, with a
                       "edges_excluded": [2.923745, 2.896933, 2.931251, 2.912174, 3.008708],
                       "unweighted": [2.969027, 2.932542, 2.987084, 2.962285, 3.030157],
                       "kg_m2_s": [3.369559e-05, 3.336003e-05, 3.378078e-05, 3.353655e-05, 3.467200e-05]}},
-  "T3": {"values": [17.973827], "units": "degC", "tol_rel": 1.5e-3,
+  "T3": {"values": [17.979334], "units": "degC", "tol_rel": 1.5e-3,
          "variants": {"xarray_interp": [17.979147], "bilinear_upper_right": [17.958381],
+                      "cdo_r360x180_first_lon_0": [17.973827],
                       "not_remapped": [17.924268], "node_values_no_corner_rule": [17.920180],
                       "unweighted": [13.830]}},
   "T4": {"values": [292.119965], "units": "K", "tol_abs": 0.006,

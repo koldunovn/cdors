@@ -19,7 +19,9 @@ The plan with all checkboxes and per-task notes: `docs/plans/20261008-cdors-prot
 - Slurm: the baseline (job 27994857), W1–W3 plus one year of W4 (job 28000341), and W2, W3 plus the full W4
   (job 28007818) ran with your go-ahead, 3.1 node-hours together. Every speed mark is met (W2 10.8×, W3 8.6×, W4
   `ydaymean` 72× on 1.1 TB within 23.7 GiB). Nothing was deleted, nothing was pushed.
-- Agent check: the one-session pilot was correct (2026-10-09); the other nine sessions run with your go-ahead.
+- Agent check (2026-10-09): all ten headless sessions correct, five tasks with cdors and five with cdo/Python. With
+  cdors the agents needed 704 s of wall time against 1684 s, but 2.4× the tokens ($2.73 against $1.57), mostly
+  for reading the docs (`docs/agent-check.md`). It also found a wrong reference (T3), now corrected.
 
 ## What exists
 
@@ -77,10 +79,10 @@ Deliberate and observed differences from cdo: `docs/deviations.md` (including fo
      `timpctl` within 23.7 GiB; all 8 comparisons pass, and cdors' full-W4 percentiles match numpy on 1536 cells
      to 0.0008 K. The W4 view is cut to 87544 steps (whole chunks), because cdo cannot read the store's last 120
      steps. Details: `docs/bench-results.md`, last section.
-3. **Agent check**: the pilot (T5 with cdors) was correct, 10 turns, 141 s, 40k fresh tokens + 262k cache reads
-   ($0.41 at list price), `bench/agent/results-20261009-181750.md`. With your go-ahead the other nine sessions
-   run one after another since 2026-10-09 19:00 (re-estimated 0.4–0.9M fresh tokens + 2.5–9M cache reads,
-   1–3 h), with a frozen binary of 0415117 in `/scratch/a/a270088/cdors-bin/0415117/`.
+3. ~~Agent check~~ — **done** 2026-10-09 with your go-ahead: the pilot plus nine sessions, all correct, 0.36M
+   fresh tokens + 3.0M cache reads ($4.29 at list price) in total. Details and what follows: `docs/agent-check.md`.
+   Remaining plan tasks: 15 (check the four prototype criteria against the docs) and 16 (README, close the
+   plan); neither needs compute.
 
 ## Open questions
 
@@ -106,6 +108,11 @@ Deliberate and observed differences from cdo: `docs/deviations.md` (including fo
 - ~~`ydaymean` on a whole HEALPix z9 year keeps about 16 of 128 cores busy~~: a fixed cost of ≈ 18 s (the 4.6 GB
   output and 16 GB of daily sums); the full W4 runs at 14 GB/s decoded.
 - Full-W4 `timpctl` keeps about 35 of 128 cores busy (139 waves, two reads each); not profiled.
+- ~~Output chunks of a statistic run in lane waves were one lane each~~ (W4 `ydaymean`: one day in 384 chunks of
+  32 KB across the file, 19× slower to read cold than cdo's output): fixed, chunks span the lanes of a wave and the
+  held output is in the memory plan.
+- Agents spend most of their extra tokens learning cdors (README + `docs/deviations.md`, 34 kB, read in every
+  session): a compact agent-facing reference or an MCP layer would cut that.
 - NetCDF output is uncompressed (no `-z zip` yet); `-f nc4c` writes the same as `nc4`.
 - No rechunk-to-scratch stage: percentiles or daily climatologies on data stored one field per chunk need several
   passes over the input.
@@ -124,8 +131,9 @@ Deliberate and observed differences from cdo: `docs/deviations.md` (including fo
 | `~/cdo/.claude/worktrees/` (≈ 30 worktrees) | ≈ 30 MB | agent worktrees; all their branches are merged |
 | `~/cdo/nc4index/` | 1.2 MB, 15 files | NetCDF-4 index files written into the working directory by a test with an empty `CDORS_CACHE` (2026-10-09; that bug is fixed); untracked, counts against the home quota |
 | `/scratch/a/a270088/cdors-bench/bench-28000341/*.nc`, `bench-28007818/*.nc` | ≈ 11 GB each | benchmark outputs; the `.tsv`, `.md`, `.time` and `.log` files next to them are the record and stay |
-| `~/.claude/projects/-scratch-a-a270088-cdors-agentcheck-*` | ≈ 35 kB per agent-check session | oversized tool outputs that headless sessions save despite `--no-session-persistence`; counts against the home quota |
-| `/scratch/a/a270088/cdors-agentcheck/bin-0415117/`, `/scratch/a/a270088/cdors-bin/0415117/` | 146 MB each | frozen cdors binaries for the agent check; keep until it is written up |
+| `~/.claude/projects/-scratch-a-a270088-cdors-agentcheck-*` | 10 directories, 72 kB | made by the agent-check sessions despite `--no-session-persistence` (two hold a saved tool output, eight are empty); counts against the home quota |
+| `/scratch/a/a270088/cdors-agentcheck/bin-0415117/`, `/scratch/a/a270088/cdors-bin/0415117/` | 146 MB each | frozen cdors binaries of the agent check (written up in `docs/agent-check.md`) |
+| `~/cdo/bench/agent/results-*-rescored.{tsv,md}` (6 files) | 20 kB | a botched re-scoring (shifted columns, 2026-10-09); the correct one is `bench/agent/rescored/`; untracked |
 
 Commands, if you want them (check the list first):
 
@@ -135,7 +143,9 @@ rm -rf /work/ab0995/a270088/cdors-target-{area,catalog,docs,fsync,hard,pctl,perf
 rm -rf /work/ab0995/a270088/cdors-target/runs /scratch/a/a270088/cdors-bench/prelim /work/ab0995/a270088/rust/rustup-init
 rm -r ~/cdo/nc4index                                        # stray index files in the repository
 rm /scratch/a/a270088/cdors-bench/bench-28000341/*.nc /scratch/a/a270088/cdors-bench/bench-28007818/*.nc
-rm -r ~/.claude/projects/-scratch-a-a270088-cdors-agentcheck-*   # after the agent check
+rm -r ~/.claude/projects/-scratch-a-a270088-cdors-agentcheck-*
+rm ~/cdo/bench/agent/results-*-rescored.tsv ~/cdo/bench/agent/results-*-rescored.md
+rm -r /scratch/a/a270088/cdors-agentcheck/bin-0415117 /scratch/a/a270088/cdors-bin/0415117
 cd ~/cdo && git worktree list && git worktree prune          # after removing the worktree directories
 ```
 

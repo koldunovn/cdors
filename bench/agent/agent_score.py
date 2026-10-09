@@ -138,7 +138,8 @@ def score(md, task, arm, transcript, tsv, run_id, wall_s, exit_code):
             return True
         if re.search(r"(^|[\s'\"=;(])\.\.($|[\s/'\";)])", s):  # parent directory of the session
             return True
-        for m in re.finditer(r"cdors-agentcheck/([^\s'\"]*)", s):
+        # the path ends at whitespace, a quote or a shell separator (`cd <session dir>; ...`)
+        for m in re.finditer(r"cdors-agentcheck/([^\s'\";&|)\\]*)", s):
             if not re.match(rf"{re.escape(run_id)}/{task}-{arm}(/|$)", m.group(1)):
                 return True
         return False
@@ -156,7 +157,8 @@ def score(md, task, arm, transcript, tsv, run_id, wall_s, exit_code):
     if have_stream:
         row["tool_calls"] = len(seen)
         row["bash_calls"] = len(bash_cmds)
-        row["cdors_calls"] = sum(bool(re.search(r"\bcdors\b", c)) for c in bash_cmds)
+        # the cdors binary, not paths such as cdors-agentcheck/ or cdors-bin/
+        row["cdors_calls"] = sum(bool(re.search(r"(?<![\w.-])cdors(?![\w.-])", c)) for c in bash_cmds)
         row["cdo_calls"] = sum(bool(re.search(r"(?<![\w/.-])cdo\b(?!rs)|/cdo\b(?!rs)", c)) for c in bash_cmds)
         row["python_calls"] = sum(bool(re.search(r"\bpython\d?(\.\d+)?\b", c)) for c in bash_cmds)
     else:

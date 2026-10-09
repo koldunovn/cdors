@@ -1,0 +1,2 @@
+run_id	task	arm	verdict	variant	n_expected	answer	reference	max_rel_err	exit_code	wall_s	duration_ms	num_turns	tool_calls	bash_calls	cdors_calls	cdo_calls	python_calls	input_tokens	output_tokens	cache_creation_tokens	cache_read_tokens	cost_usd	stop	model	peeked	note
+20261009-190040-t5b	T5	B	correct		1	2.34109	2.34109	0	0	265.8	264658	8	7	7	1	3	4	16	4564	14231	113056	0.2278032	success	claude-opus-5-5		
