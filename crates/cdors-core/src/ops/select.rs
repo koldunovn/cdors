@@ -12,20 +12,67 @@ use crate::model::{CalDateTime, DimRole, GridKind, VarDim};
 use crate::plan::{Desc, GridDesc, IndexMap, healpix_centers};
 
 fn warn(msg: &str) {
-    eprintln!("cdors: warning: {msg}");
+    crate::exec::threads::warn("selection", msg);
 }
 
 fn bad(op: &str, msg: String) -> Error {
     Error::bad_arguments(msg).with("operator", op.to_owned())
 }
 
+/// One argument `a`, `a/b` or `a/b/inc`, kept as a range (never expanded: `1/400000000` costs
+/// nothing). Values are i128 so that counting from the end and stepping cannot overflow.
+#[derive(Debug, Clone, Copy)]
+struct IntRange {
+    first: i128,
+    last: i128,
+    inc: i128,
+}
+
+/// Ranges with more members than this are not listed member by member in warnings.
+const LIST_MAX: i128 = 1000;
+
+impl IntRange {
+    fn contains(&self, x: i128) -> bool {
+        if self.inc > 0 {
+            x >= self.first && x <= self.last && (x - self.first) % self.inc == 0
+        } else {
+            x <= self.first && x >= self.last && (self.first - x) % (-self.inc) == 0
+        }
+    }
+
+    /// Number of members (0 for an empty range such as `5/1`).
+    fn count(&self) -> i128 {
+        let span = if self.inc > 0 {
+            self.last - self.first
+        } else {
+            self.first - self.last
+        };
+        if span < 0 {
+            0
+        } else {
+            span / self.inc.abs() + 1
+        }
+    }
+
+    /// The members, for ranges of at most [`LIST_MAX`] members.
+    fn members(&self) -> Option<Vec<i128>> {
+        (self.count() <= LIST_MAX).then(|| {
+            (0..self.count())
+                .map(|k| self.first + k * self.inc)
+                .collect()
+        })
+    }
+}
+
 /// cdo's `split_intstring`: `a`, `a/b` or `a/b/inc` (also `a/to/b`). Values below zero are
 /// counted from the end when `n` is given (`-1` is the last).
-fn int_list(op: &str, args: &[String], n: Option<usize>) -> Result<Vec<i64>> {
+fn int_list(op: &str, args: &[String], n: Option<usize>) -> Result<Vec<IntRange>> {
     let mut out = Vec::new();
-    let fix = |v: i64| match n {
-        Some(n) if v < 0 => n as i64 + 1 + v,
-        _ => v,
+    let fix = |v: i64| -> i128 {
+        match n {
+            Some(n) if v < 0 => n as i128 + 1 + v as i128,
+            _ => v as i128,
+        }
     };
     for a in args {
         let parts: Vec<&str> = a.split('/').filter(|p| *p != "to").collect();
@@ -45,15 +92,14 @@ fn int_list(op: &str, args: &[String], n: Option<usize>) -> Result<Vec<i64>> {
                 ));
             }
         };
-        let (first, last) = (fix(first), fix(last));
         if inc == 0 {
             return Err(bad(op, format!("range '{a}' has increment 0")));
         }
-        let mut v = first;
-        while (inc > 0 && v <= last) || (inc < 0 && v >= last) {
-            out.push(v);
-            v += inc;
-        }
+        out.push(IntRange {
+            first: fix(first),
+            last: fix(last),
+            inc: inc as i128,
+        });
     }
     Ok(out)
 }
@@ -184,20 +230,27 @@ fn describe_time(node: &OpNode, d: Desc) -> Result<Desc> {
         .unwrap_or_default();
     let idx: Vec<usize> = match op {
         "seltimestep" => {
-            let mut v = int_list(op, &node.args, Some(n))?;
-            v.sort_unstable();
-            v.dedup();
-            let missing: Vec<String> = v
-                .iter()
-                .filter(|&&x| x < 1 || x as usize > n)
-                .map(i64::to_string)
-                .collect();
+            let ranges = int_list(op, &node.args, Some(n))?;
+            let inside = |x: i128| x >= 1 && x <= n as i128;
+            let mut listed: Vec<i128> = Vec::new();
+            let mut beyond: Vec<String> = Vec::new();
+            for (r, a) in ranges.iter().zip(&node.args) {
+                match r.members() {
+                    Some(m) => listed.extend(m.into_iter().filter(|&x| !inside(x))),
+                    None if !inside(r.first) || !inside(r.last) => {
+                        beyond.push(format!("of {a} beyond 1..{n}"));
+                    }
+                    None => {}
+                }
+            }
+            listed.sort_unstable();
+            listed.dedup();
+            let missing: Vec<String> = listed.iter().map(i128::to_string).chain(beyond).collect();
             if !missing.is_empty() {
                 warn(&format!("timesteps {} not found", missing.join(",")));
             }
-            v.into_iter()
-                .filter(|&x| x >= 1 && x as usize <= n)
-                .map(|x| x as usize - 1)
+            (0..n)
+                .filter(|&i| ranges.iter().any(|r| r.contains(i as i128 + 1)))
                 .collect()
         }
         "seldate" => {
@@ -225,23 +278,33 @@ fn describe_time(node: &OpNode, d: Desc) -> Result<Desc> {
                 .collect()
         }
         "selyear" | "selmon" => {
-            let v = int_list(op, &node.args, None)?;
-            let key = |dt: &CalDateTime| -> i64 {
+            let ranges = int_list(op, &node.args, None)?;
+            let key = |dt: &CalDateTime| -> i128 {
                 if op == "selyear" {
-                    dt.year as i64
+                    dt.year as i128
                 } else {
-                    dt.month as i64
+                    dt.month as i128
                 }
             };
-            for x in &v {
-                if !steps.iter().any(|s| key(s) == *x) {
-                    warn(&format!(
-                        "{} {x} not found",
-                        if op == "selyear" { "year" } else { "month" }
-                    ));
+            let what = if op == "selyear" { "year" } else { "month" };
+            for (r, a) in ranges.iter().zip(&node.args) {
+                match r.members() {
+                    Some(m) => {
+                        for x in m {
+                            if !steps.iter().any(|s| key(s) == x) {
+                                warn(&format!("{what} {x} not found"));
+                            }
+                        }
+                    }
+                    None if !steps.iter().any(|s| r.contains(key(s))) => {
+                        warn(&format!("{what} {a} not found"));
+                    }
+                    None => {}
                 }
             }
-            (0..n).filter(|&i| v.contains(&key(&steps[i]))).collect()
+            (0..n)
+                .filter(|&i| ranges.iter().any(|r| r.contains(key(&steps[i]))))
+                .collect()
         }
         "selseason" => {
             let m = season_months(op, &node.args)?;
@@ -537,8 +600,11 @@ fn describe_box(node: &OpNode, mut d: Desc) -> Result<Desc> {
         .args
         .iter()
         .map(|s| {
-            s.parse::<f64>()
-                .map_err(|_| bad("sellonlatbox", format!("'{s}' is not a number")))
+            s.trim()
+                .parse::<f64>()
+                .ok()
+                .filter(|x| x.is_finite())
+                .ok_or_else(|| bad("sellonlatbox", format!("'{s}' is not a finite number")))
         })
         .collect::<Result<_>>()?;
     let (lon1, lon2, lat1, lat2) = (a[0], a[1], a[2], a[3]);

@@ -36,8 +36,19 @@ cdors --plan -yearmean in.zarr   # what would be read, without reading it
 Inputs: Zarr stores, NetCDF files (NetCDF-4 chunks are read directly through a cached chunk
 index), kerchunk references (JSON or Parquet), `http(s)://` URLs of Zarr stores, and glob patterns
 (`'data/*.nc'`, quoted), which are concatenated along time. The output format follows the suffix
-(`.nc`: NetCDF-4, `.zarr`: Zarr v3) unless `-f` says otherwise. An existing output is refused
-unless `-O` is given.
+(`.nc`: NetCDF-4, `.zarr`: Zarr v3) unless `-f` says otherwise.
+
+**Outputs never replace anything by accident.** An existing output (also a dangling symlink) is
+refused unless `-O` is given, and the refusal is atomic: a file is published with `link()`, which
+fails if the name appeared while cdors ran, and a Zarr store reserves its name with an exclusive
+`mkdir` before writing (the name holds an empty directory during the run) and is renamed over
+that still-empty directory at the end. `-O` replaces an existing file atomically (`rename`), never
+a directory. An output that is an input, lies inside an input (a Zarr store), or matches an input
+glob pattern is refused (`bad_arguments`), also with `-O`; symlinks are resolved. While running,
+cdors writes to `.<out>.cdors-tmp-<host>-<pid>-<random>` next to the output and, on failure,
+removes only that file or directory and only if it created it. Temporary files of killed runs
+(`kill -9`, node failure) keep that name and are never removed automatically by other runs; remove
+them by hand.
 
 `cdors --help` lists all options.
 
@@ -78,15 +89,17 @@ information as short text.
 
 `error` is a stable code; `hint` says how to fix the command; other fields depend on the error.
 A run that fails after it started also reports how far it got (`stage`, `chunks_done`,
-`chunks_total`) and that its own temporary output was removed (`temporary_output_removed`); the
-output name never holds a partial file.
+`chunks_total`) and whether its own temporary output was removed (`temporary_output_removed`);
+the output name never holds a partial file. A panic (a bug) reports `internal` the same way and
+also removes the temporary output. Warnings are one line of JSON each under `--json`
+(`{"warning": kind, "message": ...}`).
 
 | exit code | meaning | codes |
 |---|---|---|
 | 0 | success | |
-| 1 | usage error | `unknown_operator`, `not_implemented`, `bad_arguments`, `missing_input` |
-| 2 | data error | `no_coordinates`, `unsupported_grid`, `unsupported_dimension`, `intermediate_too_large`, `bad_data`, `internal` |
-| 3 | I/O error, worth retrying | `io_error` |
+| 1 | usage error | `unknown_operator`, `not_implemented`, `bad_arguments`, `missing_input`, `permission_denied` (also read-only file system), `no_space` (also quota exceeded) |
+| 2 | data error | `no_coordinates`, `unsupported_grid`, `unsupported_dimension`, `intermediate_too_large`, `bad_data`, `io_failed` (an I/O failure not known to be transient), `internal` |
+| 3 | I/O error, worth retrying | `io_error` (timeouts, connection reset or refused, EAGAIN/EINTR, HTTP 5xx and 429); only these have `"retryable": true` |
 | 4 | refused | `read_limit`, `output_exists` |
 
 **Limits on login nodes.** `--max-read <size>` refuses a run whose decoded bytes to read exceed
@@ -134,7 +147,9 @@ Nothing in them is ever evicted; each file can be removed by hand when it is no 
 - `weights/`: SCRIP weight files from `cdo gen<method>`, named by a hash of the method, the
   target grid and the source grid's coordinates (so NetCDF and Zarr copies of one dataset share
   weights); also target-grid templates (`grid-<hash>.nc`) and source-grid files (`src-<hash>.nc`).
-- `nc4index/`: chunk indexes of NetCDF-4 files, keyed by path, size and modification time.
+- `nc4index/`: chunk indexes of NetCDF-4 files, keyed by path, size, modification time, inode
+  and status-change time. Files changed less than 2 s ago are not cached (Lustre keeps
+  modification times to the second).
 
 ## Known limits of the prototype
 

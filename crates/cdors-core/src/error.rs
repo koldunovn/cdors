@@ -36,8 +36,16 @@ pub enum ErrorCode {
     IntermediateTooLarge,
     /// The running state of one lane (one block of cells) does not fit in the memory budget.
     MemoryLimit,
-    /// An I/O failure that is worth retrying (network, transient storage errors).
+    /// An I/O failure that is worth retrying (timeouts, connection resets and refusals,
+    /// EAGAIN/EINTR, HTTP 5xx and 429).
     IoError,
+    /// An I/O failure not known to be transient (e.g. EIO); repeating the command will
+    /// probably fail the same way.
+    IoFailed,
+    /// Permission denied, or a read-only file system.
+    PermissionDenied,
+    /// No space left on the device, or the disk quota is exceeded.
+    NoSpace,
     /// A malformed or unsupported file (corrupt metadata, unsupported data type or codec).
     BadData,
     /// A bug in cdors.
@@ -60,6 +68,9 @@ impl ErrorCode {
             Self::IntermediateTooLarge => "intermediate_too_large",
             Self::MemoryLimit => "memory_limit",
             Self::IoError => "io_error",
+            Self::IoFailed => "io_failed",
+            Self::PermissionDenied => "permission_denied",
+            Self::NoSpace => "no_space",
             Self::BadData => "bad_data",
             Self::Internal => "internal",
         }
@@ -71,13 +82,16 @@ impl ErrorCode {
             Self::UnknownOperator
             | Self::NotImplemented
             | Self::BadArguments
-            | Self::MissingInput => 1,
+            | Self::MissingInput
+            | Self::PermissionDenied
+            | Self::NoSpace => 1,
             Self::NoCoordinates
             | Self::UnsupportedGrid
             | Self::UnsupportedDimension
             | Self::IntermediateTooLarge
             | Self::MemoryLimit
             | Self::BadData
+            | Self::IoFailed
             | Self::Internal => 2,
             Self::IoError => 3,
             Self::ReadLimit | Self::OutputExists => 4,
@@ -134,8 +148,16 @@ impl Error {
         Self::new(ErrorCode::BadArguments, message)
     }
 
+    /// An I/O failure known only by its message (errors of libraries that render the OS error
+    /// as text): classified by [`classify_message`].
     pub fn io(message: impl Into<String>) -> Self {
-        Self::new(ErrorCode::IoError, message)
+        let message = message.into();
+        Self::new(classify_message(&message), message)
+    }
+
+    /// An I/O failure from an OS error, classified by its kind and errno ([`classify_io`]).
+    pub fn from_io(e: &std::io::Error, message: impl Into<String>) -> Self {
+        Self::new(classify_io(e), message)
     }
 
     pub fn bad_data(message: impl Into<String>) -> Self {
@@ -185,17 +207,124 @@ impl std::fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
+/// Code of an OS error: only transient failures are the retryable `io_error`.
+pub fn classify_io(e: &std::io::Error) -> ErrorCode {
+    use std::io::ErrorKind as K;
+    match e.raw_os_error() {
+        Some(libc::EDQUOT | libc::ENOSPC) => return ErrorCode::NoSpace,
+        Some(libc::EROFS | libc::EACCES | libc::EPERM) => return ErrorCode::PermissionDenied,
+        Some(libc::ENOTDIR | libc::EISDIR | libc::ENAMETOOLONG | libc::ELOOP) => {
+            return ErrorCode::BadArguments;
+        }
+        Some(libc::EEXIST) => return ErrorCode::OutputExists,
+        Some(libc::ENOENT) => return ErrorCode::MissingInput,
+        Some(
+            libc::EAGAIN
+            | libc::EINTR
+            | libc::ETIMEDOUT
+            | libc::ECONNRESET
+            | libc::ECONNREFUSED
+            | libc::ECONNABORTED
+            | libc::EHOSTUNREACH
+            | libc::ENETUNREACH
+            | libc::ENETDOWN,
+        ) => return ErrorCode::IoError,
+        Some(_) => return ErrorCode::IoFailed,
+        None => {}
+    }
+    match e.kind() {
+        K::NotFound => ErrorCode::MissingInput,
+        K::PermissionDenied | K::ReadOnlyFilesystem => ErrorCode::PermissionDenied,
+        K::StorageFull | K::QuotaExceeded => ErrorCode::NoSpace,
+        K::NotADirectory | K::IsADirectory | K::InvalidInput => ErrorCode::BadArguments,
+        K::AlreadyExists => ErrorCode::OutputExists,
+        K::InvalidData | K::UnexpectedEof => ErrorCode::BadData,
+        K::TimedOut
+        | K::ConnectionReset
+        | K::ConnectionRefused
+        | K::ConnectionAborted
+        | K::WouldBlock
+        | K::Interrupted
+        | K::HostUnreachable
+        | K::NetworkUnreachable
+        | K::NetworkDown => ErrorCode::IoError,
+        _ => ErrorCode::IoFailed,
+    }
+}
+
+/// Code of an I/O failure known only by its message (libraries that render errors as text).
+pub fn classify_message(msg: &str) -> ErrorCode {
+    let m = msg.to_ascii_lowercase();
+    let has = |keys: &[&str]| keys.iter().any(|k| m.contains(k));
+    if has(&[
+        "quota exceeded",
+        "no space left",
+        "os error 122",
+        "os error 28",
+    ]) {
+        ErrorCode::NoSpace
+    } else if has(&[
+        "permission denied",
+        "read-only file system",
+        "operation not permitted",
+        "os error 13",
+        "os error 30",
+        "os error 1)",
+    ]) {
+        ErrorCode::PermissionDenied
+    } else if has(&[
+        "not a directory",
+        "is a directory",
+        "os error 20",
+        "os error 21",
+    ]) {
+        ErrorCode::BadArguments
+    } else if has(&["no such file", "os error 2)"]) {
+        ErrorCode::MissingInput
+    } else if has(&[
+        "timed out",
+        "timeout",
+        "connection reset",
+        "connection refused",
+        "connection aborted",
+        "connection closed",
+        "temporarily unavailable",
+        "try again",
+        "interrupted system call",
+        "error sending request",
+        "dns error",
+        "too many requests",
+        "status: 429",
+        "status: 5",
+        "server error",
+        "network is unreachable",
+        "no route to host",
+    ]) {
+        ErrorCode::IoError
+    } else {
+        ErrorCode::IoFailed
+    }
+}
+
 impl From<std::io::Error> for Error {
     fn from(e: std::io::Error) -> Self {
-        match e.kind() {
-            std::io::ErrorKind::NotFound => Error::new(ErrorCode::MissingInput, e.to_string()),
-            _ => Error::io(e.to_string()),
-        }
+        Error::from_io(&e, e.to_string())
     }
 }
 
 impl From<netcdf::Error> for Error {
     fn from(e: netcdf::Error) -> Self {
-        Error::io(format!("netCDF: {e}"))
+        let msg = format!("netCDF: {e}");
+        match &e {
+            // netCDF-C passes system errors through as positive errno values
+            netcdf::Error::Netcdf(code) if *code > 0 => {
+                Error::from_io(&std::io::Error::from_raw_os_error(*code), msg)
+            }
+            // NC_EPERM, NC_EEXIST, NC_ENOTNC, NC_EHDFERR (HDF5 rejected the file)
+            netcdf::Error::Netcdf(-37) => Error::new(ErrorCode::PermissionDenied, msg),
+            netcdf::Error::Netcdf(-35) => Error::new(ErrorCode::OutputExists, msg),
+            netcdf::Error::Netcdf(-51 | -101) => Error::new(ErrorCode::BadData, msg),
+            _ => Error::io(msg),
+        }
     }
 }

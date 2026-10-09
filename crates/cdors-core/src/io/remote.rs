@@ -241,9 +241,12 @@ fn get_ranges(
         {
             static WARNED: std::sync::Once = std::sync::Once::new();
             WARNED.call_once(|| {
-                eprintln!(
-                    "cdors: warning: {} does not describe partial responses; reading whole objects",
-                    loc.origin
+                crate::exec::threads::warn(
+                    "no_range_requests",
+                    &format!(
+                        "{} does not describe partial responses; reading whole objects",
+                        loc.origin
+                    ),
                 );
             });
             let Some(b) = get_object(loc, path.clone())? else {

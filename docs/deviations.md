@@ -11,6 +11,10 @@ except for the points below. Each entry says what cdo does, what cdors does, and
   unless `-O` is given, and never appends.
 - **`-O` never deletes an existing Zarr directory.** `-O` replaces files only; an existing store
   must be removed by the user.
+- **An output that is also an input is refused**, also with `-O` (`bad_arguments`): the same
+  file (symlinks resolved), a path inside an input Zarr store, or a name matched by an input glob
+  pattern. cdo has no such check (a NetCDF-4 input it reads happens to be protected by the HDF5
+  file lock: `cdi error (cdf__create): Permission denied`).
 - **`mergetime` and `cat` need time to increase from one input to the next.** cdo `mergetime`
   merges its inputs timestep by timestep, so overlapping inputs interleave, and keeps repeated
   timesteps unless `skip_same_time` (`src/operators/Mergetime.cc:256-287`); cdo `cat` appends in
@@ -69,11 +73,35 @@ except for the points below. Each entry says what cdo does, what cdors does, and
   output for such inputs.
 - **Real Julian calendar.** CDI treats `julian` like `proleptic_gregorian` (cdo warns and falls
   back); cdors uses the Julian calendar (a leap year every four years).
+- **Timestep, year and month ranges are not expanded.** `seltimestep,1/400000000` selects the
+  existing timesteps at once; cdo expands the range into a list first. Ranges of more than 1000
+  members are reported as one "not found" warning instead of one per member.
 - **An empty time selection is an error.** cdo warns and writes an output without timesteps;
   cdors fails, so that a mistyped date range is not silently accepted.
 
 ## Values
 
+- **`_Unsigned = "true"`.** CDI honours it for byte variables only (and a byte variable with
+  `valid_range = 0, 255`) and does not mask the `_FillValue` of such variables (a fill value of -1
+  is read as 255; `stream_cdf_i.c`). cdors reads every signed integer type with `_Unsigned =
+  "true"` as unsigned, as netCDF-Java and xarray do, and compares the missing values in the stored
+  bit pattern, so the fill value stays missing.
+- **`valid_range`, `valid_min`, `valid_max`** are applied on read as in CDI
+  (`cdf_read.c:cdfDoInputDataTransformationDP`): stored values outside the range become missing,
+  before unpacking; only for variables with a missing value (`_FillValue` or `missing_value`);
+  attributes whose type kind (integer or float) differs from the variable's are ignored;
+  `valid_range` takes precedence. One difference: with `valid_max` alone, CDI uses `DBL_MIN` (the
+  smallest positive double) as the lower bound and so also masks all values ≤ 0; cdors leaves the
+  lower end open. cdors does not copy `valid_range`, `valid_min`, `valid_max` and `_Unsigned` to
+  its outputs (they describe the stored input, and results such as `-addc` may lie outside the
+  range); cdo copies them.
+- **HEALPix grid mappings need an order.** CDI takes any `healpix_order` that does not start with
+  `nest` as ring order, also a missing one; cdors accepts `nested`/`nest`/`ring`
+  (`healpix_order`, or CF's `indexing_scheme`) and fails with `bad_data` otherwise, and also for
+  an nside (`healpix_nside`, or CF's `refinement_level`) that is not positive, too large for the
+  dimension, or not a power of two for nested order.
+- **Time values beyond about 100 million years** from the reference (typically an unmasked fill
+  value such as 9.97e36) are `bad_data`, not dates.
 - **NaN is the internal missing value.** cdo carries the variable's missing value (default
   −9e33) through its computations; cdors uses NaN inside the engine and writes the variable's
   `_FillValue` on output. Results are the same unless an input contains NaN as a valid value.

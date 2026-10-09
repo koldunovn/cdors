@@ -174,8 +174,9 @@ impl Nc4Source {
         let file = match Nc4File::open(Path::new(path)) {
             Ok(f) => Arc::new(f),
             Err(e) => {
-                eprintln!(
-                    "cdors: warning: no chunk index for '{path}' ({e}); reading through netCDF-C"
+                crate::exec::threads::warn(
+                    "no_chunk_index",
+                    &format!("no chunk index for '{path}' ({e}); reading through netCDF-C"),
                 );
                 let fallback = nc
                     .dataset()

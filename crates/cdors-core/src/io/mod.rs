@@ -266,6 +266,10 @@ pub fn open(path: &str) -> Result<Arc<dyn ChunkSource>> {
 pub(crate) trait Elem: Copy + PartialEq + Send {
     const SIZE: usize;
     fn to_f64(self) -> f64;
+    /// The value of signed integer storage read as unsigned (`_Unsigned = "true"`).
+    fn to_f64_unsigned(self) -> f64 {
+        self.to_f64()
+    }
     fn from_f64(v: f64) -> Self;
     fn from_ne(b: &[u8]) -> Self;
 }
@@ -282,28 +286,74 @@ macro_rules! impl_elem {
         }
     )*};
 }
-impl_elem!(i8, i16, i32, i64, u8, u16, u32, u64, f32, f64);
+impl_elem!(u8, u16, u32, u64, f32, f64);
 
-/// Converts stored values to [`Values`]: masks missing values (compared in the stored type),
-/// unpacks with scale/offset, and returns f32 or f64 as the encoding says.
+macro_rules! impl_elem_signed {
+    ($($t:ty => $u:ty),*) => {$(
+        impl Elem for $t {
+            const SIZE: usize = std::mem::size_of::<$t>();
+            fn to_f64(self) -> f64 { self as f64 }
+            fn to_f64_unsigned(self) -> f64 { self as $u as f64 }
+            fn from_f64(v: f64) -> Self { v as $t }
+            fn from_ne(b: &[u8]) -> Self {
+                <$t>::from_ne_bytes(b.try_into().expect("element size"))
+            }
+        }
+    )*};
+}
+impl_elem_signed!(i8 => u8, i16 => u16, i32 => u32, i64 => u64);
+
+/// Converts stored values to [`Values`]: masks missing values (compared in the stored type)
+/// and values outside the valid range, reads `_Unsigned` storage as unsigned, unpacks with
+/// scale/offset, and returns f32 or f64 as the encoding says.
 pub(crate) fn convert<T: Elem>(raw: &[T], enc: &Encoding) -> Values {
-    let miss: Vec<T> = enc.missing.iter().map(|&m| T::from_f64(m)).collect();
+    // a fill value given as unsigned (255 for bytes) is stored as its signed bit pattern
+    let miss: Vec<T> = enc
+        .missing
+        .iter()
+        .map(|&m| {
+            let span = unsigned_span::<T>();
+            if enc.unsigned && span > 0.0 && m >= span / 2.0 && m < span {
+                T::from_f64(m - span)
+            } else {
+                T::from_f64(m)
+            }
+        })
+        .collect();
     let scale = enc.scale_factor.unwrap_or(1.0);
     let offset = enc.add_offset.unwrap_or(0.0);
     let packed = enc.is_packed();
     let f = |x: T| -> f64 {
         if miss.contains(&x) {
-            f64::NAN
-        } else if packed {
-            x.to_f64() * scale + offset
+            return f64::NAN;
+        }
+        let v = if enc.unsigned {
+            x.to_f64_unsigned()
         } else {
             x.to_f64()
+        };
+        if enc.out_of_range(v) {
+            f64::NAN
+        } else if packed {
+            v * scale + offset
+        } else {
+            v
         }
     };
     if enc.unpacked_f32 {
         Values::F32(raw.iter().map(|&x| f(x) as f32).collect())
     } else {
         Values::F64(raw.iter().map(|&x| f(x)).collect())
+    }
+}
+
+/// 2^bits of an integer element (0 for floats): an unsigned fill value `m` above the signed
+/// range is stored as `m - 2^bits`.
+fn unsigned_span<T: Elem>() -> f64 {
+    if T::from_f64(0.5).to_f64() == 0.5 {
+        0.0
+    } else {
+        2f64.powi(8 * T::SIZE as i32)
     }
 }
 
@@ -357,10 +407,42 @@ pub(crate) fn encoding_from_attrs(
     } else {
         dtype == DType::F32
     };
+    let signed_int = matches!(dtype, DType::I8 | DType::I16 | DType::I32 | DType::I64);
+    let float = |v: &AttrValue| matches!(v, AttrValue::F32s(_) | AttrValue::F64s(_));
+    let float_var = matches!(dtype, DType::F32 | DType::F64);
+    // cdo (CDI `scan_valid_range_attr`): an attribute whose type is not of the variable's kind
+    // (integer/float) is ignored; `valid_range` wins over `valid_min`/`valid_max`
+    let range_attr = |k: &str, n: usize| -> Option<Vec<f64>> {
+        attrs
+            .get(k)
+            .filter(|v| float(v) == float_var)
+            .map(AttrValue::as_f64s)
+            .filter(|v| v.len() == n)
+    };
+    let (mut valid_min, mut valid_max) = match range_attr("valid_range", 2) {
+        Some(r) if r[0] <= r[1] => (Some(r[0]), Some(r[1])),
+        _ => (
+            range_attr("valid_min", 1).map(|v| v[0]),
+            range_attr("valid_max", 1).map(|v| v[0]),
+        ),
+    };
+    let unsigned = signed_int
+        && (attrs
+            .get_str("_Unsigned")
+            .is_some_and(|s| s.trim().eq_ignore_ascii_case("true"))
+            // CDI: a byte variable with valid_range 0..255 is unsigned
+            || (dtype == DType::I8 && valid_min == Some(0.0) && valid_max == Some(255.0)));
+    // cdo applies the valid range only to variables with a missing value
+    if missing.is_empty() {
+        (valid_min, valid_max) = (None, None);
+    }
     Encoding {
         missing,
         scale_factor,
         add_offset,
         unpacked_f32,
+        unsigned,
+        valid_min,
+        valid_max,
     }
 }
