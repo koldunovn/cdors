@@ -765,7 +765,7 @@ pub fn describe(node: &OpNode, inputs: Vec<Desc>, srcs: &mut Sources) -> Result<
         })
         .collect::<Result<Vec<_>>>()?;
     match node.name.as_str() {
-        n if remap::handles(n) => return remap::describe(node, inputs, srcs.plan_only),
+        n if remap::handles(n) => return remap::describe(node, inputs, srcs),
         "hpdegrade" | "hpupgrade" => return healpix::describe(node, inputs),
         n if pctl::handles(n) => return pctl::describe(node, inputs, srcs),
         n if runstat::handles(n) => return runstat::describe(node, inputs, srcs),

@@ -12,11 +12,17 @@
 //!   NetCDF file (`src-<hash>.nc` in the cache) and hands that over. The weight cache key is a hash
 //!   of the source grid's coordinates and bounds (or HEALPix parameters), not of the file path, so
 //!   the NetCDF and Zarr copies of one dataset share weights.
-//! - weights are generated (or read) lazily, on the first field that needs them, so `--plan` never
-//!   runs cdo for weights.
+//! - **planning without cdo**: `--plan`, and the first planning pass of a run (on which the output
+//!   checks, `--max-read` and `--max-values` are evaluated, see `crate::plan::CdoUse`), never run
+//!   cdo and write nothing into the cache. They read a cached template if there is one, else
+//!   cdors describes the target grid itself (`crate::remap::target`: common grid names, grid
+//!   description files, datasets), and use weights only if they are cached. Only when the run's
+//!   checks have passed is it planned again with cdo's template and weights (`CdoUse::Now`). A
+//!   target grid cdors cannot describe is an error under `--plan` and made by cdo in the first
+//!   pass of a run.
 //!
 //! **Reads only what the weights touch.** When the weights are at hand while planning (a weight
-//! file, cached weights, or — in a run, not under `--plan` — weights generated right away), the
+//! file, cached weights, or — in a run's final pass — weights generated right away), the
 //! source cells that no link reads are dropped like a selection (rows and columns of 2-D grids),
 //! so only the chunks holding linked cells are read; the weights are renumbered to the kept
 //! cells, which leaves every result bit-identical.
@@ -35,7 +41,8 @@ use crate::model::{DType, DimRole, GridKind, HealpixOrder, VarDim};
 use crate::plan::stage::{FoldKernel, FoldState, Tile};
 use crate::plan::tiling::TileBox;
 use crate::plan::{
-    CDO_MISSVAL, Desc, Expr, Fold, GridDesc, IndexMap, Leaf, OutKind, Plan, VarDesc,
+    CDO_MISSVAL, CdoUse, Desc, Expr, Fold, GridDesc, IndexMap, Leaf, OutKind, Plan, Sources,
+    VarDesc,
 };
 use crate::remap::generate::{Fnv128, TEMPLATE_HINT};
 use crate::remap::{
@@ -514,7 +521,7 @@ impl GridWeights {
         else {
             return Err(Error::internal("precomputed weights were not loaded"));
         };
-        let cache = WeightCache::from_env().map_err(|e| rerr(op, e))?;
+        let cache = need_cache(op)?;
         let identity = grid_identity(grid)?;
         let ds = grid.src.dataset();
         // A local NetCDF file with the grid as stored: cdo reads it directly.
@@ -605,46 +612,42 @@ impl FieldMap for RemapMap {
     }
 }
 
-/// Output grid from the target-grid argument: cdo's template, or a Zarr store's grid written by
-/// cdors. Returns the grid, its horizontal dimensions and the target argument for `cdo gen*`.
-fn target_grid(
-    op: &str,
-    cache: &WeightCache,
-    target: &str,
-) -> Result<(GridDesc, Vec<VarDim>, String)> {
-    let (path, gen_target) = if crate::io::is_zarr(target) {
-        let src = crate::io::open(target)?;
-        let ds = src.dataset();
-        let v = ds.data_vars().find(|v| v.grid.is_some()).ok_or_else(|| {
-            Error::new(
-                ErrorCode::NoCoordinates,
-                format!("target dataset '{target}' has no variable on a horizontal grid"),
-            )
-        })?;
-        let g = grid_of(&src, v.grid.expect("grid"));
-        let hd: Vec<VarDim> = v
-            .dims
-            .iter()
-            .filter(|d| d.role == DimRole::Horizontal)
-            .cloned()
-            .collect();
-        let key = format!("tgt-{}", hash_hex(&grid_identity(&g)?));
-        let p = write_grid_file(cache, &g, &hd, &key)?;
-        let s = p.to_string_lossy().into_owned();
-        (p, s)
-    } else {
-        (
-            cache.grid_template(target).map_err(|e| rerr(op, e))?,
-            target.to_owned(),
+/// The weight cache, required: a run that makes a template or weights with cdo keeps them there.
+fn need_cache(op: &str) -> Result<WeightCache> {
+    WeightCache::from_env().map_err(|_| {
+        Error::new(
+            ErrorCode::BadArguments,
+            format!(
+                "{op}: CDORS_CACHE is not set; cdors keeps the grids and weights cdo makes for \
+                 remapping there"
+            ),
         )
-    };
-    let src = crate::io::open(&path.to_string_lossy())?;
+        .with("operator", op.to_owned())
+        .with_hint(
+            "set CDORS_CACHE to a writable directory (source env.sh), or pass precomputed weights \
+             with remap,<grid>,<weights.nc>",
+        )
+    })
+}
+
+/// The output grid of a remapping.
+struct Target {
+    grid: GridDesc,
+    hdims: Vec<VarDim>,
+    /// Target argument for `cdo gen*` (and the weight cache key).
+    gen_target: String,
+    /// Described by cdors instead of read from cdo's template (planning only).
+    native: bool,
+}
+
+/// The first variable on a horizontal grid of `src`: its grid and horizontal dimensions.
+fn first_grid(src: &Arc<dyn ChunkSource>, what: &str) -> Result<(GridDesc, Vec<VarDim>)> {
     let ds = src.dataset();
     let v = ds.data_vars().find(|v| v.grid.is_some()).ok_or_else(|| {
-        Error::internal(format!(
-            "grid template {} has no data variable",
-            path.display()
-        ))
+        Error::new(
+            ErrorCode::NoCoordinates,
+            format!("{what} has no variable on a horizontal grid"),
+        )
     })?;
     let hd: Vec<VarDim> = v
         .dims
@@ -652,8 +655,82 @@ fn target_grid(
         .filter(|d| d.role == DimRole::Horizontal)
         .cloned()
         .collect();
-    let g = grid_of(&src, v.grid.expect("grid"));
-    Ok((g, hd, gen_target))
+    Ok((grid_of(src, v.grid.expect("grid")), hd))
+}
+
+/// Output grid from the target-grid argument.
+///
+/// A run's final pass ([`CdoUse::Now`]) reads it from cdo's template (a Zarr store as target is
+/// written as such a template by cdors first). Otherwise a cached template is read if there is
+/// one, else cdors describes the grid itself (`crate::remap::target`): no cdo, nothing written.
+/// A grid cdors cannot describe is an error under `--plan` and made by cdo in a run's first pass.
+fn target_grid(op: &str, cache: Option<&WeightCache>, target: &str, cdo: CdoUse) -> Result<Target> {
+    let open_template = |path: &Path, gen_target: String| -> Result<Target> {
+        let src = crate::io::open(&path.to_string_lossy())?;
+        let (grid, hdims) = first_grid(&src, &format!("grid template {}", path.display()))?;
+        Ok(Target {
+            grid,
+            hdims,
+            gen_target,
+            native: false,
+        })
+    };
+    if crate::io::is_zarr(target) {
+        let src = crate::io::open(target)?;
+        let (g, hd) = first_grid(&src, &format!("target dataset '{target}'"))?;
+        let key = format!("tgt-{}", hash_hex(&grid_identity(&g)?));
+        if cdo == CdoUse::Now {
+            let cache = need_cache(op)?;
+            let p = write_grid_file(&cache, &g, &hd, &key)?;
+            return open_template(&p, p.to_string_lossy().into_owned());
+        }
+        let path = cache.map(|c| c.dir().join(format!("{key}.nc")));
+        if let Some(p) = path.as_ref().filter(|p| p.is_file()) {
+            return open_template(p, p.to_string_lossy().into_owned());
+        }
+        return Ok(Target {
+            grid: g,
+            hdims: hd,
+            gen_target: path
+                .map_or_else(|| target.to_owned(), |p| p.to_string_lossy().into_owned()),
+            native: true,
+        });
+    }
+    if cdo == CdoUse::Now {
+        let cache = need_cache(op)?;
+        let path = cache.grid_template(target).map_err(|e| rerr(op, e))?;
+        return open_template(&path, target.to_owned());
+    }
+    if let Some(c) = cache
+        && let Ok((_, path)) = c.template_path(target)
+        && path.is_file()
+    {
+        return open_template(&path, target.to_owned());
+    }
+    if let Some(src) = crate::remap::target::describe(target)? {
+        let (grid, hdims) = first_grid(&src, &format!("target grid '{target}'"))?;
+        return Ok(Target {
+            grid,
+            hdims,
+            gen_target: target.to_owned(),
+            native: true,
+        });
+    }
+    if cdo == CdoUse::Never {
+        return Err(Error::new(
+            ErrorCode::UnsupportedGrid,
+            format!("{op}: --plan cannot describe the target grid '{target}' without cdo"),
+        )
+        .with("operator", op.to_owned())
+        .with_hint(
+            "--plan describes r<nx>x<ny>, global_<inc>, hpz<zoom>, hp<nside>, lon=<x>_lat=<y>, grid \
+             description files and datasets itself; other grids need cdo's template, which a \
+             first run makes (or use a grid description file)",
+        ));
+    }
+    let cache = need_cache(op)?;
+    let path = cache.grid_template(target).map_err(|e| rerr(op, e))?;
+    open_template(&path, target.to_owned())
 }
 
 /// The selection (one map per horizontal dimension of `g`) that keeps only the source cells the
@@ -696,15 +773,25 @@ fn prune(g: &GridDesc, w: &RemapWeights) -> Option<(Vec<IndexMap>, Vec<usize>)> 
 }
 
 /// Output description of a remapping operator.
-pub fn describe(node: &OpNode, mut inputs: Vec<Desc>, plan_only: bool) -> Result<Desc> {
+pub fn describe(node: &OpNode, mut inputs: Vec<Desc>, srcs: &mut Sources) -> Result<Desc> {
     let op = node.name.as_str();
     let mut input = inputs
         .pop()
         .ok_or_else(|| Error::internal("remap without input"))?;
     no_pending_fold(op, &input)?;
     let target = node.args[0].as_str();
-    let cache = WeightCache::from_env().map_err(|e| rerr(op, e))?;
-    let (tgrid, thdims, gen_target) = target_grid(op, &cache, target)?;
+    let cdo = srcs.cdo;
+    // without a cache, planning still works (nothing is cached); a run needs one (`need_cache`)
+    let cache = WeightCache::from_env().ok();
+    let Target {
+        grid: tgrid,
+        hdims: thdims,
+        gen_target,
+        native,
+    } = target_grid(op, cache.as_ref(), target, cdo)?;
+    if native {
+        srcs.deferred = true;
+    }
     let dst_size = tgrid.size();
 
     let method = match op {
@@ -813,7 +900,9 @@ pub fn describe(node: &OpNode, mut inputs: Vec<Desc>, plan_only: bool) -> Result
     // read only the source cells the weights link
     for &(gi, entry) in &grid_index {
         let gw = &mut grids[entry];
-        if plan_only && !gw.at_hand(op) {
+        if cdo != CdoUse::Now && !gw.at_hand(op) {
+            // weights are generated in the run's final pass (`--plan`: not at all)
+            srcs.deferred = true;
             continue;
         }
         let w = gw.weights(op)?;

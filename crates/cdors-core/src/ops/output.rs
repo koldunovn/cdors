@@ -527,7 +527,17 @@ pub fn run(cmd: &Command) -> Result<String> {
             vec!["-".into()]
         },
     };
-    let plan = plan::build(&sub)?;
+    // without cdo first: --max-values and --max-read are evaluated before a remapping in the
+    // chain runs cdo for its target grid or weights
+    crate::io::netcdf4_index::hold_cache_writes();
+    let plan = plan::build(
+        &sub,
+        if cmd.options.plan {
+            plan::CdoUse::Never
+        } else {
+            plan::CdoUse::Defer
+        },
+    )?;
     let n = count(&plan.desc, &kind);
     let limit = cmd.options.max_values.unwrap_or(DEFAULT_MAX_VALUES);
     let what = if kind.is_info() { "fields" } else { "values" };
@@ -570,11 +580,14 @@ pub fn run(cmd: &Command) -> Result<String> {
              (cdors <chain> out.nc); --max-values none removes the limit",
         ));
     }
+    crate::exec::check_read_limit(&plan, cmd)?;
+    crate::io::netcdf4_index::release_cache_writes(true);
+    let plan = if plan.deferred {
+        plan::build(&sub, plan::CdoUse::Now)?
+    } else {
+        plan
+    };
     let stats = plan::explain::read_stats(&plan);
-    plan::explain::check_read_limit(
-        plan::explain::source_bytes(&plan, &stats),
-        plan::explain::read_limit(cmd),
-    )?;
     // coordinates are read before the stages run (they may come from an intermediate)
     let want_points = matches!(&kind, Kind::Tab { keys, .. }
         if keys.iter().any(|k| matches!(k.1, Key::Lon | Key::Lat | Key::X | Key::Y | Key::Xind | Key::Yind)));

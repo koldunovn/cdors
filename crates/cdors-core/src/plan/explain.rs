@@ -551,7 +551,12 @@ pub fn to_text(p: &Value) -> String {
             format!("cached ({})", w["path"].as_str().unwrap_or(""))
         } else {
             format!(
-                "not cached: `{}` will generate them on first use",
+                "not cached{}: `{}` will generate them on first use",
+                if w["path"].is_null() {
+                    " (CDORS_CACHE is not set)"
+                } else {
+                    ""
+                },
                 w["generator"].as_str().unwrap_or("cdo")
             )
         };

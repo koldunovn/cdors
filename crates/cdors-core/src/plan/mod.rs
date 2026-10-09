@@ -611,8 +611,27 @@ pub struct Sources {
     pub mem: Option<u64>,
     /// Results of inner stages kept in memory (multi-stage chains), in execution order.
     pub intermediates: Vec<intermediate::Intermediate>,
-    /// `--plan`: describe without running anything (no weight generation by cdo).
-    pub plan_only: bool,
+    /// Whether describing may run cdo (remapping: target-grid templates and weights).
+    pub cdo: CdoUse,
+    /// Set by operators that described something without cdo that a run needs from cdo (a
+    /// target grid described by cdors, weights not generated yet): the run plans again with
+    /// [`CdoUse::Now`] once its checks have passed.
+    pub deferred: bool,
+}
+
+/// When planning may run cdo (and write `$CDORS_CACHE`) for remapping.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CdoUse {
+    /// The final planning pass of a run: cdo makes target-grid templates and weights right
+    /// away (the weights tell which source cells to read).
+    #[default]
+    Now,
+    /// The first planning pass of a run, which the output checks, `--max-read` and
+    /// `--max-values` are evaluated on: cdors describes target grids itself where it can and
+    /// generates no weights. Only a target grid cdors cannot describe is made by cdo here.
+    Defer,
+    /// `--plan`: never run cdo, never write the cache.
+    Never,
 }
 
 impl Sources {
@@ -752,6 +771,8 @@ pub struct Plan {
     /// Compute threads and reads in flight, sized to the work.
     pub threads: usize,
     pub io_threads: usize,
+    /// Planned without something a run needs from cdo (see [`Sources::deferred`]).
+    pub deferred: bool,
 }
 
 impl Plan {
@@ -772,6 +793,7 @@ impl Plan {
             budget: 0,
             threads: 1,
             io_threads: 1,
+            deferred: false,
         }
     }
 
@@ -849,8 +871,8 @@ pub fn out_kind(cmd: &Command, path: &str) -> OutKind {
     }
 }
 
-/// Builds the plan for a command with one output.
-pub fn build(cmd: &Command) -> Result<Plan> {
+/// Builds the plan for a command with one output; `cdo` says whether remapping may run cdo.
+pub fn build(cmd: &Command, cdo: CdoUse) -> Result<Plan> {
     // `--plan` needs no output file
     let output = cmd
         .outputs
@@ -875,7 +897,7 @@ pub fn build(cmd: &Command) -> Result<Plan> {
             None => Default::default(),
         },
         mem: cmd.options.mem,
-        plan_only: cmd.options.plan,
+        cdo,
         ..Sources::default()
     };
     let desc = describe_tree(&cmd.root, &mut srcs)?;
@@ -950,5 +972,6 @@ pub fn build(cmd: &Command) -> Result<Plan> {
         budget,
         threads,
         io_threads,
+        deferred: srcs.deferred,
     })
 }

@@ -22,6 +22,7 @@
 // `gen` is a reserved keyword in edition 2024.
 #[path = "gen.rs"]
 pub mod generate;
+pub mod target;
 pub mod weights;
 
 pub use generate::{GenMethod, SourceIdentity, WeightCache, WeightRequest};

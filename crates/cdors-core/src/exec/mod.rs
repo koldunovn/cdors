@@ -241,37 +241,71 @@ pub fn run_stages(plan: &Plan, lay: &[OutVar], writer: Arc<dyn Writer>) -> Resul
     Ok(())
 }
 
+/// `--max-read` against the plan's estimate. A plan made without cdo reads whole source grids
+/// for remappings whose weights are not cached yet (the weights would narrow the reads).
+pub fn check_read_limit(plan: &Plan, cmd: &Command) -> Result<()> {
+    let stats = plan::explain::read_stats(plan);
+    plan::explain::check_read_limit(
+        plan::explain::source_bytes(plan, &stats),
+        plan::explain::read_limit(cmd),
+    )
+    .map_err(|mut e| {
+        if plan.deferred {
+            let h = e.hint.take().unwrap_or_default();
+            e.hint = Some(format!(
+                "{h}; remapping reads only the source cells its weights use once they are cached: \
+                 a small first run (e.g. with -seltimestep,1) makes them"
+            ));
+        }
+        e
+    })
+}
+
 /// Plans and runs a command that writes one output.
 pub fn run(cmd: &Command) -> Result<String> {
-    let plan = plan::build(cmd)?;
-    // pools sized to the work while planning (`plan::build`)
-    let (threads, io_threads) = (plan.threads, plan.io_threads);
+    use crate::io::netcdf4_index::{hold_cache_writes, release_cache_writes};
     if cmd.options.plan {
-        let p = plan::explain::to_json(&plan, cmd, threads, io_threads);
+        // nothing is written into $CDORS_CACHE (no cdo, no NetCDF-4 chunk indexes)
+        hold_cache_writes();
+        let plan = plan::build(cmd, plan::CdoUse::Never)?;
+        // pools sized to the work while planning (`plan::build`)
+        let p = plan::explain::to_json(&plan, cmd, plan.threads, plan.io_threads);
         return Ok(if cmd.options.json {
             format!("{p}\n")
         } else {
             plan::explain::to_text(&p)
         });
     }
-    let stats = plan::explain::read_stats(&plan);
-    let bytes_decoded: u64 = stats.iter().map(|s| s.bytes_decoded).sum();
-    plan::explain::check_read_limit(
-        plan::explain::source_bytes(&plan, &stats),
-        plan::explain::read_limit(cmd),
-    )?;
-    let out = PathBuf::from(&plan.output);
+    // Refusals come first, before planning runs cdo (remapping templates and weights) or writes
+    // into $CDORS_CACHE: the output checks, then --max-read on a plan made without cdo (the
+    // estimate --plan shows).
+    let output = cmd
+        .outputs
+        .first()
+        .ok_or_else(|| Error::bad_arguments("no output file given"))?;
+    let out = PathBuf::from(output);
     publish::check_not_input(&out, &input_paths(cmd))?;
     publish::check_output(&out, cmd.options.overwrite)?;
     if let Some(dir) = out.parent().filter(|p| !p.as_os_str().is_empty())
         && !dir.is_dir()
     {
         return Err(Error::bad_arguments(format!(
-            "the directory of output '{}' does not exist",
-            plan.output
+            "the directory of output '{output}' does not exist"
         ))
-        .with("path", plan.output.clone()));
+        .with("path", output.clone()));
     }
+    hold_cache_writes();
+    let plan = plan::build(cmd, plan::CdoUse::Defer)?;
+    check_read_limit(&plan, cmd)?;
+    release_cache_writes(true);
+    // planned again with cdo's grids and weights (which also narrow the reads)
+    let plan = if plan.deferred {
+        plan::build(cmd, plan::CdoUse::Now)?
+    } else {
+        plan
+    };
+    let stats = plan::explain::read_stats(&plan);
+    let bytes_decoded: u64 = stats.iter().map(|s| s.bytes_decoded).sum();
     let is_dir = matches!(plan.out_kind, OutKind::Zarr3 | OutKind::Zarr2);
     if is_dir {
         // the output name is reserved (exclusive mkdir) before anything is written
