@@ -21,7 +21,8 @@ read cold data, and cdo mostly read data that cdors had just read, which favours
 because cdors needs 0.2–0.3 s to start. Details: `doc/bench-results.md`.
 
 On the 6 km DestinE climate projections, an interactive node turns 60 years of monthly 2 m temperature (36 GB) into
-a global-mean series in 5.5–16 s, and two decades into a 6 km warming map in 15 s (see "DestinE at 6 km" below).
+a global-mean series in 6–20 s, where cdo needs about a minute, and two decades into a 6 km warming map in 15 s (see
+"DestinE at 6 km" below).
 
 ## Try it
 
@@ -86,7 +87,15 @@ done
 ```
 
 Each prints 60 annual global means (`1990-06-16 287.522` ... `2049-06-16 289.0152` for IFS-FESOM), in 12 s, 16 s
-and 5.5 s. Their decadal means, in K:
+and 5.5 s. The same command with cdo, which needs brackets around the inputs of `-mergetime` in a chain:
+
+```bash
+cdo -P 16 -outputtab,date,value -yearmean -fldmean -mergetime [ "file://$H#mode=zarr,file" "file://$P#mode=zarr,file" ]
+```
+
+In a second session, cdors took 20 s for IFS-FESOM, and cdo, run right after it on the same node, 66 s. cdo read
+the data that cdors had just read, mostly from the node's memory, which favours cdo. The two agree to 0.0001 K.
+The interactive nodes are shared, so times vary from session to session. The decadal means, in K:
 
 | Decade | IFS-FESOM | IFS-NEMO | ICON |
 |---|---|---|---|
