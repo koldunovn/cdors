@@ -698,7 +698,7 @@ pub fn unknown_operator(name: &str) -> Error {
             ),
         )
         .with("operator", name)
-        .with("cdo_section", c.section)
+        .with("section", c.section)
         .with_hint("list the implemented operators with `cdors ops`; run this step with cdo");
     }
     let implemented = implemented_names();

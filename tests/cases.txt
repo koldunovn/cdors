@@ -86,6 +86,7 @@ ulp      | -remapdis,hpz1 {in}                         | r36x18_std hpz2_noleap 
 ulp      | --force -remapcon,r18x9 {in}                | r36x18_std hpz2_noleap unst_360
 ulp      | -remapbil,r18x9 {in}                        | r36x18_std hpz2_noleap
 ulp      | -remap,r18x9,{fix}/weights_con_r36x18_r18x9.nc {in} | r36x18_std
+ulp      | -remapdis,{fx}/r36x18_std_y2000.nc {in}     | hpz2_noleap   # NetCDF-4 dataset as target grid (cdo -L)
 ulp      | -hpdegrade,nside=2 {in}                     | hpz2_noleap
 ulp      | -hpdegrade,nside=1,order=ring,stat=avg {in} | hpz2_noleap
 err:unsupported_grid | -remapbil,r18x9 {in}            | unst_360
@@ -153,3 +154,5 @@ json     | --json info -seltimestep,1/2 -sellonlatbox,-30,40,30,75 {in} | r36x18
 json     | --json output -fldmean -seltimestep,1/2 {in}          | r36x18_std
 err:too_many_values | --max-values 1000 output {in} {noout}  | r36x18_std
 json     | --plan --json -yearmean -mergetime {fx}/r36x18_std_y2*.nc | r36x18_std
+json     | --plan --json -sub -selname,tas {in} -timmean -selname,tas {in} | r36x18_std
+json     | --plan --json -timpctl,90 {in} -timmin {in} -timmax {in} | r36x18_std

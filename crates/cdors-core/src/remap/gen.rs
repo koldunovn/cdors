@@ -118,6 +118,11 @@ impl WeightCache {
         &self.dir
     }
 
+    /// Whether a cdo executable was found (`$CDO` or `cdo` on `PATH`).
+    pub fn has_cdo(&self) -> bool {
+        self.cdo.is_some()
+    }
+
     /// Cache file name of a request (computing the source identity if needed).
     pub fn key(&self, req: &WeightRequest<'_>) -> Result<String, RemapError> {
         let mut h = Fnv128::new();
@@ -233,7 +238,12 @@ impl WeightCache {
             check_bilinear_source(cdo, req)?;
         }
         let tmp = self.tmp_path(&key)?;
-        let mut args: Vec<String> = vec!["-s".into(), "--no_history".into()];
+        // -L serializes cdo's file access across its threads. Without it, `gen<method>` reads a
+        // NetCDF-4 target grid file (H5Fopen in `cdo_define_grid`) while the thread of the
+        // chained `-setmisstoc -seltimestep` reads the source through HDF5, which is not
+        // thread-safe: cdo crashed with SIGSEGV and no message in about a third of the runs
+        // with a Zarr (or NetCDF-4) target. -L is cdo's own remedy for a non-thread-safe HDF5.
+        let mut args: Vec<String> = vec!["-s".into(), "--no_history".into(), "-L".into()];
         if matches!(req.method, GenMethod::Con | GenMethod::Ycon) {
             // cdo refuses conservative weights for HEALPix grids without --force (cell edges are
             // not great circles); --force has no other effect on gen* (src/remaplib.cc:253).
@@ -279,9 +289,17 @@ fn run_cdo_hint(cdo: &Path, args: &[String], hint: &'static str) -> Result<Strin
             hint,
         })?;
     if !out.status.success() {
+        let mut stderr = String::from_utf8_lossy(&out.stderr).trim().to_owned();
+        if stderr.is_empty() {
+            stderr = format!(
+                "{} without a message on stderr; stdout: {:?}",
+                out.status,
+                String::from_utf8_lossy(&out.stdout).trim()
+            );
+        }
         return Err(RemapError::CdoFailed {
             command,
-            stderr: String::from_utf8_lossy(&out.stderr).trim().to_owned(),
+            stderr,
             hint,
         });
     }

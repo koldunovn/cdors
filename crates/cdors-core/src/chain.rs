@@ -80,8 +80,11 @@ pub struct Options {
     pub format: Option<OutFormat>,
     /// `-b <F32|F64>`.
     pub precision: Option<Precision>,
-    /// `-s`: silent (also changes line breaks of `show*` output, as in cdo).
+    /// `-s`: silent (also changes line breaks of `show*` output, as in cdo). As in cdo, warnings
+    /// are still printed.
     pub silent: bool,
+    /// `-w` (`--disable_warnings`): no warnings, as in cdo (also no JSON warning lines).
+    pub no_warnings: bool,
     /// `-v`.
     pub verbose: bool,
     /// `--json`: machine-readable output and errors.

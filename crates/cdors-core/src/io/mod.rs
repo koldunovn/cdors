@@ -201,6 +201,12 @@ pub trait ChunkSource: Send + Sync {
     fn stored_size(&self, _var: &str, _indices: &[u64]) -> Option<u64> {
         None
     }
+
+    /// The files of a source concatenated from several (a glob pattern, `mergetime`, `cat`) in
+    /// time order; `None` for a single file or store.
+    fn member_paths(&self) -> Option<Vec<String>> {
+        None
+    }
 }
 
 /// Whether `path` is a Zarr store: a `.zarr` suffix, or a directory with `.zgroup`, `.zarray`,

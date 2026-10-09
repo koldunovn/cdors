@@ -469,6 +469,15 @@ impl ChunkSource for MultiFileSource {
         &self.ds
     }
 
+    fn member_paths(&self) -> Option<Vec<String>> {
+        Some(
+            self.members
+                .iter()
+                .map(|m| m.dataset().source.clone())
+                .collect(),
+        )
+    }
+
     fn chunk_grid(&self, var: &str) -> Result<ChunkGrid> {
         Ok(self.map(var)?.grid.clone())
     }

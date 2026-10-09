@@ -26,6 +26,7 @@ const OPTIONS: &[&str] = &[
     "-v",
     "-L",
     "-w",
+    "--disable_warnings",
     "--json",
     "--plan",
     "--mem",
@@ -175,7 +176,8 @@ fn parse_options(args: &[String]) -> Result<(Options, usize)> {
             "-v" => o.verbose = true,
             // --force: cdo needs it for conservative remapping on HEALPix grids; cdors always
             // passes it to `cdo gencon` and accepts it for compatibility
-            "-L" | "-w" | "--force" => {}
+            "-L" | "--force" => {}
+            "-w" | "--disable_warnings" => o.no_warnings = true,
             "--json" => o.json = true,
             "--plan" => o.plan = true,
             "--no_history" | "--no-history" => o.no_history = true,
