@@ -9,8 +9,12 @@ use cdors_core::error::{Error, Result};
 use cdors_core::ops::{self, AccessClass};
 use std::io::Write;
 
+/// `cdors guide`: the short reference for agents (`docs/agent-guide.md`).
+const GUIDE: &str = include_str!("../../../docs/agent-guide.md");
+
 const USAGE: &str =
     "usage: cdors [options] operator[,args] [-operator2[,args] ...] inputs... [output]
+       cdors guide                 a short guide for agents: workflow, syntax, recipes, errors
        cdors ops [--json]          list operators (implemented ones with arguments, all of cdo's)
        cdors help <operator>       cdo's help text plus cdors notes (also: cdors -h <operator>)
 
@@ -149,10 +153,11 @@ fn main() {
     cdors_core::exec::threads::set_json(json);
     // every panic: `internal`, own temporary output removed, exit code 2
     cdors_core::exec::publish::install_panic_hook(json);
-    // subcommands `ops`, `help <op>`, `-h <op>`: the first token after the global options
+    // subcommands `ops`, `guide`, `help <op>`, `-h <op>`: the first token after the global options
     if let Some((sub, rest)) = parse::subcommand(&args) {
         let r = match sub {
             "ops" => Ok(ops_cmd::ops(json)),
+            "guide" => Ok(GUIDE.to_owned()),
             _ => match rest.iter().find(|a| !a.starts_with("--")) {
                 Some(op) => ops_cmd::help(op.trim_start_matches('-'), json),
                 None => Ok(format!("{USAGE}\n")),

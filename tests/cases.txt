@@ -101,6 +101,8 @@ exact    | -cat {fx}/r36x18_std_y2000.nc {fx}/r36x18_std_y2001.nc {fx}/r36x18_st
 ulp      | -yearmean -mergetime {fx}/r36x18_std_y2*.nc | r36x18_std
 exact    | -selname,pr -seltimestep,300/500 -cat {fx}/r36x18_std_y2*.nc | r36x18_std
 err:bad_data | -cat {fx}/r36x18_std_y2001.nc {fx}/r36x18_std_y2000.nc | r36x18_std
+ulp      | -yearmean -fldmean -mergetime [ {fx}/r36x18_std_y2000.nc {fx}/r36x18_std_y2001.nc ] | r36x18_std   # cdo's argument group
+err:bad_arguments | -fldmean [ {in} ]                 | r36x18_std   # brackets only around variadic inputs
 
 # Task 7: percentiles (exact; cdo uses histograms above 50 values per group: tag bin), running
 # statistics, climatology arithmetic (second input: climatology fixtures made by cdo)

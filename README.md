@@ -79,7 +79,9 @@ remove them by hand.
 ## For agents
 
 cdors never prompts and never reads stdin. Add `--json` to any command to get machine-readable
-output and errors.
+output and errors. **`cdors guide` prints a short version of this section (5 kB: workflow, syntax,
+recipes, errors, limits); it is enough for most analyses.** The rest of this section is the full
+reference.
 
 **1. Find the operator.** `cdors ops --json` returns one object: `implemented_count`,
 `not_implemented_count` and `operators[]`. The implemented operators come first, each with `usage`

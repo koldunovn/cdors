@@ -9,7 +9,7 @@
 //! - Operators have a fixed number of inputs and outputs from the registry. Each input is either
 //!   a nested operator (a token starting with `-`) or a path/URL. Variadic operators
 //!   (`mergetime`, `cat`, `copy`) take all remaining inputs except the outputs of the outermost
-//!   operator.
+//!   operator, or, as in cdo, the inputs between `[` and `]` that follow them.
 //! - Information operators have no output and print to stdout; they cannot be nested.
 //! - After the outermost operator and its inputs, exactly its number of outputs must remain;
 //!   with `--plan` the output may be left out (then a last token that is an existing input,
@@ -398,8 +398,23 @@ impl Parser<'_> {
                 }
             }
             Inputs::Variadic => {
-                while self.toks.len() - self.pos > self.reserve {
-                    node.inputs.push(self.input()?);
+                if self.toks.get(self.pos).is_some_and(|t| t == "[") {
+                    // cdo's argument group: `-mergetime [ a b ]`
+                    self.pos += 1;
+                    while self.toks.get(self.pos).is_some_and(|t| t != "]") {
+                        node.inputs.push(self.input()?);
+                    }
+                    if self.pos >= self.toks.len() {
+                        return Err(Error::bad_arguments(format!(
+                            "operator '{name}': '[' without a closing ']'"
+                        ))
+                        .with("operator", name.clone()));
+                    }
+                    self.pos += 1;
+                } else {
+                    while self.toks.len() - self.pos > self.reserve {
+                        node.inputs.push(self.input()?);
+                    }
                 }
                 if node.inputs.is_empty() {
                     return Err(Error::bad_arguments(format!(
@@ -414,6 +429,12 @@ impl Parser<'_> {
 
     fn input(&mut self) -> Result<Input> {
         let t = &self.toks[self.pos];
+        if t == "[" || t == "]" {
+            return Err(Error::bad_arguments(format!("unexpected '{t}'")).with_hint(
+                "brackets group the inputs of mergetime, cat and copy (-mergetime [ a b ]); \
+                 other operators take a fixed number of inputs and need none",
+            ));
+        }
         if t.len() > 1 && t.starts_with('-') {
             Ok(Input::Op(self.op(false)?))
         } else {
@@ -468,6 +489,7 @@ pub fn subcommand(args: &[String]) -> Option<(&'static str, Vec<String>)> {
     let toks = &args[start..];
     match toks.first().map(String::as_str) {
         Some("ops") => Some(("ops", toks[1..].to_vec())),
+        Some("guide") => Some(("guide", toks[1..].to_vec())),
         Some("help" | "-h") => Some(("help", toks[1..].to_vec())),
         _ => None,
     }
