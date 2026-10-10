@@ -1,10 +1,8 @@
 # cdors on Levante
 
-**cdors runs CDO's analysis operators, many times faster.** You write the same commands as for cdo: the same
-operator names, arguments and chains. cdors reads Zarr stores, kerchunk references and NetCDF files chunk by chunk
-and in parallel, and it reads only the chunks a command needs. It also reads the EERIE cloud, which cdo cannot open,
-and it tells you before a run what it will read and how much memory it needs. It is a prototype (version 0.1.0,
-October 2026): 187 operators, each compared with cdo 2.6.0.
+**cdors runs CDO's analysis operators, many times faster.** Same commands as cdo, on Zarr, kerchunk and NetCDF.
+cdors reads only the chunks it needs, in parallel, reads the EERIE cloud (cdo cannot), and shows what a run will
+read before it runs. It is a prototype (0.1.0, October 2026): 187 operators, each compared with cdo 2.6.0.
 
 The same command with cdo and with cdors, wall time on one Levante compute node:
 
@@ -16,26 +14,23 @@ The same command with cdo and with cdors, wall time on one Levante compute node:
 | `remap` to 1°, 120 NetCDF files | 7.6 GB | 23.7 s | 2.8 s | **8.6×** |
 | `yearmean`, a decade of daily global data | 46 GB | 42.8 s | 7.8 s | **5.5×** |
 
-Global data: the nextGEMS ICON run on a HEALPix grid of 3.1 million cells. The results agree with cdo's. cdors
-read cold data, and cdo mostly read data that cdors had just read, which favours cdo. On tiny files cdo is faster,
-because cdors needs 0.2–0.3 s to start. Details: `doc/bench-results.md`.
+Global data: nextGEMS ICON, 3.1 million HEALPix cells. The results agree with cdo's. On tiny files cdo is faster
+(cdors needs 0.2–0.3 s to start). Details: `doc/bench-results.md`.
 
-On the 6 km DestinE climate projections, an interactive node turns 60 years of monthly 2 m temperature (36 GB) into
-a global-mean series in 6–20 s, where cdo needs about a minute, and two decades into a 6 km warming map in 15 s (see
-"DestinE at 6 km" below).
+On the 6 km DestinE projections: 60 years of global-mean temperature from 36 GB in 6–20 s (cdo: about a minute), and
+a 6 km warming map in 15 s (see "DestinE at 6 km").
 
 ## Try it
 
-Work on an interactive node: cdors uses every core it gets, while a login node limits it to 16 threads and 64 GB
-read per command. `salloc` opens a shell on the node (replace the account with your project); `exit` ends the
-session, and Slurm bills the time it was open:
+Work on an interactive node: on login nodes cdors gets 16 threads and 64 GB per command. `exit` ends the session,
+which is billed while open:
 
 ```bash
 salloc -p interactive -A <your project> -c 128 --mem=200G -t 01:00:00     # half a node: 64 cores
 ```
 
-One line makes `cdors` available. The example after it prints the July mean of 2 m temperature over Europe
-(10°W–40°E, 35–70°N), area-weighted, for five years, from 30 years of daily global data:
+Then make `cdors` available and try it: the July mean of 2 m temperature over Europe (10°W–40°E, 35–70°N) for five
+years, from 30 years of daily global data:
 
 ```bash
 export PATH=/work/ab0995/a270088/cdors/bin:$PATH     # add to ~/.bashrc to keep it
@@ -52,20 +47,17 @@ cdors outputtab,date,value -yearmean -fldmean -sellonlatbox,-10,40,35,70 -selmon
  2024-07-16 292.9499
 ```
 
-That took 1 s. The dataset is the nextGEMS ICON run `ngc4008`: daily means on a HEALPix grid at
-zoom 9, 3,145,728 cells per field, 2020–2049. Of the 17,568 chunks of `tas`, cdors read the 60 that cover Europe in
-July of these five years (0.47 GB).
+That took 1 s. Data: nextGEMS ICON `ngc4008`, daily, 3,145,728 HEALPix cells, 2020–2049. cdors read 60 of the 17,568
+chunks of `tas` (0.47 GB).
 
-Every command in this guide was run on 2026-10-09 in such a session (128 CPUs of an interactive node), and the
-outputs are copied from those runs. The plans shown were made on a login node, which is where cdors applies its
-login-node limits.
+All commands in this guide ran on 2026-10-09 on an interactive node with 128 CPUs; the plans were made on a login
+node.
 
 ## DestinE at 6 km
 
-The Destination Earth climate projections of Generation 2 hold monthly means on a HEALPix grid of 12,582,912 cells
-(about 6 km), from IFS-FESOM, IFS-NEMO and ICON: a historical run for 1990–2014 and an SSP3-7.0 projection for
-2015–2049. Each variable of each run is a Zarr store of its own, named by experiment, model, output stream and ECMWF
-parameter ID; `228004` is 2 m temperature (`avg_2t`), 21 GB per variable over 35 years:
+DestinE Generation 2 climate projections: monthly means on 12,582,912 HEALPix cells (about 6 km) from IFS-FESOM,
+IFS-NEMO and ICON, 1990–2014 (historical) and 2015–2049 (SSP3-7.0). One Zarr store per variable and run; `228004` is
+2 m temperature, 21 GB per run:
 
 ```bash
 G=/work/ab0995/a270088/DestinE/GENERATION2_joint
@@ -76,7 +68,7 @@ P=$G/2D/projections_ssp3-7.0_2_ifs-fesom_1_0001_clmn_high_sfc_228004.zarr
 
 ### Global warming in three models
 
-`-mergetime` joins the historical run and the projection; one command per model reads 36 GB:
+One command per model, 36 GB each:
 
 ```bash
 for m in ifs-fesom_1 ifs-nemo_1 icon_1; do
@@ -86,16 +78,15 @@ for m in ifs-fesom_1 ifs-nemo_1 icon_1; do
 done
 ```
 
-Each prints 60 annual global means (`1990-06-16 287.522` ... `2049-06-16 289.0152` for IFS-FESOM), in 12 s, 16 s
-and 5.5 s. The same command with cdo, which needs brackets around the inputs of `-mergetime` in a chain:
+60 annual global means each (`1990-06-16 287.522` ... `2049-06-16 289.0152` for IFS-FESOM), in 12 s, 16 s and 5.5 s.
+The same with cdo, which needs brackets around the `-mergetime` inputs:
 
 ```bash
 cdo -P 16 -outputtab,date,value -yearmean -fldmean -mergetime [ "file://$H#mode=zarr,file" "file://$P#mode=zarr,file" ]
 ```
 
-In a second session, cdors took 20 s for IFS-FESOM, and cdo, run right after it on the same node, 66 s. cdo read
-the data that cdors had just read, mostly from the node's memory, which favours cdo. The two agree to 0.0001 K.
-The interactive nodes are shared, so times vary from session to session. The decadal means, in K:
+On the same node, cdo took 66 s and cdors 20 s (in that session; the interactive nodes are shared, so times vary).
+The results agree to 0.0001 K. Decadal means, in K:
 
 | Decade | IFS-FESOM | IFS-NEMO | ICON |
 |---|---|---|---|
@@ -106,12 +97,11 @@ The interactive nodes are shared, so times vary from session to session. The dec
 | 2030s | 288.42 | 287.92 | 287.35 |
 | 2040s | 288.88 | 288.31 | 287.52 |
 
-The stores have no cell bounds, so cdors warns and weights all cells equally, as cdo does. HEALPix cells have equal
-areas, so these are exact area means.
+The stores have no cell bounds, so all cells get equal weights, as in cdo; for HEALPix that is exact.
 
 ### A warming map at 6 km
 
-The 2040s minus the 1990s, for every one of the 12.6 million cells, in 15 s (12 GB read):
+2040s minus 1990s, all 12.6 million cells, in 15 s (12 GB):
 
 ```bash
 cdors -sub -timmean -selyear,2040/2049 $P -timmean -selyear,1990/1999 $H dT.nc
@@ -123,34 +113,34 @@ ushow dT.nc
      1 : 2044-12-16 12:00:00       0 12582912       0 :     -3.1325      1.5266      8.8455 : avg_2t
 ```
 
-The stores carry `latitude` and `longitude`, and so does `dT.nc`: ushow opens it as it is.
+`dT.nc` carries latitude and longitude, so ushow opens it directly.
 
 ![IFS-FESOM 2 m temperature change, 2040–2049 minus 1990–1999](img/destine_warming_2040s.png)
 
-*`dT.nc`, drawn with matplotlib after averaging the cells into 0.25° boxes.*
+*`dT.nc`, plotted with matplotlib on 0.25° boxes.*
 
 ### Hamburg, 60 years
 
-The nearest cell to Hamburg, annual means 1990–2049:
+Annual means at the nearest cell, 1990–2049:
 
 ```bash
 cdors outputtab,date,value -yearmean -remapnn,lon=10_lat=53.55 -mergetime $H $P
 ```
 
-The first run took 21 s, because cdo made the nearest-neighbour weights for 12.6 million cells; later runs take
-3.3 s. The decadal means rise from 281.16 K in the 1990s to 283.92 K in the 2040s.
+21 s on the first run, while cdo makes the nearest-neighbour weights; 3.3 s after that. The 1990s average 281.16 K,
+the 2040s 283.92 K.
 
 ### Ocean warming with depth
 
-The ocean temperature of IFS-FESOM (`avg_thetao`, 69 levels on a coarser HEALPix grid of 196,608 cells), 2045–2049
-minus 2015–2019, as a global mean for every level, in 1.4 s:
+IFS-FESOM ocean temperature (`avg_thetao`, 69 levels, 196,608 cells), 2045–2049 minus 2015–2019, global mean per
+level, in 1.4 s:
 
 ```bash
 O=$G/3D/projections_ssp3-7.0_2_ifs-fesom_1_0001_clmn_standard_o3d_263501.zarr
 cdors outputtab,lev,value -fldmean -sub -timmean -selyear,2045/2049 $O -timmean -selyear,2015/2019 $O
 ```
 
-`lev` is the level number; the depths are in `$G/levels.yaml` (`FESOM-NG5-full`). Some of the 69 levels:
+The depths of the levels are in `$G/levels.yaml` (`FESOM-NG5-full`):
 
 | Depth | 2.5 m | 47.5 m | 97.5 m | 195 m | 480 m | 950 m | 2035 m | 4025 m | 6175 m |
 |---|---|---|---|---|---|---|---|---|---|
@@ -180,7 +170,7 @@ cdors sinfo $D
      First = 2020-01-02T00:00:00  Last = 2050-01-01T00:00:00
 ```
 
-The same as JSON, for one variable:
+As JSON, for one variable:
 
 ```bash
 cdors --json sinfo $D | jq '.variables[] | select(.name=="tas") | {units, shape, chunks, codecs}'
@@ -196,7 +186,7 @@ cdors --json sinfo $D | jq '.variables[] | select(.name=="tas") | {units, shape,
 
 ## Example 2: plan first, then run
 
-A monthly climatology of 2 m temperature over ten years:
+A monthly climatology over ten years:
 
 ```bash
 cdors --plan -ymonmean -selyear,2020/2029 -selname,tas $D tas_ymonmean.nc
@@ -211,7 +201,7 @@ settings: 16 compute threads, 64 reads in flight (login node)
 read limit: 64.0 GB (login-node default, no SLURM_JOB_ID)
 ```
 
-46 GB is under the login node's limit of 64 GB, so it could run there too. On the interactive node:
+4.7 s on the interactive node:
 
 ```bash
 time cdors -ymonmean -selyear,2020/2029 -selname,tas $D tas_ymonmean.nc     # 4.7 s
@@ -224,21 +214,20 @@ cdors infon tas_ymonmean.nc
    ...
 ```
 
-The output is ordinary CF NetCDF, with `time_bnds` and `cell_methods = "time: mean"`. cdo and xarray read it.
-Like the input, it describes the HEALPix grid by its grid mapping only. To look at it with ushow, which needs
-explicit coordinates, add `--lonlat`: cdors then also writes the cell centres (8 bytes per cell, 25 MB here):
+Ordinary CF NetCDF, readable by cdo and xarray. For ushow, add `--lonlat` to write the HEALPix cell centres too (25
+MB here):
 
 ```bash
 cdors --lonlat -ymonmean -selyear,2020/2029 -selname,tas $D tas_ymonmean.nc
 ushow tas_ymonmean.nc
 ```
 
-`info`, `infon`, `output`, `outputf` and `outputtab` print the result of any chain, in cdo's format. To keep a run
-from flooding your terminal, cdors refuses to print more than a million values (`--max-values`).
+`info`, `infon`, `output`, `outputf` and `outputtab` print any chain's result in cdo's format, up to a million
+values (`--max-values`).
 
 ## Example 3: one point, a 95th percentile
 
-The 95th percentile of 3-hourly 2 m temperature at Hamburg in 2020, from the 3-hourly store (1.1 TB in all):
+95th percentile of 3-hourly 2 m temperature at Hamburg in 2020, from the 1.1 TB 3-hourly store:
 
 ```bash
 H=/work/kd1453/rechunked_ngc4008/ngc4008_PT3H_9.zarr
@@ -249,17 +238,14 @@ cdors outputtab,date,lon,lat,value -timpctl,95 -remapnn,lon=10_lat=53.55 -selyea
  2020-07-02     10  53.55   292.12
 ```
 
-That took 2.3 s the first time, while cdo made the nearest-neighbour weights, and 0.15 s after that. `--plan` shows
-why it is fast: of the 67968 chunks of `tas`, cdors reads the 12 that hold this
-cell in 2020 (195 MB). cdors computes percentiles exactly, for any number of values. cdo switches to an
-approximation above 50 values per cell (`doc/deviations.md`).
+2.3 s the first time, while cdo makes the weights, 0.15 s after. cdors reads only the 12 of 67,968 chunks that hold
+this cell in 2020 (195 MB). Percentiles are exact for any number of values; cdo approximates above 50 per cell.
 
 ## Example 4: EERIE data — kerchunk references, raw NetCDF files, the cloud
 
-The ICON-ESM-ER control run (`eerie-control-1950`), daily means on a 0.25° grid. The same data can be read in three
-ways.
+ICON-ESM-ER (`eerie-control-1950`), daily, 0.25°, read three ways.
 
-**Kerchunk references** (Parquet, from the DKRZ EERIE catalog) read the raw files' chunks directly:
+**Kerchunk references** from the DKRZ EERIE catalog (Parquet):
 
 ```bash
 K=/work/bm1344/k202193/Kerchunk/erc2002/control_1950/v20240618/atm_2d_1d_mean_remap025.parq
@@ -273,21 +259,19 @@ cdors outputtab,date,value -mulc,86400 -monmean -fldmean -sellonlatbox,-60,0,20,
  1950-12-16 3.669047
 ```
 
-That is North Atlantic precipitation in mm/day for each month of 1950, in 2 s.
+North Atlantic precipitation in mm/day per month of 1950, in 2 s.
 
-**Raw NetCDF files.** A quoted glob pattern is one input: cdors sorts the files and joins them along time.
+**Raw NetCDF files.** A quoted glob is one input; cdors sorts the files and joins them along time:
 
 ```bash
 R=/work/bm1344/k202193/ICON/erc2002/postprocessing/interpolation/control_1950/atm_2d_1d_mean_remap025
 cdors -fldmean -sellonlatbox,-60,0,20,60 -selname,pr "$R/run_199[1-5]*/*.nc" pr_natl.nc
 ```
 
-That is 120 files, five years of daily data, 7.6 GB to decode. The first run took a minute: cdors opens each file
-once through netCDF-C and keeps a chunk index in `$CDORS_CACHE`. Later runs took 3.2 s. `--plan` does not write the
-index, so a `--plan` before the first run is slow too. These raw files carry the model's own years: 1991 in
-the files is 1950 in the catalog and the kerchunk references.
+120 files, five years, 7.6 GB. The first run takes about a minute while cdors indexes the files (kept in
+`$CDORS_CACHE`); later runs take 3.2 s. These files carry the model's own years: 1991 here is 1950 in the catalog.
 
-**The EERIE cloud** over HTTPS. It is the same dataset, read from anywhere, also outside Levante:
+**The EERIE cloud**: the same dataset over HTTPS, from anywhere:
 
 ```bash
 U=https://eerie.cloud.dkrz.de/datasets/icon-esm-er.eerie-control-1950.v20240618.atmos.gr025.2d_daily_mean/kerchunk
@@ -299,29 +283,25 @@ cdors outputtab,date,value -timmean -fldmean -sellonlatbox,-10,40,35,70 -selmon,
  1950-01-16 274.6871
 ```
 
-That takes 2–3 s from the cloud and under 1 s from the kerchunk references, with the same value. The server delivers
-about 0.2 GB/s to any client, so tens of GB take minutes. The dataset list is at
+2–3 s from the cloud, under 1 s from the kerchunk references, same value. The server gives about 0.2 GB/s. Datasets:
 `https://eerie.cloud.dkrz.de/datasets`. cdo cannot read these URLs.
 
 ## Example 5: remap to a regular grid
 
-HadGEM3 (CMIP6) sea surface temperature on the curvilinear ORCA1 grid, the 2000–2014 mean on a 1° grid:
+HadGEM3 (CMIP6) sea surface temperature from the curvilinear ORCA1 grid to 1°, 2000–2014 mean:
 
 ```bash
 F=/work/ik1017/CMIP6/data/CMIP6/CMIP/MOHC/HadGEM3-GC31-LL/historical/r1i1p1f3/Omon/tos/gn/v20190624/tos_Omon_HadGEM3-GC31-LL_historical_r1i1p1f3_gn_195001-201412.nc
 cdors -remapbil,r360x180 -timmean -selyear,2000/2014 $F tos_clim_1deg.nc
 ```
 
-The first run took 5 s, because cdo made the weights. cdors keeps them in `$CDORS_CACHE`, and the next run took
-0.5 s. `remapnn`, `remapdis`, `remapbil`, `remapcon` and `remapycon` work with cdo's grid names (`r360x180`,
-`global_1`, `hpz7`, `lon=10_lat=53.55`, ...), with grid description files and with the grid of another dataset.
-`remap,<grid>,<weights.nc>` uses weights you made yourself. Missing values (land) are treated as cdo treats them,
-with two rare exceptions for `remapbil` (`doc/deviations.md`, Remapping).
+5 s the first time, while cdo makes the weights (cached in `$CDORS_CACHE`), 0.5 s after. `remapnn`, `remapdis`,
+`remapbil`, `remapcon` and `remapycon` take cdo's grid names (`r360x180`, `global_1`, `hpz7`, `lon=10_lat=53.55`,
+...), grid description files or another dataset's grid; `remap,<grid>,<weights.nc>` uses your own weights.
 
 ## Example 6: scripts and agents
 
-Every command takes `--json`. Values come as one JSON object, and errors as one JSON object on stderr, with a stable
-code and a hint:
+Every command takes `--json`: values as one JSON object, errors as one JSON object on stderr with a code and a hint:
 
 ```bash
 cdors --json outputtab,date,value -fldmean -seltimestep,1/3 -selname,tas $D | jq -c '.records'
@@ -336,7 +316,7 @@ cdors --json -yearmaen in.nc out.nc
 {"error":"unknown_operator","message":"unknown operator 'yearmaen'","operator":"yearmaen","suggestions":["yearmax","yearmean","yearmin"],"exit_code":1,"retryable":false,"hint":"did you mean yearmax or yearmean or yearmin?"}
 ```
 
-From Python (3.7 or newer, e.g. `module load python3`):
+From Python 3.7 or newer:
 
 ```python
 import json, subprocess
@@ -360,14 +340,13 @@ Exit codes:
 | 3 | an I/O error worth retrying (timeouts, HTTP 5xx) |
 | 4 | refused (read limit, too many values, existing output) |
 
-AI agents (Claude Code, Codex, ...) can start with `cdors guide`: 5 kB written for them (workflow, syntax, recipes,
-errors, limits). `doc/reference.md` has the full reference, including `--plan --json` and the error codes. In a test,
-agents answered five of five analysis questions correctly with cdors (`doc/criteria.md`).
+AI agents can start with `cdors guide` (5 kB, written for them). With it, agents answered five of five test analyses
+correctly, 4× faster than with cdo and Python, at 1.3× the cost. Full reference: `doc/reference.md`.
 
 ## Big jobs: compute nodes
 
-`--plan` tells you when a command is too big for a login node. Here is the daily climatology over all 30 years of
-the 3-hourly store:
+`--plan` shows when a command is too big for a login node, here the daily climatology over all 30 years of the
+3-hourly store:
 
 ```bash
 cdors --plan -ydaymean -seltimestep,1/87544 -selname,tas $H
@@ -379,10 +358,9 @@ memory: ~4.2 GB peak of 4.3 GB budget (...)
 read limit: 64.0 GB (login-node default, no SLURM_JOB_ID) -- EXCEEDED: the run would be refused
 ```
 
-The memory does not depend on how many years you read: one year plans the same 4.2 GB. To fit a budget, cdors
-splits the cells into groups ("waves") that it runs one after another.
+Memory does not grow with the years read: cdors splits the cells into waves that fit the budget.
 
-Run it as a batch job (replace the account with your project):
+As a batch job, with your project as the account:
 
 ```bash
 #!/bin/bash
@@ -400,30 +378,25 @@ IN=/work/kd1453/rechunked_ngc4008/ngc4008_PT3H_9.zarr
 cdors --mem 32G --progress json -ydaymean -seltimestep,1/87544 -selname,tas $IN tas_ydaymean_2020-2049.nc
 ```
 
-Or run one command interactively:
+Or interactively:
 
 ```bash
 srun -p compute -A <your project> -N 1 --exclusive -t 00:30:00 cdors -ydaymean ... out.nc
 ```
 
-Inside a Slurm job, cdors drops the read limit, uses all cores of the allocation and keeps 128 reads in flight. Its
-default memory budget is 60 % of the job's memory; `--mem` sets it. This is the 72× command from the top of this
-guide: 79 s and 14.3 GiB, where cdo took 1 h 35 min. `--progress json` writes one line per second to the log.
+In a Slurm job cdors uses all allocated cores, 128 reads in flight, no read limit and 60 % of the job's memory
+(`--mem`). This is the 72× command from the top: 79 s, against 1 h 35 min for cdo. `--progress json` logs progress
+once per second.
 
 ## The rules in one minute
 
-- **Write commands as for cdo.** `cdors [options] -op3 -op2,args -op1 input output`. The leading dash of the first
-  operator is optional, as in cdo.
-- **Put selections innermost** (`-selname`, `-selyear`, `-sellonlatbox`, ...). cdors uses them to decide which
-  chunks to read at all.
-- **Look before you run.** `cdors --plan <command>` shows what would be read, how much memory it needs and how many
-  passes it takes, without reading any data.
-- **Outputs.** A name ending in `.zarr` gives Zarr, any other name NetCDF-4. An existing output is never
-  overwritten unless you give `-O`.
-- **Login nodes have limits.** cdors uses at most 16 threads there. It refuses commands that would read more than
-  64 GB, and it plans within at most 4 GiB of memory. Bigger runs belong on a compute node (see "Big jobs").
-- **For scripts, add `--json`.** It gives machine-readable output and errors.
-- **Missing operators.** `cdors ops` lists what is implemented. For anything else, run that step with cdo.
+- **Same syntax as cdo:** `cdors [options] -op3 -op2,args -op1 input output`.
+- **Selections innermost** (`-selname`, `-selyear`, `-sellonlatbox`, ...): they decide which chunks are read.
+- **Plan first:** `cdors --plan <command>` shows reads, memory and passes without reading data.
+- **Outputs:** `.zarr` gives Zarr, anything else NetCDF-4; existing files need `-O`.
+- **Login nodes:** 16 threads, 64 GB read per command, a 4 GiB memory plan.
+- **Scripts:** add `--json`.
+- **Missing operator:** run that step with cdo; `cdors ops` lists what exists.
 
 ## What the setup does
 
@@ -435,15 +408,11 @@ cdors 0.1.0
 HDF5 1.14.3, netCDF-C 4.9.3-rc1
 ```
 
-Nothing else is needed: no module, no conda environment. `cdors` is a small wrapper that sets two defaults before
-starting the program:
+No module or conda environment is needed. `cdors` is a wrapper that sets two defaults; set either yourself to
+override it:
 
-- `CDORS_CACHE`: where cdors keeps remapping weights and NetCDF chunk indexes. The default is
-  `/scratch/<first letter>/<user>/cdors-cache`. Old files there are removed by the scratch cleanup, and cdors simply
-  makes them again.
-- `CDO`: the cdo that makes remapping weights. The default is the cdo 2.6.0 that cdors was tested against.
-
-Set either one yourself to override it.
+- `CDORS_CACHE`: remap weights and NetCDF indexes, default `/scratch/<x>/<user>/cdors-cache`.
+- `CDO`: the cdo that makes remap weights, default cdo 2.6.0.
 
 Documentation next to the program, in `/work/ab0995/a270088/cdors/`:
 
@@ -457,50 +426,43 @@ Documentation next to the program, in `/work/ab0995/a270088/cdors/`:
 
 ## Differences from cdo you will notice
 
-- An existing output is refused unless you give `-O`; `cat` never appends.
-- The output format follows the output name (`.zarr` or NetCDF-4), not the input's format. Float32 variables stay
-  float32; everything else (integers, packed data) becomes float64. cdo keeps integers, and rounds their means.
-- NetCDF output is not compressed: `-z zip` is refused, and so are other cdo options cdors does not have (`-k`,
-  `-r`, ...). `cdors --help` lists the options.
-- Percentiles are exact, where cdo approximates them with a histogram for more than 50 values per cell. cdo's
-  three-input form (`timpctl,95 in -timmin in -timmax in`) is accepted, and the min/max inputs are not read.
-- `sinfo` prints its own summary (chunk shapes, codecs), not cdo's table.
-- `mergetime` and `cat` refuse inputs whose times overlap or go backwards.
-- Information operators (`sinfo`, `showname`, `griddes`, `showtimestamp`) take files, not chains.
+- Existing outputs need `-O`; `cat` never appends.
+- The output format follows the file name, not the input. Integers and packed data become float64; cdo keeps
+  integers and rounds their means.
+- No compression: `-z zip` and other options cdors lacks (`-k`, `-r`, ...) are refused.
+- Percentiles are exact; cdo uses a histogram above 50 values per cell. cdo's three-input form is accepted.
+- `sinfo` prints its own summary, not cdo's table.
+- `mergetime` and `cat` refuse overlapping or backward times.
+- `sinfo`, `showname`, `griddes` and `showtimestamp` take files, not chains.
 
-The full list, with the reasons: `doc/deviations.md`. It also lists five cdo bugs found on the way. One of them
-matters here: cdo 2.6.0 misreads the last time chunk of a HEALPix Zarr store when that chunk is partly filled.
+Full list: `doc/deviations.md`, with five cdo bugs found on the way (cdo 2.6.0, for one, misreads a partly filled
+last time chunk of HEALPix Zarr).
 
 ## What it cannot do yet
 
-- **GRIB input.** ERA5 in `/pool/data/ERA5` and the IFS outputs in GRIB are not readable; use cdo for those.
-- **Many cdo operators.** Missing are, among others, `expr`, `trend`/`regres`, correlations, the ETCCDI indices,
-  `ydaypctl`, `intlevel`, ensemble statistics and EOFs. `cdors ops` lists what exists, and a missing operator fails
-  with `not_implemented`.
-- **Compressed or NetCDF-4 classic output.** `-f nc4c` writes ordinary NetCDF-4.
-- **Fast percentiles or daily climatologies on data stored one field per chunk** (GRIB-like NetCDF). These are read
-  correctly but several times; `--plan` shows the number of passes.
-- **Weights without cdo.** cdo makes the remapping weights, once per pair of grids.
-- **Tested S3 access.** `s3://` inputs are implemented but have not been tried against a real bucket.
+- **GRIB input** (ERA5 in `/pool/data/ERA5`, IFS GRIB output): use cdo.
+- **Many cdo operators**, e.g. `expr`, `trend`, correlations, ETCCDI indices, `ydaypctl`, `intlevel`, ensemble
+  statistics, EOFs.
+- **Compressed or classic NetCDF output** (`-f nc4c` writes NetCDF-4).
+- **Fast percentiles on data stored one field per chunk:** correct, but read several times.
+- **Weights without cdo:** cdo makes them once per grid pair.
+- **Tested S3:** implemented, not yet tried on a real bucket.
 
 ## Files cdors leaves behind
 
 - `$CDORS_CACHE/weights/`: remapping weights and grid files from cdo.
 - `$CDORS_CACHE/nc4index/`: chunk indexes of NetCDF-4 files.
 
-Both can be deleted at any time; cdors makes them again when needed. A killed run (`kill -9`, node failure) can
-leave a hidden `.<output>.cdors-tmp-...` file or directory next to the output. Remove it by hand.
+Both can be deleted any time. A killed run can leave a hidden `.<output>.cdors-tmp-...` next to the output; remove
+it by hand.
 
 ## Version and feedback
 
-The installed version is 0.1.0, commit `173f12a` of 2026-10-09, which added `cdors guide` and cdo's brackets around
-the inputs of `mergetime` and `cat` (`-mergetime [ a b ]`); `--lonlat` came with `ac96a11`. The binary is the build that
-passed the tests (`libexec/cdors-0.1.0-173f12a`, checksum in `libexec/cdors-0.1.0-173f12a.sha256`); the earlier ones
-stay next to it. New versions are installed the same way, and `bin/cdors` points at the newest one. The source is at
-[github.com/koldunovn/cdors](https://github.com/koldunovn/cdors).
+Installed: 0.1.0, commit `173f12a` (2026-10-09), the build that passed the tests; older versions stay next to it.
+Source: [github.com/koldunovn/cdors](https://github.com/koldunovn/cdors).
 
-This is a prototype, and reports help. Send wrong numbers, confusing errors and slow commands to Nikolay Koldunov
-(Levante user a270088), with the command and the output of `cdors --version`.
+It is a prototype: send wrong numbers, confusing errors or slow commands, with the command and `cdors --version`, to
+Nikolay Koldunov (a270088).
 
-cdors contains operator help texts and numerical routines derived from CDO, © 2002–2026 MPI für Meteorologie,
-under the BSD 3-Clause license (`doc/LICENSE-CDO` next to the program).
+Contains help texts and routines derived from CDO (© 2002–2026 MPI für Meteorologie, BSD 3-Clause, `doc/LICENSE-CDO`
+next to the program).
