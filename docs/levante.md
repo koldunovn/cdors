@@ -464,7 +464,7 @@ it by hand.
 
 ## Version and feedback
 
-Installed: 0.1.0, commit `173f12a` (2026-10-09), the build that passed the tests; older versions stay next to it.
+Installed: 0.1.0, commit `18bba8c` (2026-10-10), the build that passed the tests; older versions stay next to it.
 Source: [github.com/koldunovn/cdors](https://github.com/koldunovn/cdors).
 
 It is a prototype: send wrong numbers, confusing errors or slow commands, with the command and `cdors --version`, to
