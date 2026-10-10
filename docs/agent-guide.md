@@ -1,7 +1,8 @@
 # cdors guide for agents
 
 cdors runs CDO operators: the same names, arguments and chains as cdo. It reads Zarr stores, kerchunk references
-(JSON, Parquet), NetCDF files, quoted glob patterns of files, and http(s)/s3 URLs of Zarr stores, chunk by chunk.
+(JSON, Parquet; also gribscan's references to GRIB files, such as the EERIE IFS-FESOM data), NetCDF files, quoted
+glob patterns of files, and http(s)/s3 URLs of Zarr stores, chunk by chunk.
 It never prompts and never reads stdin. Add `--json` to any command for machine-readable output and errors.
 `cdors --help` lists the options; this guide is all you need for most analyses.
 
@@ -13,7 +14,7 @@ It never prompts and never reads stdin. Add `--json` to any command for machine-
    `grids` (kind, size, lon/lat ranges), `zaxes` and `time` (`count`, `first`, `last`, calendar). Check `time`
    before selecting dates: daily means are often stamped 00:00 of the next day.
 3. **Plan.** `cdors --plan --json <chain> [output]` reads no data. Check `read_limit.exceeded`,
-   `totals.bytes_decoded` and, for printing operators, `print.exceeded`.
+   `totals.bytes_decoded`, `warnings` and, for printing operators, `print.exceeded`.
 4. **Run.** Print values as JSON, or write a file (`.nc`: NetCDF-4, `.zarr`: Zarr):
    `cdors --json outputtab,date,value <chain>` prints
    `{"cdors_values":1, ..., "records":[{"date":"2020-07-16","value":291.88}, ...]}`.
@@ -82,5 +83,9 @@ has no read limit. Printing operators stop at 1,000,000 values (`--max-values`):
 - A time selection that selects nothing is an error, as in cdo.
 - `sinfo`, `showname`, `showtimestamp` and `griddes` take files or stores, not chains.
 - cdo options that cdors lacks (`-k`, `-r`, ...) are refused. `-z zstd` works for Zarr outputs only.
-- Grids without cell bounds (HEALPix stores) get equal area weights, with a warning, as in cdo; HEALPix cells have
-  equal areas.
+- Field means weight by cell area (from the file, the cell bounds, or computed for regular, Gaussian and reduced
+  Gaussian grids; HEALPix cells have equal areas). A grid with none of these gets EQUAL weights, as in cdo, and a
+  framed warning (`"warning": "equal_weights"`, also in `warnings` of `--plan`): such a mean is wrong unless all
+  cells have the same area. Give the grid with `-setgrid,<grid file>`, or say that the mean is unweighted.
+- GRIB through gribscan references: time stamps and level order are the references' (EERIE monthly means are
+  stamped mid-month; cdo on the GRIB files: end of month). Pressure levels are in Pa, as in cdo.

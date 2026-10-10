@@ -25,6 +25,12 @@
 #                     NetCDF fixture itself (one field per chunk), both with "--mem $CDORS_PLANNER_MEM"
 #                     (default 1M: finer tiles, lane waves, several passes); each must equal the first
 #                     cdors output exactly. CDORS_PLANNER_MEM= drops --mem and the second run.
+#   (always)          rows on a fixture <f> with gribscan references <f>.json next to it (the grb_*
+#                     fixtures, NetCDF copies cdo made of GRIB files) also run cdors on the references
+#                     (variant "grib", vs the cdo reference on the NetCDF copy; compared without
+#                     --pedantic, since gribscan drops single levels such as 2 m or mean sea level that
+#                     cdo keeps as z-axes, and cdo's pedantic diffn aborts on "different levels"; grid
+#                     types are checked by the griddes text rows)
 #   CDORS_THREADS     thread options of every cdors run   (default: -P 2 --io-threads 2)
 #   CDORS_THREADS_TINY  ... of the tiny-chunk run         (default: -P 3 --io-threads 3; different
 #                     from the base run, so the planner check also checks thread-count invariance)
@@ -142,6 +148,12 @@ run_job() {
       [[ -n $CDORS_PLANNER_MEM ]] && runs+=("mem|$in1|$in2|$CDORS_THREADS_TINY --mem $CDORS_PLANNER_MEM")
     fi
   fi
+  # GRIB fixtures: cdors also reads gribscan's references to the GRIB file the fixture was made from
+  local gp=$CDORS_FIXTURES/$f1.json
+  if [[ -e $gp ]]; then
+    local g2=$in2; [[ $f2 == "$f1" ]] && g2=$gp
+    runs+=("grib|$gp|$g2|$CDORS_THREADS")
+  fi
 
   local abslim=0
   case $tag in
@@ -183,6 +195,7 @@ run_job() {
       if [[ $name == tiny || $name == mem ]]; then
         want=$base_out lim=0 wantts=$dir/ts_base
       fi
+      local -a ped=(--pedantic); [[ $name == grib ]] && ped=()
       local -a og=()  # rows with cdors-only options: values on cdo's grid
       [[ $args == *'{cdors:'* && $name != tiny && $name != mem ]] && og=(-setgrid,"$want")
       if [[ $name == base ]]; then
@@ -193,7 +206,7 @@ run_job() {
         on=$("$CDO" -s showname "$out" 2>> "$log" | tr -s ' ' '\n' | sed '/^$/d' | sort)
         [[ $wn == "$on" ]] || { echo "names: want [$wn] got [$on]" >> "$log"; fail "variables differ ($name)"; }
         for v in $wn; do
-          "$CDO" --pedantic diffn,abslim="$lim" -selname,"$v" "$want" -selname,"$v" "${og[@]}" "$out" >> "$log" 2>&1 || fail "values differ ($name, $v, abslim=$lim)"
+          "$CDO" "${ped[@]}" diffn,abslim="$lim" -selname,"$v" "$want" -selname,"$v" "${og[@]}" "$out" >> "$log" 2>&1 || fail "values differ ($name, $v, abslim=$lim)"
         done
       fi
       "$CDO" -s showtimestamp "$out" > "$dir/ts_$name" 2>> "$log"

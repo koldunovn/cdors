@@ -7,6 +7,12 @@
 //!
 //! Missing values: `_FillValue`/`missing_value` attributes; for v2 also the array's
 //! `fill_value`, which is where xarray stores `_FillValue` in Zarr v2.
+//!
+//! Zarr v2 arrays whose compressor is gribscan's `gribscan.rawgrib` (kerchunk references to GRIB
+//! files) store one GRIB message per chunk; cdors decodes the messages itself ([`super::grib`])
+//! and restores the grid gribscan flattened ([`gribscan`]).
+
+mod gribscan;
 
 use super::{ChunkDecoder, ChunkGrid, ChunkSource, DecodedChunk, EncodedChunk, RawChunk, Values};
 use crate::error::{Error, Result};
@@ -35,6 +41,11 @@ struct ZarrVar {
     /// The codec chain is just c-blosc over native-order, C-order elements: chunks are
     /// decompressed straight into the value buffer, bypassing `zarrs`' intermediate copies.
     direct_blosc: bool,
+    /// Chunks are GRIB messages (`gribscan.rawgrib`); `zarrs` sees the array without a codec.
+    grib: bool,
+    /// The last stored dimension is presented as two (`value` as `lat, lon`, see [`gribscan`]),
+    /// both one chunk: presented chunk indices have one more trailing 0 than the stored ones.
+    split: bool,
 }
 
 fn zerr(e: impl std::fmt::Display) -> Error {
@@ -79,7 +90,29 @@ pub(crate) fn trim<T: Copy>(v: Vec<T>, full: &[usize], ext: &[usize]) -> Vec<T> 
 }
 
 impl ZarrVar {
+    /// The stored chunk indices of presented chunk `indices`.
+    fn stored<'a>(&self, indices: &'a [u64]) -> &'a [u64] {
+        if self.split {
+            &indices[..indices.len() - 1]
+        } else {
+            indices
+        }
+    }
+
     fn decode_bytes(&self, indices: &[u64], bytes: Option<&[u8]>) -> Result<Values> {
+        if self.grib
+            && let Some(b) = bytes
+        {
+            let v = super::grib::decode(b).map_err(|e| Error::bad_data(format!("GRIB: {e}")))?;
+            let n: usize = self.grid.chunk_shape.iter().product();
+            if v.len() != n {
+                return Err(Error::bad_data(format!(
+                    "GRIB message with {} values in a chunk of {n}",
+                    v.len()
+                )));
+            }
+            return Ok(super::convert_vec(v, &self.encoding));
+        }
         if self.direct_blosc
             && let Some(b) = bytes
         {
@@ -108,7 +141,7 @@ impl ZarrVar {
                 return Ok(v);
             }
         }
-        let shape = self.array.chunk_shape(indices).map_err(zerr)?;
+        let shape = self.array.chunk_shape(self.stored(indices)).map_err(zerr)?;
         let dt = self.array.data_type();
         let fv = self.array.fill_value();
         let ab = match bytes {
@@ -144,6 +177,9 @@ impl ChunkDecoder for ZarrVar {
     }
 
     fn codecs(&self) -> String {
+        if self.grib {
+            return "gribscan.rawgrib".to_owned();
+        }
         codec_names(self.array.metadata()).join(",")
     }
 }
@@ -230,6 +266,9 @@ fn codec_names(m: &ArrayMetadata) -> Vec<String> {
 pub struct ZarrSource {
     ds: Dataset,
     vars: HashMap<String, Arc<ZarrVar>>,
+    /// Coordinates computed when the store was opened (restored gribscan grids), served
+    /// instead of the stored arrays of the same name.
+    synthetic: HashMap<String, Vec<f64>>,
 }
 
 fn json_attrs(m: &Map<String, Value>) -> Attrs {
@@ -343,6 +382,7 @@ impl ZarrSource {
         };
         // (name, metadata, attrs-for-v2) per array, plus global attributes
         let mut arrays: Vec<(String, ArrayMetadata)> = Vec::new();
+        let mut grib_arrays: Vec<String> = Vec::new();
         let format;
         let global: Map<String, Value>;
         if let Some(rootmeta) = get("zarr.json")? {
@@ -432,7 +472,12 @@ impl ZarrSource {
             global = gattrs
                 .and_then(|v| v.as_object().cloned())
                 .unwrap_or_default();
-            for (name, za, at) in entries {
+            for (name, mut za, at) in entries {
+                if za.pointer("/compressor/id").and_then(Value::as_str) == Some("gribscan.rawgrib")
+                {
+                    za["compressor"] = Value::Null;
+                    grib_arrays.push(name.clone());
+                }
                 let mut m: ArrayMetadataV2 =
                     serde_json::from_value(za).map_err(|e| zerr(format!("array '{name}': {e}")))?;
                 if let Some(Value::Object(a)) = at {
@@ -545,10 +590,13 @@ impl ZarrSource {
                 grid: None,
                 zaxis: None,
             });
+            let grib = grib_arrays.contains(&name);
             vars_map.insert(
                 name,
                 Arc::new(ZarrVar {
                     direct_blosc: direct_blosc(&raw, dtype),
+                    grib,
+                    split: false,
                     array,
                     dtype,
                     encoding,
@@ -569,6 +617,12 @@ impl ZarrSource {
                 time: None,
             },
             vars: vars_map,
+            synthetic: HashMap::new(),
+        };
+        let reduced = if grib_arrays.is_empty() {
+            Vec::new()
+        } else {
+            gribscan::restore(&mut src, &grib_arrays)?
         };
         let mut ds = std::mem::replace(
             &mut src.ds,
@@ -585,7 +639,33 @@ impl ZarrSource {
         );
         model::classify(&mut ds, &|n| src.read_var(n))?;
         src.ds = ds;
+        gribscan::set_reduced(&mut src, reduced);
         Ok(src)
+    }
+
+    /// A chunk whose file is missing (references outlive the files they point to, as the EERIE
+    /// gribscan references of 2007-2014): which time step it holds and what to do.
+    fn missing_file_hint(&self, var: &str, indices: &[u64], err: Error) -> Error {
+        if err.code != crate::error::ErrorCode::MissingInput {
+            return err;
+        }
+        let step = self
+            .ds
+            .var(var)
+            .zip(self.ds.time.as_ref())
+            .and_then(|(v, t)| {
+                let d = v.dims.iter().position(|d| d.name == t.dim)?;
+                let k = indices[d] as usize * self.vars.get(var)?.grid.chunk_shape[d];
+                Some((k, t.steps.get(k)?.datetime.iso()))
+            });
+        let at = match step {
+            Some((k, date)) => format!(" (time step {}, {date})", k + 1),
+            None => String::new(),
+        };
+        err.with_hint(format!(
+            "the store refers to a file that does not exist{at}; select the time steps whose \
+             files exist (-seltimestep, -selyear, -seldate) or have the references fixed"
+        ))
     }
 
     fn var(&self, name: &str) -> Result<&Arc<ZarrVar>> {
@@ -604,18 +684,36 @@ impl ChunkSource for ZarrSource {
     }
 
     fn chunk_grid(&self, var: &str) -> Result<ChunkGrid> {
+        if let Some(v) = self.synthetic.get(var) {
+            return Ok(ChunkGrid {
+                shape: vec![v.len()],
+                chunk_shape: vec![v.len().max(1)],
+            });
+        }
         Ok(self.var(var)?.grid.clone())
     }
 
     fn read_chunk(&self, var: &str, indices: &[u64]) -> Result<RawChunk> {
+        if let Some(v) = self.synthetic.get(var) {
+            self.chunk_grid(var)?.check(var, indices)?;
+            return Ok(RawChunk::Decoded(DecodedChunk {
+                origin: vec![0],
+                shape: vec![v.len()],
+                values: Values::F64(v.clone()),
+            }));
+        }
         let zv = self.var(var)?;
         zv.grid.check(var, indices)?;
-        let bytes = zv.array.retrieve_encoded_chunk(indices).map_err(|e| {
-            Error::io(format!("zarr: reading chunk {indices:?} of '{var}': {e}"))
-                .with("source", self.ds.source.as_str())
-                .with("variable", var)
-                .with("chunk", indices.to_vec())
-        })?;
+        let bytes = zv
+            .array
+            .retrieve_encoded_chunk(zv.stored(indices))
+            .map_err(|e| {
+                let err = Error::io(format!("zarr: reading chunk {indices:?} of '{var}': {e}"))
+                    .with("source", self.ds.source.as_str())
+                    .with("variable", var)
+                    .with("chunk", indices.to_vec());
+                self.missing_file_hint(var, indices, err)
+            })?;
         Ok(RawChunk::Encoded(EncodedChunk {
             indices: indices.to_vec(),
             bytes,
@@ -624,7 +722,15 @@ impl ChunkSource for ZarrSource {
     }
 
     fn read_var(&self, var: &str) -> Result<Vec<f64>> {
+        if let Some(v) = self.synthetic.get(var) {
+            return Ok(v.clone());
+        }
         let zv = self.var(var)?;
+        if zv.grib {
+            return Err(Error::bad_data(format!(
+                "'{var}' is stored as GRIB messages and is read chunk by chunk only"
+            )));
+        }
         let ab: ArrayBytes<'static> = zv
             .array
             .retrieve_array_subset(&zv.array.subset_all())
@@ -634,12 +740,18 @@ impl ChunkSource for ZarrSource {
     }
 
     fn codecs(&self, var: &str) -> Option<String> {
+        if self.synthetic.contains_key(var) {
+            return None;
+        }
         self.vars.get(var).map(|v| ChunkDecoder::codecs(v.as_ref()))
     }
 
     fn stored_size(&self, var: &str, indices: &[u64]) -> Option<u64> {
+        if self.synthetic.contains_key(var) {
+            return None;
+        }
         let zv = self.vars.get(var)?;
-        let key = zv.array.chunk_key(indices);
+        let key = zv.array.chunk_key(zv.stored(indices));
         match zv.array.storage().size_key(&key) {
             Ok(n) => Some(n.unwrap_or(0)),
             Err(_) => None,

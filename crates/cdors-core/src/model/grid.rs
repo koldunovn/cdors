@@ -120,6 +120,20 @@ pub struct Grid {
     /// ICON grid reference of unstructured grids (global attributes `number_of_grid_used`,
     /// `grid_file_uri`, `uuidOfHGrid`; variable attribute `number_of_grid_in_reference`).
     pub reference: Option<GridReference>,
+    /// Unstructured grids that are GRIB reduced grids (set by the reader of gribscan
+    /// references): the rows, from which the cell areas are computed.
+    pub reduced: Option<ReducedRows>,
+}
+
+/// The rows of a reduced grid (GRIB's reduced Gaussian and reduced lon-lat grids, stored as one
+/// cell dimension): cells in rows of equal latitude, each row with its own number of equally
+/// spaced longitudes around the globe, rows one after the other.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ReducedRows {
+    /// Latitude of each row (degrees north).
+    pub lats: Vec<f64>,
+    /// Number of cells in each row.
+    pub counts: Vec<usize>,
 }
 
 /// Reference to an ICON grid file, as CDI reads it from unstructured-grid NetCDF output.
@@ -151,6 +165,7 @@ impl Grid {
             healpix: None,
             mapping: None,
             reference: None,
+            reduced: None,
         }
     }
 

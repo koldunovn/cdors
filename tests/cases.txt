@@ -166,3 +166,23 @@ err:too_many_values | --max-values 1000 output {in} {noout}  | r36x18_std
 json     | --plan --json -yearmean -mergetime {fx}/r36x18_std_y2*.nc | r36x18_std
 json     | --plan --json -sub -selname,tas {in} -timmean -selname,tas {in} | r36x18_std
 json     | --plan --json -timpctl,90 {in} -timmin {in} -timmax {in} | r36x18_std
+#
+# GRIB through gribscan references (grb_* fixtures of tests/make_fixtures.sh): cdo reads its own
+# NetCDF copy of the GRIB file, cdors that copy and gribscan's references to the GRIB file (variant
+# "grib"). gribscan sorts the levels (500, 850 hPa), cdo keeps the order of the file (850, 500):
+# rows on grb_ll select one level or are independent of the order. The reduced Gaussian grb_rgg
+# is checked in crates/cdors-core/tests/gribscan.rs (cdo weights it equally, cdors by cell area).
+text     | griddes {in}                                | grb_ll grb_gg
+exact    | -copy {in}                                  | grb_gg
+exact    | -sellevel,50000 {in}                        | grb_ll
+exact    | -sellonlatbox,0,90,0,60 -sellevel,85000 {in} | grb_ll
+exact    | -sellonlatbox,0,90,0,60 {in}                | grb_gg
+ulp      | -fldmean -sellevel,85000 {in}               | grb_ll
+ulp      | -fldmean {in}                               | grb_gg
+ulp      | -fldstd -sellevel,50000 {in}                | grb_ll
+ulp      | -fldstd {in}                                | grb_gg
+ulp      | -zonmean -sellevel,85000 {in}               | grb_ll
+ulp      | -zonmean {in}                               | grb_gg
+ulp      | -timmean -sellevel,85000 {in}               | grb_ll
+ulp      | -timmean {in}                               | grb_gg
+ulp      | -vertmean {in}                              | grb_ll

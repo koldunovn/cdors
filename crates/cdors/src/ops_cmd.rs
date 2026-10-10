@@ -204,6 +204,17 @@ pub fn notes(name: &str) -> Vec<String> {
              [Space statistics: cell_methods]",
         );
     }
+    if cdors_core::model::area::fldstat_weighting(name)
+        == Some(cdors_core::model::area::SpaceWeighting::Weights)
+    {
+        n.push(
+            "weighted by cell area; a grid without cell areas or bounds gets equal weights with a \
+             framed warning (cdo: one line) and a `warnings` entry in --plan \
+             [Space statistics: Equal area weights are announced loudly]; reduced Gaussian grids \
+             are weighted by cell area, where cdo weights them equally \
+             [Space statistics: Reduced Gaussian grids are weighted by cell area]",
+        );
+    }
     if is(&["zon"]) {
         n.push(
             "on HEALPix grids each ring is summed in nested order [Space statistics: HEALPix zon*]",

@@ -35,7 +35,9 @@ bench/realdata_check.sh       # report only: real-data chains vs cdo/numpy, stat
 ```
 
 `env.sh` keeps the toolchain, the build tree and all caches under `/work`, not in `$HOME`.
-cdors links against the spack netCDF-C and the HDF5 it uses; `cdors --version` prints both.
+cdors links against the spack netCDF-C and the HDF5 it uses (`cdors --version` prints both), and
+statically against libaec 1.0.6 for CCSDS-packed GRIB (`LIBAEC_DIR`, default the spack libaec whose
+szip library that HDF5 loads).
 
 ## Usage
 
@@ -50,9 +52,10 @@ cdors --plan -yearmean in.zarr   # what would be read, without reading it
 `cdors --help` lists all options.
 
 **Inputs:** Zarr stores, NetCDF files (NetCDF-4 chunks are read directly through a cached chunk
-index; NetCDF-3 goes through netCDF-C), kerchunk references (JSON or Parquet), `http(s)://` and
-`s3://` URLs of Zarr stores or kerchunk JSON, and glob patterns (`'data/*.nc'`, quoted), whose
-files are sorted and concatenated along time. **Output:** the format follows the output name
+index; NetCDF-3 goes through netCDF-C), kerchunk references (JSON or Parquet), including
+gribscan's references to GRIB files (below), `http(s)://` and `s3://` URLs of Zarr stores or
+kerchunk JSON, and glob patterns (`'data/*.nc'`, quoted), whose files are sorted and concatenated
+along time. **Output:** the format follows the output name
 (`.zarr`: Zarr v3, any other name: NetCDF-4) unless `-f nc4|nc4c|nc|zarr|zarr2` says otherwise
 (`nc` is the 64-bit offset format; `nc4c` writes NetCDF-4, not the classic model). Float32
 variables are written as float32, all others as float64 (`-b F32|F64`). NetCDF output is
@@ -67,6 +70,28 @@ and step); Zarr chunks hold about 4 MiB. When a statistic runs in lane waves (`-
 their grid mapping and without coordinates; `--lonlat` also writes the cell centres (`lon`,
 `lat` in degrees, float32, and `coordinates = "lat lon"` on the variables) for viewers such as
 ushow that need explicit coordinates. cdo then reads the file as an unstructured grid.
+
+**GRIB through gribscan references.** gribscan (`gribscan-build`; the EERIE IFS-FESOM data on
+Levante) stores every field as one GRIB message per chunk and flattens every grid to one dimension
+`value` with per-point `lat` and `lon`. cdors decodes the messages itself (GRIB2 with simple or
+CCSDS packing, with or without a bit-map; bit-identical to ecCodes) and restores the grid from the
+coordinates: regular lon-lat and Gaussian grids get the dimensions `lat` and `lon`, as cdo reads
+the GRIB file, and reduced Gaussian grids stay one dimension that knows its rows, from which the
+cell areas are computed. Pressure levels are given in Pa, as cdo gives them. On the EERIE 0.25°
+set a field mean over 684 months took 1.3 s (cdo 2.5.0 on the same messages: 13 s, same values).
+Time stamps, the order of the levels and the levels gribscan dropped (2 m, mean sea level) are
+those of the references, not of cdo on the GRIB file (see
+[docs/deviations.md](docs/deviations.md)). A reference to a file that no longer exists fails with
+`missing_input`, naming the file and the time step.
+
+**Area weights.** `fldmean`, `fldavg`, `fldstd`, `fldvar` and their `1` variants weight by cell
+area: a cell-area variable (`cell_measures`), else the cell bounds (stored, or generated between
+the centres of regular and Gaussian grids), else the rows of a reduced Gaussian grid; HEALPix
+cells have equal areas. `--plan` names the source for every variable (`area weights of tas: ...`).
+A grid with none of these (an unstructured grid without bounds, a grid without coordinates) gets
+equal weights, as in cdo, but cdors says so loudly: a framed warning on stderr (under `--json` one
+line `{"warning": "equal_weights", ...}`) and an entry in `warnings` of `--plan`. Such a mean is
+only right if all cells have the same area; give the grid with `-setgrid,<grid file>` instead.
 
 **Outputs never replace anything by accident.** An existing output (also a dangling symlink) is
 refused (`output_exists`) unless `-O` is given, and the refusal is atomic: a file is published
@@ -123,6 +148,8 @@ b.nc` plans both files. Main fields (schema version `"cdors_plan": 1`):
 | `settings` | compute `threads`, `io_threads` (reads in flight), `tiles_in_flight`, `slurm_job` |
 | `read_limit` | `limit`, its `source`, `bytes` (decoded bytes read from files, stores and URLs; reads of in-memory intermediates do not count) and `exceeded` (the run would be refused with `read_limit`) |
 | `print` | only for the value-printing operators: `operator`, `values` (`fields` for `info`/`infon`), `max_values`, `exceeded` |
+| `stages[].kernel.area_weights[]` | `fld*` statistics: per variable, where the area weights come from (`area_weights`: `file` with `area_variable`, `bounds`, `reduced_rows`, `healpix`, `pseudo_bounds`, or `equal`) and a `description` |
+| `warnings[]` | results that are probably wrong, each `warning` and `message`: `equal_weights` (a weighted field statistic over a grid without cell areas, see "Area weights" above) |
 
 For a remapping, `--plan` reads cdo's target-grid template if one is cached and otherwise
 describes the target grid itself: `r<nx>x<ny>`, `global_<inc>`, `hpz<zoom>[_nested|_ring]`,
@@ -187,8 +214,9 @@ piped into `head` ends quietly, as with any C tool.
 far it got (`stage`, `chunks_done`, `chunks_total`) and whether its own temporary output was
 removed (`temporary_output_removed`); the output name never holds a partial file. A panic (a bug)
 reports `internal` the same way. Warnings are one line of JSON each on stderr
-(`{"warning": kind, "message": ...}`), for example for a selected year that does not exist. As in
-cdo, `-w` drops all warnings (also the JSON lines) and `-s` does not.
+(`{"warning": kind, "message": ...}`), for example for a selected year that does not exist, or
+`equal_weights` for a field mean whose grid has no cell areas (take it seriously: the result is
+not area-weighted). As in cdo, `-w` drops all warnings (also the JSON lines) and `-s` does not.
 
 | exit code | meaning | codes |
 |---|---|---|
@@ -284,7 +312,8 @@ is accepted; the min/max inputs are not read.
   (`intermediate_too_large`).
 - Information operators (`sinfo`, `showname`, `showtimestamp`, `griddes`) and `mergetime`/`cat`
   take files or stores only, not the output of another operator.
-- No GRIB input; no native NetCDF-3 reader (NetCDF-3 goes through netCDF-C).
+- GRIB only through gribscan's references, GRIB2 only (no GRIB1, no GRIB files without
+  references); no native NetCDF-3 reader (NetCDF-3 goes through netCDF-C).
 - `-f nc4c` writes NetCDF-4, not the classic model. NetCDF output is compressed with deflate
   only (`-z zstd` is for Zarr). cdo options that `cdors --help` does not list (`-k`, `-r`, ...)
   are refused.

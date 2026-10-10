@@ -373,6 +373,9 @@ fn grid_json(i: usize, g: &Grid) -> Value {
     if let Some(n) = g.nvertex {
         m.insert("nvertex".into(), json!(n));
     }
+    if let Some(r) = &g.reduced {
+        m.insert("reduced_rows".into(), json!(r.counts.len()));
+    }
     if let (Some(x), Some(y)) = (&g.xvals, &g.yvals)
         && !x.is_empty()
         && !y.is_empty()
@@ -526,9 +529,10 @@ pub fn sinfo_text(src: &dyn ChunkSource) -> String {
                 let h = g.healpix.as_ref().expect("healpix");
                 format!("points={} nside={} order={:?}", g.size, h.nside, h.order)
             }
-            GridKind::Unstructured => {
-                format!("points={} nvertex={}", g.size, g.nvertex.unwrap_or(0))
-            }
+            GridKind::Unstructured => match &g.reduced {
+                Some(r) => format!("points={} reduced, rows={}", g.size, r.counts.len()),
+                None => format!("points={} nvertex={}", g.size, g.nvertex.unwrap_or(0)),
+            },
             _ => format!("points={} ({}x{})", g.size, g.xsize, g.ysize),
         };
         let _ = writeln!(out, "{:6} : {:24} : {desc}", i + 1, g.kind.name());

@@ -202,3 +202,33 @@ Single-thread codec speed and ratio on the 12 fields (Python numcodecs): deflate
 shuffle 2.00× at 70 MB/s; zstd 1 alone 1.31× at 544 MB/s, with shuffle 1.91× at 576 MB/s; blosc zstd 1 with
 shuffle 1.87× at 654 MB/s. Deflate through netCDF-C would run on the one writer thread (about 2 s for the 145 MB,
 15 s per GB), so cdors deflates the chunks on its threads and stores them with HDF5's direct chunk write.
+
+## GRIB through gribscan references (2026-10-10)
+
+Login node (16 threads), EERIE IFS-FESOM `hist-1950`, monthly means on 19 pressure levels, 0.25° (1440 × 721),
+GRIB2 with CCSDS packing (24 bits), gribscan's Parquet references
+(`/work/bm1344/k202193/Kerchunk/IFS-FESOM_sr/3D_monthly_0.25deg_atmos_avg.parq`). cdo 2.6.0 cannot read these
+messages (ecCodes ≥ 2.40); cdo 2.5.0 (ecCodes 2.34) read the same messages copied into one GRIB file per test,
+its best case.
+
+| Task | cdors (references) | cdo 2.5.0 (GRIB file) | Values |
+|---|---|---|---|
+| `fldmean` of `mt`, 850 hPa, 684 months (1950–2006) | 1.3 s | 13 s | max difference 5e-5 K (cdo prints 4 decimals) |
+| `fldmean` of `mt`, 228 fields (12 months × 19 levels) | 0.42 s | 4.4 s | equal |
+| decoding, 228 messages | identical to ecCodes, value by value | | |
+
+The decoder is cdors' own (GRIB2 templates 5.0 and 5.42, bit-maps; CCSDS through libaec 1.0.6, linked statically):
+12.8 ms per 1-million-point message on one thread. A pure-Rust CCSDS decoder gave the same values but allocated
+per block; under cdors' four malloc arenas its 16 threads waited on malloc, and the 228-field mean took 2.9 s
+(17 s of it system time) instead of 0.42 s.
+
+Grids: gribscan flattens every grid to one dimension. Before cdors restored the grid, the 0.25° field mean was an
+unweighted mean (273.43 K against cdo's area-weighted 279.19 K for January 1950 at 850 hPa); now it is 279.185209 K.
+On the native O1280 grid (reduced Gaussian, 6,599,680 points, JSON references) the January 1950 global mean skin
+temperature is 285.666576 K, against 285.666525 K on the 0.25° grid; equal weights give 287.31 K. cdo 2.6.0 weights
+a reduced Gaussian grid equally ("Grid cell bounds not available"), 1.6 K below the area mean on the N32 test grid.
+
+Test rows: `tests/cases.txt` runs 15 rows on GRIB fixtures written with ecCodes (regular 10° lon-lat with CCSDS
+packing and a bit-map, regular Gaussian N16), with cdors reading gribscan's references and cdo its own NetCDF copy
+of the GRIB file; `crates/cdors-core/tests/gribscan.rs` checks the reduced Gaussian N32 fixture against the
+analytic area mean.

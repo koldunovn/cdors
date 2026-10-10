@@ -734,6 +734,13 @@ pub fn out_meta(plan: &Plan, lay: &[OutVar], history: Option<&str>) -> Result<Ou
             if g.kind == crate::model::GridKind::Unstructured {
                 extra.push(("CDI_grid_type".into(), text("unstructured")));
             }
+            // as cdo writes them: CDI then reads a subset of a Gaussian grid as Gaussian, too
+            if g.kind == crate::model::GridKind::Gaussian {
+                extra.push(("CDI_grid_type".into(), text("gaussian")));
+                if let Some(np) = g.base.gaussian_np {
+                    extra.push(("CDI_grid_num_LPE".into(), AttrValue::Ints(vec![np as i64])));
+                }
+            }
         }
         for &u in &users {
             for (k, a) in &extra {

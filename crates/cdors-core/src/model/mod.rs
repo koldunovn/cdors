@@ -16,7 +16,7 @@ pub mod zaxis;
 pub use dataset::{
     AttrValue, Attrs, DType, Dataset, DimRole, Encoding, Format, VarDim, VarKind, Variable,
 };
-pub use grid::{CoordAxis, Grid, GridKind, GridMapping, Healpix, HealpixOrder};
+pub use grid::{CoordAxis, Grid, GridKind, GridMapping, Healpix, HealpixOrder, ReducedRows};
 pub use time::{CalDateTime, Calendar, TimeAxis, TimeStep, TimeUnit, TimeUnits};
 pub use zaxis::ZAxis;
 

@@ -130,6 +130,45 @@ output is created.
   15th significant digit.
 - **`vert*` accumulates in double precision.** cdo accumulates vertical statistics in float32;
   cdors accumulates in f64 and rounds once on output.
+- **Equal area weights are announced loudly.** For a grid without cell areas or cell bounds
+  (an unstructured grid without bounds, a grid without coordinates) cdo weights all cells equally
+  and prints one line, "Grid cell bounds not available, using constant grid cell area weights!"
+  (`Fldstat.cc:155`). cdors uses the same equal weights but prints a framed warning that names
+  the operator, the variables, the number of cells and the grid, `{"warning": "equal_weights"}`
+  under `--json`, and a `warnings[]` entry in `--plan`, whose `area weights of ...` lines name
+  the source of the weights of every variable. Such a mean is only right if the cells have equal
+  areas, and the one-line warning is easy to miss.
+- **Reduced Gaussian grids are weighted by cell area.** cdo 2.6 finds no cell bounds for reduced
+  Gaussian grids (`gridToUnstructuredGaussianReduced`, `mpim_grid.cc:1035`, reads the latitude
+  bounds from an empty array) and weights all cells equally, with the warning above: on the N32
+  test grid its field mean is 1.6 K below the area mean. cdors (for the reduced grids it restores
+  from gribscan references) takes each cell as the rectangle between the midpoints of its row's
+  longitudes and the latitude bounds generated as for a regular axis, with its area computed as
+  for regular grids. The field mean of the EERIE IFS skin temperature of January 1950 on the
+  O1280 grid (285.66658 K) agrees with that of the same field on the 0.25° grid (285.66653 K);
+  equal weights give 287.31 K.
+
+## GRIB (gribscan references)
+
+cdors reads GRIB through gribscan's references (`README.md`); cdo reads the GRIB files. Where
+the two views differ, cdors follows the references:
+
+- **Time stamps.** gribscan's EERIE references stamp monthly means in the middle of the month
+  (1950-01-15 12:00); cdo stamps a GRIB message at the end of its period (1950-02-01 00:00), so
+  that cdo's `yearmean` of monthly means puts December into the next year.
+- **Levels.** gribscan sorts the levels (1, 5, ..., 1000 hPa) where cdo keeps the order of the
+  file, and drops a single level (2 m of `2t`, mean sea level of `msl`) that cdo keeps as a
+  z-axis. Pressure levels, stored by gribscan in hPa without units, are given in Pa, as cdo gives
+  them (`-sellevel,85000`).
+- **Grids.** gribscan flattens every grid to one dimension `value`. cdors restores regular
+  lon-lat and Gaussian grids from the coordinates (`lat`, `lon` dimensions, as cdo reads the GRIB
+  file) and gives reduced Gaussian grids their rows (cell areas, see "Space statistics"); they
+  stay one dimension, where cdo has its `gaussian_reduced` grid type. Any other grid stays
+  unstructured, with cell centres only.
+- **cdo cannot read the EERIE messages** with ecCodes 2.40 or later (cdo 2.5.1, 2.5.3 and 2.6.0
+  on Levante: "section_2 size" errors and no `shortName`); cdo 2.5.0, built with ecCodes 2.34,
+  reads them. cdors decodes the messages itself (templates 5.0 and 5.42, bit-maps), with values
+  identical to ecCodes'.
 
 ## Time axis
 

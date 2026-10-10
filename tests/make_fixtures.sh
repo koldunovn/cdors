@@ -12,6 +12,10 @@
 #   <f>_ymonmean / _ydaymean / _yseasmean   climatologies of r36x18_std and hpz2_noleap (cdo)
 #   weights_con_r36x18_r18x9.nc  SCRIP weights of cdo gencon,r18x9 for r36x18_std (remap,<grid>,<weights> rows)
 #   nocoord_360   unst_360 without horizontal coordinates (FESOM-like; written by xarray)
+#   grb_ll / grb_gg / grb_rgg   GRIB2 files written with ecCodes (tests/make_grib_fixtures.py: regular
+#                 lon-lat 10 deg on 2 pressure levels with CCSDS packing and a bit-map, regular Gaussian
+#                 N16, reduced Gaussian N32), gribscan's references to them (<name>.json, read by cdors in
+#                 the "grib" variant of tests/run_cases.sh) and cdo's NetCDF copies (<name>.nc, -b F64)
 #
 # All values are float32 (-b F32), vary in space and time, and come from cdo `expr` on a
 # `for` time series, so they are reproducible. Writes are atomic (tmp name, then mv).
@@ -23,6 +27,9 @@ TARGET=${CDORS_TARGET:-${CARGO_TARGET_DIR:-/work/ab0995/a270088/cdors-target}}
 FIX=${CDORS_FIXTURES:-$TARGET/fixtures}
 # zarr-python >= 3 writes both Zarr v2 and v3; the base mambaforge has zarr 2.14 (v2 only).
 ZARR_PYTHON=${ZARR_PYTHON:-/work/ab0995/a270088/mambaforge/envs/aimip-virt/bin/python}
+# eccodes and gribscan (0.0.7) for the GRIB fixtures
+GRIBSCAN_PYTHON=${GRIBSCAN_PYTHON:-/work/ab0995/a270088/mambaforge/envs/gribscan/bin/python}
+HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
 mkdir -p "$FIX"
 cd "$FIX"
@@ -137,3 +144,17 @@ else
   mv "weights_con_r36x18_r18x9.nc.tmp$$" weights_con_r36x18_r18x9.nc
   echo "made:   $FIX/weights_con_r36x18_r18x9.nc"
 fi
+
+# GRIB fixtures: the GRIB files and gribscan's references to them (paths to $FIX in the
+# references), then cdo's NetCDF copy of each, which cdo reads in the rows.
+if [[ -e grb_ll.json && -e grb_gg.json && -e grb_rgg.json ]]; then
+  echo "exists: $FIX/grb_{ll,gg,rgg}.{grb,json}"
+elif [[ ! -x $GRIBSCAN_PYTHON ]]; then
+  echo "skip:   grb_* (no GRIBSCAN_PYTHON=$GRIBSCAN_PYTHON)"
+else
+  "$GRIBSCAN_PYTHON" -I "$HERE/make_grib_fixtures.py" "$FIX"
+  echo "made:   $FIX/grb_{ll,gg,rgg}.{grb,index,json}"
+fi
+for g in grb_ll grb_gg grb_rgg; do
+  [[ -e $g.grb ]] && nc "$g" -b F64 copy "$g.grb"
+done

@@ -18,7 +18,13 @@
 //!    skipping repeated vertices (`gen_gridcellarea_unstruct`, `grid_area.cc:386`); triangle areas
 //!    by L'Huilier's theorem (`mod_tri_area`, `grid_area.cc:138`);
 //! 4. HEALPix: 4π / number of cells (`gen_gridcellarea_healpix`, `grid_area.cc:478`; note that
-//!    cdo divides by the number of cells *in the file*, also for a subset grid).
+//!    cdo divides by the number of cells *in the file*, also for a subset grid);
+//! 5. reduced grids (GRIB's reduced Gaussian and reduced lon-lat grids, recognised in gribscan
+//!    references): each cell is the rectangle between the midpoints of its row's longitudes and
+//!    the latitude bounds generated as for a regular axis, its area computed as for regular
+//!    grids. This is what cdo means to do (`gridToUnstructuredGaussianReduced`,
+//!    `mpim_grid.cc:1035`, then `gen_gridcellarea_unstruct`), but cdo 2.6 finds no cell bounds
+//!    there and falls back to constant weights.
 //!
 //! Computed areas are on the unit sphere and are scaled by R² for `gridarea`; R is the
 //! `PLANET_RADIUS` environment variable, else the `earth_radius` attribute of the grid mapping,
@@ -32,7 +38,7 @@
 //! get a pseudo extent of 0.01 in the missing direction (`gridGenAreaReg2Dweights`,
 //! `grid_area.cc:379`).
 
-use super::{Dataset, Grid, GridKind, HealpixOrder, ReadVar, Variable, ZAxis};
+use super::{Dataset, Grid, GridKind, HealpixOrder, ReadVar, ReducedRows, Variable, ZAxis};
 use crate::error::{Error, ErrorCode, Result};
 use rayon::prelude::*;
 
@@ -50,6 +56,8 @@ pub enum AreaSource {
     Healpix,
     /// Regular grid with one row or column and no bounds: pseudo extent, valid only as weights.
     PseudoBounds,
+    /// Reduced grid: lon-lat rectangles of its rows.
+    ReducedRows,
     /// No areas: constant weights 1/N.
     Constant,
 }
@@ -80,6 +88,34 @@ pub type AreaResult = std::result::Result<CellAreas, AreaFailure>;
 pub struct CellWeights {
     pub values: Vec<f64>,
     pub source: AreaSource,
+}
+
+impl AreaSource {
+    /// Short name for `--plan --json` (`area_weights`).
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::File(_) => "file",
+            Self::Bounds => "bounds",
+            Self::Healpix => "healpix",
+            Self::PseudoBounds => "pseudo_bounds",
+            Self::ReducedRows => "reduced_rows",
+            Self::Constant => "equal",
+        }
+    }
+
+    /// Where the weights come from, for `--plan`.
+    pub fn describe(&self) -> String {
+        match self {
+            Self::File(v) => format!("cell areas from the variable '{v}'"),
+            Self::Bounds => "cell areas from the cell bounds (stored, or generated between the \
+                             centres of regular and Gaussian grids)"
+                .into(),
+            Self::Healpix => "equal cell areas (HEALPix)".into(),
+            Self::PseudoBounds => "cell areas of a single row or column".into(),
+            Self::ReducedRows => "cell areas from the rows of the reduced grid".into(),
+            Self::Constant => "EQUAL WEIGHTS: no cell areas, no cell bounds".into(),
+        }
+    }
 }
 
 impl CellWeights {
@@ -258,6 +294,9 @@ pub fn gen_area(ds: &Dataset, grid: &Grid, read: ReadVar<'_>) -> Result<AreaResu
                 values: vec![a; grid.size],
                 source: AreaSource::Healpix,
             })
+        }
+        GridKind::Unstructured if grid.reduced.is_some() => {
+            gen_area_reduced(grid.reduced.as_ref().expect("reduced rows"))
         }
         GridKind::Curvilinear | GridKind::Unstructured => gen_area_unstruct(ds, grid, read)?,
         GridKind::Generic => Err(AreaFailure::Unsupported),
@@ -445,6 +484,27 @@ fn gen_area_reg2d(
         AreaSource::Bounds
     };
     Ok(Ok(CellAreas { values, source }))
+}
+
+/// Areas of a reduced grid: per row, the rectangle of width 360°/n between the row's latitude
+/// bounds (generated as for a regular axis and checked at the poles), as two spherical triangles
+/// like the cells of regular grids. All cells of a row have the same area.
+fn gen_area_reduced(rows: &ReducedRows) -> AreaResult {
+    let mut lat = gen_axis_bounds(&rows.lats);
+    check_lat_borders(&mut lat);
+    let d2r = std::f64::consts::PI / 180.0;
+    let mut values = Vec::with_capacity(rows.counts.iter().sum());
+    for (j, &n) in rows.counts.iter().enumerate() {
+        let (a, b) = (lat[2 * j] * d2r, lat[2 * j + 1] * d2r);
+        let (lo, hi) = if b > a { (a, b) } else { (b, a) };
+        let half = std::f64::consts::PI / n.max(1) as f64;
+        let area = huiliers_area(&[-half, half, half, -half], &[lo, lo, hi, hi]);
+        values.resize(values.len() + n, area);
+    }
+    Ok(CellAreas {
+        values,
+        source: AreaSource::ReducedRows,
+    })
 }
 
 /// `gen_gridcellarea_unstruct` (`grid_area.cc:386`) for curvilinear (4 vertices) and
@@ -928,5 +988,46 @@ pub fn var_to_std(v: f64) -> f64 {
         0.0
     } else {
         v.sqrt()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reduced_grid_areas() {
+        // N32 reduced Gaussian rows of ecCodes' sample (north half; the south mirrors it)
+        let north = [
+            20, 27, 36, 40, 45, 50, 60, 64, 72, 75, 80, 90, 90, 96, 100, 108, 120, 120, 120, 128,
+            128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128,
+        ];
+        let counts: Vec<usize> = north.iter().chain(north.iter().rev()).copied().collect();
+        let x = std::f64::consts::PI / 64.0;
+        let lats: Vec<f64> = (0..64)
+            .map(|j| 90.0 - (j as f64 + 0.5) * 180.0 / 64.0 + 0.01 * x.sin())
+            .collect();
+        let rows = ReducedRows { lats, counts };
+        let a = gen_area_reduced(&rows).unwrap();
+        assert_eq!(a.values.len(), rows.counts.iter().sum::<usize>());
+        let total: f64 = a.values.iter().sum();
+        assert!(
+            (total / (4.0 * std::f64::consts::PI) - 1.0).abs() < 1e-3,
+            "{total}"
+        );
+        // weighted mean of cos²(lat) is 2/3 on the sphere; equal weights would miss by far more
+        let mut k = 0;
+        let (mut sw, mut swx, mut sx) = (0.0, 0.0, 0.0);
+        for (j, &n) in rows.counts.iter().enumerate() {
+            let c = rows.lats[j].to_radians().cos().powi(2);
+            for _ in 0..n {
+                sw += a.values[k];
+                swx += a.values[k] * c;
+                sx += c;
+                k += 1;
+            }
+        }
+        assert!((swx / sw - 2.0 / 3.0).abs() < 2e-3, "{}", swx / sw);
+        assert!((sx / k as f64 - 2.0 / 3.0).abs() > 1e-2);
     }
 }

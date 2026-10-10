@@ -11,8 +11,10 @@
 //! The JSON is the stable interface for agents (`"cdors_plan": 1` is its schema version):
 //! top-level `output`, `format`, `inputs` (every file read, at most 100),
 //! `inputs_count`, `inputs_truncated`, `stages[]` (`operators`, `ignored_operators`, `fold_kernel`, `passes`,
-//! `tiles`, `chunks_read`, `bytes_decoded`, `bytes_compressed`, `variables[].leaves[]`), `totals`,
-//! `memory`, `remap_weights`, `settings` and `read_limit`. Byte counts are plain integers.
+//! `tiles`, `chunks_read`, `bytes_decoded`, `bytes_compressed`, `kernel` (for `fld*`:
+//! `area_weights[]`), `variables[].leaves[]`), `totals`, `memory`, `remap_weights`, `settings`,
+//! `read_limit` and `warnings[]` (`warning`, `message`: results that are probably wrong, such as
+//! field means over a grid without cell areas). Byte counts are plain integers.
 
 use super::stage::Stage;
 use super::tiling::{LeafInfo, LeafRead, VarTiling};
@@ -342,6 +344,7 @@ pub fn to_json(plan: &Plan, cmd: &Command, threads: usize, io_threads: usize) ->
 
     let mut stages = Vec::new();
     let mut weights = Vec::new();
+    let mut warnings = Vec::new();
     let mut total_comp: Option<u64> = Some(0);
     let (mut budget, mut g_stored, mut g_dec) = (SAMPLE_TOTAL, 0u64, 0u64);
     for (si, (stage, st)) in plan.stages.iter().zip(&stats).enumerate() {
@@ -425,6 +428,13 @@ pub fn to_json(plan: &Plan, cmd: &Command, threads: usize, io_threads: usize) ->
             .and_then(Value::as_array)
         {
             weights.extend(w.iter().cloned());
+        }
+        if let Some(w) = info
+            .as_ref()
+            .and_then(|i| i.get("warnings"))
+            .and_then(Value::as_array)
+        {
+            warnings.extend(w.iter().cloned());
         }
         let fold_dim = stage.kernel.as_ref().map(|k| k.fold_dim());
         let ops = &ops_per_stage[si].ops;
@@ -547,6 +557,7 @@ pub fn to_json(plan: &Plan, cmd: &Command, threads: usize, io_threads: usize) ->
             "bytes": src_dec,
             "exceeded": lim.limit.is_some_and(|l| src_dec > l),
         },
+        "warnings": warnings,
     })
 }
 
@@ -645,6 +656,25 @@ pub fn to_text(p: &Value) -> String {
             b(&st["bytes_decoded"]),
             st["tiles"]
         );
+        // area weights of fld* statistics, variables with the same source on one line
+        let mut by_source: Vec<(&str, Vec<&str>)> = Vec::new();
+        for w in st["kernel"]["area_weights"]
+            .as_array()
+            .into_iter()
+            .flatten()
+        {
+            let (d, v) = (
+                w["description"].as_str().unwrap_or(""),
+                w["variable"].as_str().unwrap_or(""),
+            );
+            match by_source.iter_mut().find(|(k, _)| *k == d) {
+                Some((_, vs)) => vs.push(v),
+                None => by_source.push((d, vec![v])),
+            }
+        }
+        for (d, vs) in by_source {
+            let _ = writeln!(s, "  area weights of {}: {d}", vs.join(", "));
+        }
         for v in st["variables"].as_array().into_iter().flatten() {
             for l in v["leaves"].as_array().into_iter().flatten() {
                 let _ = writeln!(
@@ -728,5 +758,8 @@ pub fn to_text(p: &Value) -> String {
             ""
         }
     );
+    for w in p["warnings"].as_array().into_iter().flatten() {
+        let _ = writeln!(s, "WARNING: {}", w["message"].as_str().unwrap_or(""));
+    }
     s
 }

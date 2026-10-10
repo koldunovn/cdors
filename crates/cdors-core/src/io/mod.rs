@@ -11,6 +11,7 @@
 //! are NaN and packed integers are unpacked (`scale_factor`, `add_offset`). Chunks at the array
 //! edge are trimmed to the array extent.
 
+pub mod grib;
 pub mod kerchunk;
 pub mod multifile;
 pub mod netcdf4;

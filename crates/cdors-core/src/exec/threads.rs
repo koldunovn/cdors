@@ -48,6 +48,38 @@ pub fn warn(kind: &str, message: &str) {
     }
 }
 
+/// A warning that must not be missed (results that are probably wrong, such as field means
+/// with equal weights): framed and in capitals on stderr, one line of JSON under `--json` (as
+/// [`warn`]); nothing under `-w`.
+pub fn warn_loud(kind: &str, message: &str) {
+    if NO_WARNINGS.load(Ordering::Relaxed) {
+        return;
+    }
+    if JSON.load(Ordering::Relaxed) {
+        warn(kind, message);
+        return;
+    }
+    const WIDTH: usize = 84;
+    let rule = format!("cdors: WARNING {}", "*".repeat(WIDTH));
+    let mut out = vec![rule.clone()];
+    let mut line = String::new();
+    for word in message.split_whitespace() {
+        if !line.is_empty() && line.len() + 1 + word.len() > WIDTH {
+            out.push(format!("cdors: WARNING {line}"));
+            line.clear();
+        }
+        if !line.is_empty() {
+            line.push(' ');
+        }
+        line.push_str(word);
+    }
+    if !line.is_empty() {
+        out.push(format!("cdors: WARNING {line}"));
+    }
+    out.push(rule);
+    eprintln!("{}", out.join("\n"));
+}
+
 /// The one warning per process about threads the system refused.
 fn warn_once(message: &str) {
     if !WARNED.swap(true, Ordering::Relaxed) {

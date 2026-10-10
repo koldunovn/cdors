@@ -14,7 +14,12 @@ prototype meets its four criteria: `docs/criteria.md`.
   but the "half of local throughput" mark is not met, because the EERIE server caps every client at ≈ 0.2 GB/s
   (cdors is 1.2–1.3× xarray there; S3 was never tried on a real bucket); agents, met in a small check; bounded memory,
   met at 1.1 TB (the 13 TB store was not run).
-- Correctness: every operator is compared with cdo 2.6.0 by `tests/run_cases.sh` (237 rows, about 30 s, both
+- **GRIB through gribscan references (2026-10-10).** The EERIE IFS-FESOM GRIB data are readable: cdors decodes the
+  messages itself (identical to ecCodes) and restores the grid gribscan flattened, so field means are area-weighted
+  (0.25° set: 684 months of `fldmean` at 850 hPa in 1.3 s, cdo 2.5.0 13 s, same values; cdo 2.6.0 cannot read these
+  messages). Reduced Gaussian grids (the native O1280) are weighted by cell area, where cdo weights them equally.
+  Field means that have to use equal weights now say so in a framed warning and in `--plan`.
+- Correctness: every operator is compared with cdo 2.6.0 by `tests/run_cases.sh` (262 rows, about 30 s, both
   NetCDF read paths, and a planner check that forces tiny chunks, tiny memory and several passes and must give
   bit-identical output). The real-data check (`bench/realdata_check.sh`, 23 cases on small slices of W1–W4, ICON
   R2B8, FESOM, HadGEM3 ORCA1, the EERIE cloud), last run on the final binary: 17 identical, 2 within tolerance (a percentile
@@ -38,7 +43,8 @@ prototype meets its four criteria: `docs/criteria.md`.
 | Selection | `selname`, `sellevel`, `seltimestep`, `seldate`, `selyear`, `selmon`, `selseason`, `sellonlatbox` (regular, curvilinear, unstructured, HEALPix) — selections decide which chunks are read |
 | Arithmetic | `add/sub/mul/div`, `*c`, `ifthen`, `ymon/yday/yseas` × `add/sub/mul/div` |
 | Time statistics | `tim/hour/day/mon/seas/year` and `ymon/yday/yseas` × mean, avg, min, max, sum, range, std, std1, var, var1; `run*`; exact percentiles `tim/hour/day/mon/seas/yearpctl` (all 16 cdo methods, bit-identical to cdo where cdo is exact) |
-| Space statistics | `fld*`, `zon*`, `mer*`, `vert*` with cdo's area/thickness weights |
+| Space statistics | `fld*`, `zon*`, `mer*`, `vert*` with cdo's area/thickness weights; reduced Gaussian grids by cell area; equal weights only with a loud warning (`--plan` names the source of the weights) |
+| GRIB | gribscan's kerchunk references to GRIB2 files (EERIE IFS-FESOM): own decoder (simple and CCSDS packing, bit-maps), regular and Gaussian grids restored as lon-lat, reduced Gaussian grids with their rows, pressure levels in Pa |
 | Remapping | `remap,<grid>,<weights>`, `remapnn/dis/bil/con/ycon` (weights made once by cdo and cached), `hpdegrade/hpupgrade`; reads only the source cells the weights use (point extraction is cheap) |
 | Files | `copy`, `setgrid`, `mergetime`, `cat` (many files or a glob as one virtual input) |
 | Chains | any nesting, incl. statistics of statistics, via in-memory intermediates |
@@ -114,7 +120,7 @@ Deliberate and observed differences from cdo: `docs/deviations.md` (including fo
 ## Known gaps (next round)
 
 - Not implemented yet: `expr`, `trend/regres`, correlations, ETCCDI indices, `ydaypctl/ydrunpctl`, `intlevel`,
-  ensemble statistics, EOFs, attribute editing, GRIB input (75 of 78 IFS-FESOM2 Parquet sets reference GRIB),
+  ensemble statistics, EOFs, attribute editing, GRIB without gribscan references and GRIB1 (ERA5),
   bracket syntax, an MCP/JSON-plan layer.
 - ~~Planning on inputs of many NetCDF-4 files~~: fixed (header cached with the chunk index, members opened
   concurrently). The first run on a file still opens it through netCDF-C.

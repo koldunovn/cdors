@@ -159,6 +159,28 @@ cdors outputtab,date,value -timmean -fldmean -sellonlatbox,-10,40,35,70 -selmon,
 1.8 s from the cloud, 0.8 s from the kerchunk references, same value. The server gives about 0.2 GB/s. Datasets:
 `https://eerie.cloud.dkrz.de/datasets`. cdo cannot read these URLs.
 
+**GRIB through gribscan references**: IFS-FESOM (`hist-1950`), monthly means on pressure levels, 0.25°, stored as
+GRIB messages with references made by gribscan:
+
+```bash
+G=/work/bm1344/k202193/Kerchunk/IFS-FESOM_sr/3D_monthly_0.25deg_atmos_avg.parq
+cdors outputtab,date,value -fldmean -sellevel,85000 -selyear,1950 -selname,mt $G
+```
+```
+#      date    value
+ 1950-01-15 279.185209266673
+ ...
+ 1950-12-15 279.269668279689
+```
+
+Global mean temperature at 850 hPa per month of 1950, in 0.6 s; all 684 months to 2006 take 1.3 s. cdors decodes the
+GRIB messages itself and puts gribscan's flattened grid back on its 1440 × 721 lon-lat grid, so the mean is
+area-weighted, as cdo's. cdo 2.6.0 cannot read these messages at all (cdo 2.5.0 can: 13 s for the 684 months, the
+same values). The references stamp monthly means mid-month; cdo stamps them at the end of the month. The native
+O1280 grid (`gribscan_1m_NATIVE`) works too: cdors weights its reduced Gaussian rows by cell area, and the January
+1950 global mean skin temperature agrees with the 0.25° one to 0.0001 K. From 2007 on, the files these references
+point to are gone; cdors names the missing file and the time step.
+
 ## Example 5: scripts and agents
 
 Every command takes `--json`: values as one JSON object, errors as one JSON object on stderr with a code and a hint:
@@ -396,7 +418,9 @@ once per second.
 
 - **Same syntax as cdo:** `cdors [options] -op3 -op2,args -op1 input output`.
 - **Selections innermost** (`-selname`, `-selyear`, `-sellonlatbox`, ...): they decide which chunks are read.
-- **Plan first:** `cdors --plan <command>` shows reads, memory and passes without reading data.
+- **Plan first:** `cdors --plan <command>` shows reads, memory, passes and where area weights come from, without
+  reading data.
+- **Equal-weights warning:** a framed `WARNING` about equal weights means the field mean is not area-weighted.
 - **Outputs:** `.zarr` gives Zarr, anything else NetCDF-4; existing files need `-O`; `-z zip` compresses NetCDF
   (Zarr always is).
 - **Login nodes:** 16 threads, 64 GB read per command, a 4 GiB memory plan.
@@ -440,13 +464,17 @@ Documentation next to the program, in `/work/ab0995/a270088/cdors/`:
 - `sinfo` prints its own summary, not cdo's table.
 - `mergetime` and `cat` refuse overlapping or backward times.
 - `sinfo`, `showname`, `griddes` and `showtimestamp` take files, not chains.
+- A field mean over a grid without cell areas or bounds uses equal weights, as in cdo, but warns in a framed block
+  (cdo: one line). cdors weights reduced Gaussian grids by cell area; cdo 2.6 weights them equally.
+- GRIB through gribscan references: time stamps and level order are the references' (monthly means mid-month).
 
 Full list: `doc/deviations.md`, with five cdo bugs found on the way (cdo 2.6.0, for one, misreads a partly filled
 last time chunk of HEALPix Zarr).
 
 ## What it cannot do yet
 
-- **GRIB input** (ERA5 in `/pool/data/ERA5`, IFS GRIB output): use cdo.
+- **GRIB without gribscan references, and GRIB1** (ERA5 in `/pool/data/ERA5`): use cdo. GRIB with gribscan
+  references (EERIE IFS-FESOM) works, see Example 4.
 - **Many cdo operators**, e.g. `expr`, `trend`, correlations, ETCCDI indices, `ydaypctl`, `intlevel`, ensemble
   statistics, EOFs.
 - **Classic NetCDF output** (`-f nc4c` writes NetCDF-4).

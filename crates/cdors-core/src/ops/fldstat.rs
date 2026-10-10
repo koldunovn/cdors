@@ -322,11 +322,17 @@ struct SpaceKernel {
     dim: DimRole,
     stat: Stat,
     vars: Vec<Arc<VarPlan>>,
+    /// `--plan`: where the area weights come from, and the warnings about them.
+    info: Option<serde_json::Value>,
 }
 
 impl FoldKernel for SpaceKernel {
     fn fold_dim(&self) -> DimRole {
         self.dim
+    }
+
+    fn plan_info(&self) -> Option<serde_json::Value> {
+        self.info.clone()
     }
 
     /// One accumulator and one f64 result per output value; 2-D blocks also hold a row strip
@@ -795,11 +801,16 @@ fn selected_cells(g: &GridDesc) -> Vec<usize> {
 }
 
 /// Cell weights of the `fld*` operators for the (selected) grid: cdo's weights of the whole
-/// grid, or for a subset the stored-grid weights of the selected cells renormalised to sum 1.
-fn fld_weights(g: &GridDesc, var: &VarDesc, srcs: &Sources) -> Result<Weights> {
+/// grid, or for a subset the stored-grid weights of the selected cells renormalised to sum 1;
+/// with where they come from (`None`: a single cell).
+fn fld_weights(
+    g: &GridDesc,
+    var: &VarDesc,
+    srcs: &Sources,
+) -> Result<(Weights, Option<area::AreaSource>)> {
     let n = g.size();
     if n <= 1 {
-        return Ok(Weights::Const(1.0));
+        return Ok((Weights::Const(1.0), None));
     }
     let leaf = var
         .expr
@@ -814,23 +825,45 @@ fn fld_weights(g: &GridDesc, var: &VarDesc, srcs: &Sources) -> Result<Weights> {
         .ok_or_else(|| Error::internal(format!("variable '{}' not found", leaf.var)))?;
     let read = |name: &str| g.src.read_var(name);
     let cw = area::cell_weights(g.src.dataset(), dvar, &g.base, &read)?;
-    if cw.constant() {
-        eprintln!(
-            "cdors (Warning): Grid cell bounds not available, using constant grid cell area weights for variable {}!",
-            var.name
-        );
-    }
+    let source = cw.source.clone();
     let mut w = cw.values;
     if n != g.base.size || selected_cells(g).iter().enumerate().any(|(k, &c)| k != c) {
         let picked: Vec<f64> = selected_cells(g).iter().map(|&c| w[c]).collect();
         let total: f64 = picked.iter().sum();
         w = picked.iter().map(|x| x / total).collect();
     }
-    Ok(if w.iter().all(|&x| x == w[0]) {
+    let w = if w.iter().all(|&x| x == w[0]) {
         Weights::Const(w[0])
     } else {
         Weights::Each(Arc::new(w))
-    })
+    };
+    Ok((w, Some(source)))
+}
+
+/// The warning when a weighted field statistic has to weight all cells equally: loud, since
+/// the result is then only right for grids whose cells all have the same area (cdo warns in one
+/// line, "Grid cell bounds not available, using constant grid cell area weights").
+fn equal_weights_warning(op: &str, g: &GridDesc, vars: &[String]) -> String {
+    let kind = g.base.kind;
+    let what = match kind {
+        GridKind::Generic => "has no coordinates",
+        GridKind::Unstructured => {
+            "has cell centres but no cell bounds, no cell-area variable and no layout cdors \
+             computes areas for (regular, Gaussian, reduced Gaussian, HEALPix)"
+        }
+        _ => "has cell centres but no cell bounds and no cell-area variable",
+    };
+    format!(
+        "{op} of {} uses EQUAL WEIGHTS for all {} cells, NOT area weights: the {} grid {what}. \
+         The result is only right if all cells have the same area. Fix: give the grid with cell \
+         bounds or a cell-area variable (-setgrid,<grid file>).",
+        vars.iter()
+            .map(|v| format!("'{v}'"))
+            .collect::<Vec<_>>()
+            .join(", "),
+        g.base.size,
+        kind.name()
+    )
 }
 
 /// Rows of the `zon*` operators: (row map, latitudes).
@@ -912,13 +945,18 @@ pub fn describe(node: &OpNode, mut inputs: Vec<Desc>, srcs: &Sources) -> Result<
     let input = inputs.remove(0);
     let mut out = input.clone();
     let mut plans = Vec::with_capacity(out.vars.len());
+    let mut info = None;
     match fam {
         Family::Fld | Family::Zon => {
             let weighted = fam == Family::Fld
                 && area::fldstat_weighting(name) == Some(SpaceWeighting::Weights);
             // per grid: the grid made, its dimensions, rows; weights per (grid, area variable)
             let mut made: HashMap<usize, (GridDesc, Vec<VarDim>, RowMap, usize)> = HashMap::new();
-            let mut wcache: HashMap<(usize, Option<String>), Weights> = HashMap::new();
+            type Cached = (Weights, Option<area::AreaSource>);
+            let mut wcache: HashMap<(usize, Option<String>), Cached> = HashMap::new();
+            // `--plan`: where each variable's weights come from; variables weighted equally by grid
+            let mut winfo = Vec::new();
+            let mut equal: Vec<(usize, Vec<String>)> = Vec::new();
             for v in &mut out.vars {
                 let (b0, nb) = block_of(v, DimRole::Horizontal)?;
                 let bshape: Vec<usize> = v.dims[b0..b0 + nb].iter().map(|d| d.size).collect();
@@ -962,13 +1000,32 @@ pub fn describe(node: &OpNode, mut inputs: Vec<Desc>, srcs: &Sources) -> Result<
                             .and_then(|dv| area::area_variable(g.src.dataset(), dv))
                     });
                     let key = (gi, dvar);
-                    if let Some(w) = wcache.get(&key) {
-                        w.clone()
-                    } else {
-                        let w = fld_weights(g, v, srcs)?;
-                        wcache.insert(key, w.clone());
-                        w
+                    let (w, source) = match wcache.get(&key) {
+                        Some(c) => c.clone(),
+                        None => {
+                            let c = fld_weights(g, v, srcs)?;
+                            wcache.insert(key, c.clone());
+                            c
+                        }
+                    };
+                    if let Some(src) = source {
+                        let mut e = serde_json::json!({
+                            "variable": v.name,
+                            "area_weights": src.code(),
+                            "description": src.describe(),
+                        });
+                        if let area::AreaSource::File(a) = &src {
+                            e["area_variable"] = serde_json::json!(a);
+                        }
+                        winfo.push(e);
+                        if src == area::AreaSource::Constant {
+                            match equal.iter_mut().find(|(i, _)| *i == gi) {
+                                Some((_, names)) => names.push(v.name.clone()),
+                                None => equal.push((gi, vec![v.name.clone()])),
+                            }
+                        }
                     }
+                    w
                 } else {
                     Weights::Const(1.0)
                 };
@@ -995,6 +1052,15 @@ pub fn describe(node: &OpNode, mut inputs: Vec<Desc>, srcs: &Sources) -> Result<
                     ),
                 );
             }
+            let mut warnings = Vec::new();
+            for (gi, names) in &equal {
+                let msg = equal_weights_warning(name, &input.grids[*gi], names);
+                crate::exec::threads::warn_loud("equal_weights", &msg);
+                warnings.push(serde_json::json!({"warning": "equal_weights", "message": msg}));
+            }
+            if !winfo.is_empty() {
+                info = Some(serde_json::json!({"area_weights": winfo, "warnings": warnings}));
+            }
             for (gi, (gd, _, _, _)) in made {
                 out.grids[gi] = gd;
             }
@@ -1012,9 +1078,12 @@ pub fn describe(node: &OpNode, mut inputs: Vec<Desc>, srcs: &Sources) -> Result<
                     VertWeighting::Thickness => Weights::Each(Arc::new(lw.thickness)),
                 };
                 if lw.status == 0 && nlev > 1 && weighting != VertWeighting::None {
-                    eprintln!(
-                        "cdors (Warning): Layer bounds not available, using constant vertical weights for variable {}!",
-                        v.name
+                    crate::exec::threads::warn(
+                        "equal_vertical_weights",
+                        &format!(
+                            "{name}: layer bounds not available, using constant vertical weights for variable {}",
+                            v.name
+                        ),
                     );
                 }
                 plans.push(Arc::new(VarPlan {
@@ -1045,6 +1114,7 @@ pub fn describe(node: &OpNode, mut inputs: Vec<Desc>, srcs: &Sources) -> Result<
             },
             stat,
             vars: plans,
+            info,
         }),
     });
     Ok(out)
