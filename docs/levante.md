@@ -114,9 +114,9 @@ cdors -remapbil,r360x180 -timmean -selyear,2000/2014 $F tos_clim_1deg.nc
 `remapbil`, `remapcon` and `remapycon` take cdo's grid names (`r360x180`, `global_1`, `hpz7`, `lon=10_lat=53.55`,
 ...), grid description files or another dataset's grid; `remap,<grid>,<weights.nc>` uses your own weights.
 
-## Example 4: EERIE data — kerchunk references, raw NetCDF files, the cloud
+## Example 4: EERIE data — kerchunk references, raw NetCDF files, the cloud, GRIB
 
-ICON-ESM-ER (`eerie-control-1950`), daily, 0.25°, read three ways.
+ICON-ESM-ER (`eerie-control-1950`), daily, 0.25°, read three ways; then IFS-FESOM, stored as GRIB.
 
 **Kerchunk references** from the DKRZ EERIE catalog (Parquet):
 
@@ -492,7 +492,7 @@ it by hand.
 
 ## Version and feedback
 
-Installed: 0.1.0, commit `18bba8c` (2026-10-10), the build that passed the tests; older versions stay next to it.
+Installed: 0.1.0, commit `1e5d801` (2026-10-10), the build that passed the tests; older versions stay next to it.
 Source: [github.com/koldunovn/cdors](https://github.com/koldunovn/cdors).
 
 It is a prototype: send wrong numbers, confusing errors or slow commands, with the command and `cdors --version`, to
