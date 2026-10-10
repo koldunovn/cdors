@@ -505,6 +505,8 @@ pub fn to_json(plan: &Plan, cmd: &Command, threads: usize, io_threads: usize) ->
         // null when no output file was given (`--plan` needs none)
         "output": (!plan.output.is_empty()).then_some(&plan.output),
         "format": format!("{:?}", plan.out_kind).to_ascii_lowercase(),
+        // as `-z` names it (chunks are byte-shuffled first); null: uncompressed
+        "compression": plan.compression.map(|c| c.to_string()),
         "inputs": inputs,
         "inputs_count": inputs_count,
         "inputs_truncated": inputs_count > inputs.len(),
@@ -575,9 +577,13 @@ pub fn to_text(p: &Value) -> String {
         let _ = writeln!(s, "inputs: {}", inputs.join(", "));
     }
     let out = p["output"].as_str().unwrap_or("");
+    let comp = match p["compression"].as_str() {
+        Some(c) => format!(", {c} with shuffle"),
+        None => String::new(),
+    };
     let _ = writeln!(
         s,
-        "output: {} ({})",
+        "output: {} ({}{comp})",
         if out.is_empty() { "(none given)" } else { out },
         p["format"].as_str().unwrap_or("")
     );

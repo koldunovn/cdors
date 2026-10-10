@@ -397,7 +397,8 @@ once per second.
 - **Same syntax as cdo:** `cdors [options] -op3 -op2,args -op1 input output`.
 - **Selections innermost** (`-selname`, `-selyear`, `-sellonlatbox`, ...): they decide which chunks are read.
 - **Plan first:** `cdors --plan <command>` shows reads, memory and passes without reading data.
-- **Outputs:** `.zarr` gives Zarr, anything else NetCDF-4; existing files need `-O`.
+- **Outputs:** `.zarr` gives Zarr, anything else NetCDF-4; existing files need `-O`; `-z zip` compresses NetCDF
+  (Zarr always is).
 - **Login nodes:** 16 threads, 64 GB read per command, a 4 GiB memory plan.
 - **Scripts:** add `--json`.
 - **Missing operator:** run that step with cdo; `cdors ops` lists what exists.
@@ -433,7 +434,8 @@ Documentation next to the program, in `/work/ab0995/a270088/cdors/`:
 - Existing outputs need `-O`; `cat` never appends.
 - The output format follows the file name, not the input. Integers and packed data become float64; cdo keeps
   integers and rounds their means.
-- No compression: `-z zip` and other options cdors lacks (`-k`, `-r`, ...) are refused.
+- `-z zip` compresses on all cores and shuffles first: a 1.2 GB output became 648 MB in 1.1 s; `cdo -z zip` took
+  28 s for 817 MB. `-z zstd` is for Zarr only; options cdors lacks (`-k`, `-r`, ...) are refused.
 - Percentiles are exact; cdo uses a histogram above 50 values per cell. cdo's three-input form is accepted.
 - `sinfo` prints its own summary, not cdo's table.
 - `mergetime` and `cat` refuse overlapping or backward times.
@@ -447,7 +449,7 @@ last time chunk of HEALPix Zarr).
 - **GRIB input** (ERA5 in `/pool/data/ERA5`, IFS GRIB output): use cdo.
 - **Many cdo operators**, e.g. `expr`, `trend`, correlations, ETCCDI indices, `ydaypctl`, `intlevel`, ensemble
   statistics, EOFs.
-- **Compressed or classic NetCDF output** (`-f nc4c` writes NetCDF-4).
+- **Classic NetCDF output** (`-f nc4c` writes NetCDF-4).
 - **Fast percentiles on data stored one field per chunk:** correct, but read several times.
 - **Weights without cdo:** cdo makes them once per grid pair.
 - **Tested S3:** implemented, not yet tried on a real bucket.

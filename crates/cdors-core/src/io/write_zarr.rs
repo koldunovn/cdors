@@ -2,11 +2,14 @@
 //!
 //! Layout as xarray writes it: one group with the global attributes, one array per data and
 //! coordinate variable, dimension names in `dimension_names` (v3) or `_ARRAY_DIMENSIONS` (v2),
-//! zstd compression, NaN as the fill value of float arrays (missing values stay NaN), and CF
-//! attributes (time units and calendar, `coordinates`, `grid_mapping`). Zarr v2 stores also get
-//! consolidated metadata (`.zmetadata`). Chunks are encoded and stored in parallel, without a
-//! per-chunk fsync: the store is synced once in `finish` (see [`OutputStore`]).
+//! NaN as the fill value of float arrays (missing values stay NaN), and CF attributes (time units
+//! and calendar, `coordinates`, `grid_mapping`). Zarr v2 stores also get consolidated metadata
+//! (`.zmetadata`). Chunks are compressed with blosc, byte shuffle and zstd level 1, or the
+//! compressor and level of `-z` (`zip`: blosc's zlib); blosc is a standard codec of both Zarr
+//! versions. Chunks are encoded and stored in parallel, without a per-chunk fsync: the store is
+//! synced once in `finish` (see [`OutputStore`]).
 
+use crate::chain::{Codec, Compression};
 use crate::error::{Error, Result};
 use crate::exec::{OutMeta, OutVar, Writer, out_meta};
 use crate::io::Values;
@@ -17,7 +20,7 @@ use std::io::Write;
 use std::os::fd::{AsRawFd, IntoRawFd};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use zarrs::array::{Array, ArrayMetadata, ArrayMetadataV2, ArrayMetadataV3};
+use zarrs::array::{Array, ArrayMetadata, ArrayMetadataV2, ArrayMetadataV3, CodecOptions};
 use zarrs::filesystem::FilesystemStore;
 use zarrs::storage::byte_range::ByteRangeIterator;
 use zarrs::storage::{
@@ -27,9 +30,6 @@ use zarrs::storage::{
 };
 
 type Store = dyn ReadableWritableStorageTraits;
-
-/// zstd level of written chunks (1: fast; output writing is often the bottleneck).
-const ZSTD_LEVEL: i32 = 1;
 
 pub struct ZarrWriter {
     arrays: Vec<Array<Store>>,
@@ -151,7 +151,8 @@ fn attrs_json(a: &Attrs) -> Map<String, Value> {
     a.iter().map(|(k, v)| (k.clone(), v.to_json())).collect()
 }
 
-/// Array metadata as JSON (v2: `.zarray` with the attributes kept apart).
+/// Array metadata as JSON (v2: `.zarray` with the attributes kept apart); `comp: None` stores
+/// raw little-endian values.
 fn array_json(
     v2: bool,
     shape: &[usize],
@@ -159,20 +160,26 @@ fn array_json(
     dtype: DType,
     dims: &[String],
     attrs: &Map<String, Value>,
-    compress: bool,
+    comp: Option<Compression>,
 ) -> Value {
     let (v3t, v2t, fill) = match dtype {
         DType::F32 => ("float32", "<f4", json!("NaN")),
         DType::I32 => ("int32", "<i4", json!(0)),
         _ => ("float64", "<f8", json!("NaN")),
     };
+    let cname = |c: Compression| match c.codec {
+        Codec::Zip => "zlib",
+        Codec::Zstd => "zstd",
+    };
     if v2 {
         let mut a = attrs.clone();
         a.insert("_ARRAY_DIMENSIONS".into(), json!(dims));
-        let compressor = if compress {
-            json!({"id": "zstd", "level": ZSTD_LEVEL})
-        } else {
-            Value::Null
+        // numcodecs' Blosc (shuffle 1: byte shuffle; the element size comes from the dtype)
+        let compressor = match comp {
+            Some(c) => {
+                json!({"id": "blosc", "cname": cname(c), "clevel": c.level, "shuffle": 1, "blocksize": 0})
+            }
+            None => Value::Null,
         };
         json!({
             "zarr_format": 2,
@@ -188,10 +195,11 @@ fn array_json(
         })
     } else {
         let mut codecs = vec![json!({"name": "bytes", "configuration": {"endian": "little"}})];
-        if compress {
-            codecs.push(
-                json!({"name": "zstd", "configuration": {"level": ZSTD_LEVEL, "checksum": false}}),
-            );
+        if let Some(c) = comp {
+            codecs.push(json!({"name": "blosc", "configuration": {
+                "cname": cname(c), "clevel": c.level, "shuffle": "shuffle",
+                "typesize": dtype.size(), "blocksize": 0,
+            }}));
         }
         json!({
             "zarr_format": 3,
@@ -225,8 +233,8 @@ fn write_json(store: &Store, key: &str, v: &Value) -> Result<()> {
     store.set(&k, s.into()).map_err(zerr)
 }
 
-/// Pads a trimmed edge chunk to the full chunk shape with NaN.
-fn pad<T: Copy>(data: &[T], shape: &[usize], full: &[usize], fill: T) -> Vec<T> {
+/// Pads a trimmed edge chunk to the full chunk shape with `fill`.
+pub(crate) fn pad<T: Copy>(data: &[T], shape: &[usize], full: &[usize], fill: T) -> Vec<T> {
     if shape == full {
         return data.to_vec();
     }
@@ -273,20 +281,21 @@ impl ZarrWriter {
         std::fs::create_dir(path)?;
         crate::exec::publish::mark_created(path, true);
         let fs = Arc::new(OutputStore::new(path)?);
-        let mut w = Self::create_in(fs.clone(), plan, lay, v2, history, true)?;
+        let comp = plan.compression.or(Some(Compression::ZARR_DEFAULT));
+        let mut w = Self::create_in(fs.clone(), plan, lay, v2, history, comp)?;
         w.fs = Some(fs);
         Ok(w)
     }
 
     /// Writes the metadata and coordinates into any store (the filesystem, or memory for the
-    /// intermediates of multi-stage chains); `compress: false` stores raw little-endian values.
+    /// intermediates of multi-stage chains); `comp: None` stores raw little-endian values.
     pub fn create_in(
         store: Arc<Store>,
         plan: &Plan,
         lay: &[OutVar],
         v2: bool,
         history: Option<&str>,
-        compress: bool,
+        comp: Option<Compression>,
     ) -> Result<Self> {
         let meta: OutMeta = out_meta(plan, lay, history)?;
         zarrs::config::global_config_mut().set_include_zarrs_metadata(false);
@@ -322,7 +331,7 @@ impl ZarrWriter {
                 c.dtype,
                 &c.dims,
                 &attrs_json(&c.attrs),
-                compress,
+                comp,
             );
             record(&c.name, &m);
             let a = make_array(&store, &format!("/{}", c.name), m, v2)?;
@@ -344,7 +353,7 @@ impl ZarrWriter {
             let mut aj = attrs_json(attrs);
             aj.remove("_FillValue");
             aj.remove("missing_value");
-            let m = array_json(v2, &ov.shape, &ov.chunks, ov.dtype, &ov.dims, &aj, compress);
+            let m = array_json(v2, &ov.shape, &ov.chunks, ov.dtype, &ov.dims, &aj, comp);
             record(&ov.name, &m);
             arrays.push(make_array(&store, &format!("/{}", ov.name), m, v2)?);
         }
@@ -391,12 +400,15 @@ impl Writer for ZarrWriter {
             .map(|(&o, &c)| (o / c) as u64)
             .collect();
         let a = &self.arrays[var];
+        // one thread per chunk: chunks are already encoded in parallel (blosc would otherwise
+        // start its own threads for chunks of 4 MB and more)
+        let opts = CodecOptions::default().with_concurrent_target(1);
         match data {
             Values::F32(x) => a
-                .store_chunk(&idx, pad(&x, shape, &ov.chunks, f32::NAN))
+                .store_chunk_opt(&idx, pad(&x, shape, &ov.chunks, f32::NAN), &opts)
                 .map_err(zerr),
             Values::F64(x) => a
-                .store_chunk(&idx, pad(&x, shape, &ov.chunks, f64::NAN))
+                .store_chunk_opt(&idx, pad(&x, shape, &ov.chunks, f64::NAN), &opts)
                 .map_err(zerr),
         }
     }

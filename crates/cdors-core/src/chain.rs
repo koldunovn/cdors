@@ -49,6 +49,42 @@ pub enum OutFormat {
     Zarr2,
 }
 
+/// Compressor of written chunks (`-z`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Codec {
+    /// Deflate (zlib).
+    Zip,
+    Zstd,
+}
+
+/// Output compression (`-z zip[_level]`, `-z zstd[_level]`). Written chunks are always
+/// byte-shuffled before they are compressed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct Compression {
+    pub codec: Codec,
+    pub level: u8,
+}
+
+impl Compression {
+    /// What Zarr outputs get without `-z`.
+    pub const ZARR_DEFAULT: Self = Self {
+        codec: Codec::Zstd,
+        level: 1,
+    };
+}
+
+impl std::fmt::Display for Compression {
+    /// As `-z` takes it: `zip_1`, `zstd_3`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let name = match self.codec {
+            Codec::Zip => "zip",
+            Codec::Zstd => "zstd",
+        };
+        write!(f, "{name}_{}", self.level)
+    }
+}
+
 /// Output precision (`-b`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum Precision {
@@ -80,6 +116,8 @@ pub struct Options {
     pub format: Option<OutFormat>,
     /// `-b <F32|F64>`.
     pub precision: Option<Precision>,
+    /// `-z <zip|zstd>[_level]` (None: NetCDF uncompressed, Zarr [`Compression::ZARR_DEFAULT`]).
+    pub compression: Option<Compression>,
     /// `-s`: silent (also changes line breaks of `show*` output, as in cdo). As in cdo, warnings
     /// are still printed.
     pub silent: bool,

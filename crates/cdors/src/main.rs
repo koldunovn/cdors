@@ -26,6 +26,8 @@ options:
   -f <fmt>            output format: nc4, nc4c (written as nc4), nc (64-bit offset), zarr,
                       zarr2 (default: zarr for a name ending in .zarr, else nc4)
   -b <F32|F64>        output precision
+  -z <zip|zstd>[_N]   compress the output (shuffled, then deflate or zstd at level N, default
+                      1); NetCDF: zip only (default: uncompressed); Zarr default: zstd_1
   -s                  as cdo -s for showtimestamp (one line); as in cdo, warnings are
                       still printed
   -w                  no warnings (cdo's --disable_warnings), also no JSON warning lines
@@ -45,7 +47,7 @@ options:
                       otherwise stored with their grid mapping only (for viewers like ushow)
   --progress json     progress lines on stderr about once per second, and a summary line
   -v, -L, --force     accepted for cdo compatibility; no effect (cdo's other options, such
-                      as -z, -k, -r, are refused)
+                      as -k, -r, are refused)
 
 exit codes: 0 success
             1 usage: unknown operator, not implemented, bad arguments, missing input,

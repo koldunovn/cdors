@@ -31,7 +31,12 @@ exact    | {cdors:--lonlat} -seltimestep,1/5 {in}      | hpz2_noleap   # adds HE
 exact    | -setgrid,{in2} {in}                         | r36x18_std hpz2_noleap unst_360
 exact    | -selname,tas -seltimestep,5/40 -sellonlatbox,0,120,-20,50 -mulc,2 {in} | r36x18_std hpz2_noleap unst_360
 err:unknown_operator | -yearmeans {in}                 | r36x18_std
-err:bad_arguments    | -z zip -timmean {in}            | r36x18_std   # cdo option not supported, not an operator 'z'
+exact    | -z zip -timmean {in}                        | r36x18_std hpz2_noleap unst_360   # shuffle + deflate, chunks compressed by cdors
+exact    | -z zip_6 -selname,tas -seltimestep,1/30 {in} | hpz2_noleap
+err:bad_arguments    | -k grid -timmean {in}           | r36x18_std   # cdo option not supported, not an operator 'k'
+err:bad_arguments    | -z zstd -timmean {in}           | r36x18_std   # NetCDF output: zip only
+err:bad_arguments    | -f nc -z zip -timmean {in}      | r36x18_std   # NetCDF-3 has no compression
+err:bad_arguments    | -z szip -timmean {in}           | r36x18_std
 err:bad_arguments    | -addc,1 {in} {in} {noout}       | r36x18_std   # output is an input
 err:output_exists    | -addc,1 {in} {fx}/r36x18_std_y2001.nc {noout} | r36x18_std
 err:bad_arguments    | -seltimestep,9223372036854775807 {in} | r36x18_std   # ranges are never expanded

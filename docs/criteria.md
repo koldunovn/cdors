@@ -114,6 +114,6 @@ Measured on an exclusive compute node (128 cores), cdors on cold data, cdo usual
 What the next round would need is listed in the plan's Post-Completion and in `docs/STATUS.md` (known gaps):
 - GRIB input (75 of 78 IFS-FESOM2 Parquet sets reference GRIB);
 - a rechunking stage;
-- compressed NetCDF output and the classic model (`-f nc4c`);
+- the classic model (`-f nc4c`) (compressed NetCDF output followed on 2026-10-10: `-z zip`);
 - the operators not yet ported;
 - a compact reference for agents, to cut the token cost.

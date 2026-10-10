@@ -170,7 +170,7 @@ pub fn materialize(d: Desc, consumer: &str, srcs: &mut Sources) -> Result<Desc> 
         &lay,
         false,
         None,
-        false,
+        None,
     )?;
     let reader = crate::io::zarr::ZarrSource::open_store(&name, store.clone(), &Vec::new)?;
     let reader: Arc<dyn ChunkSource> = Arc::new(reader);

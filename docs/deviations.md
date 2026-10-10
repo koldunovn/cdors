@@ -44,21 +44,30 @@ cdo's percentiles are approximate (`bin` rows).
   (packed or plain integers, float64) as unpacked float64, so no result is rounded or re-packed;
   `-b F32` and `-b F64` set the type. cdo's other `-b` types (`I8`, `I16`, `U8`, ...) are
   refused (`bad_arguments`).
-- **NetCDF output is uncompressed and chunked by field.** cdo compresses with `-z zip` (refused by
-  cdors, see "Command line") and, by default, splits large fields into several chunks (262144
-  cells per chunk on a HEALPix z9 grid). cdors writes one chunk per field (all horizontal points
-  of one level and step), or, when a statistic runs in lane waves, chunks that end at wave
-  boundaries; `--chunks dim=n,...` sets them. The values are the same.
+- **NetCDF compression.** As in cdo, NetCDF output is compressed only with `-z zip` (deflate
+  level 1, `zip_N`: level N), grid coordinates of 32 values or more included. cdors also
+  shuffles the bytes of the data variables (cdo only with `CDI_SHUFFLE=1`), and it compresses
+  the chunks on all its threads, where cdo deflates on one: a 1.2 GB HEALPix z9 output became
+  648 MB in 1.1 s, `cdo -z zip -copy` made 817 MB in 28 s. The values are the same. `-z zstd`
+  is refused for NetCDF (`bad_arguments`): cdo writes it through an HDF5 plugin that readers
+  (cdo, ncdump, viewers) load only with `HDF5_PLUGIN_PATH`, and cdo 2.6.0 left small fields
+  uncompressed; it applies to Zarr outputs. With `-f nc` (NetCDF-3) cdo ignores `-z` with a
+  warning; cdors refuses it. cdo's GRIB compressions (`szip`, `aec`, `jpeg`) are refused.
+- **Zarr output** (cdo writes none) is always compressed: blosc with byte shuffle and zstd level
+  1, or the compressor and level of `-z zip_N` (blosc's zlib) or `-z zstd_N`.
+- **NetCDF chunks.** cdo by default splits large fields into several chunks (262144 cells per
+  chunk on a HEALPix z9 grid). cdors writes one chunk per field (all horizontal points of one
+  level and step), or, when a statistic runs in lane waves, chunks that end at wave boundaries;
+  `--chunks dim=n,...` sets them. The values are the same.
 - **Global attributes.** Both copy the input's global attributes and add the command to
   `history` (`--no_history` leaves it out). cdo also adds `CDI`, `CDO` and, on an input
   without one, `Conventions = "CF-1.6"`; cdors adds none of them.
 
 ## Command line
 
-- **cdo options that cdors does not have are refused** (`bad_arguments`, naming the option): `-z`
-  (cdors does not compress), `-k` (`--chunks` instead), `-r`, `-a`, `-R`, `-t`, `-p` and the
-  other single-letter options not listed by `cdors --help`. cdo's `-L` (serialised I/O) is
-  accepted and has no effect.
+- **cdo options that cdors does not have are refused** (`bad_arguments`, naming the option): `-k`
+  (`--chunks` instead), `-r`, `-a`, `-R`, `-t`, `-p` and the other single-letter options not
+  listed by `cdors --help`. cdo's `-L` (serialised I/O) is accepted and has no effect.
 - **Threads.** cdo computes on one thread unless `-P` says otherwise. cdors uses every core
   available to the process (in a Slurm job, those of the allocation), at most 16 outside Slurm
   jobs (also with a larger `-P`), and keeps 64–128 reads in flight (`--io-threads`).

@@ -182,3 +182,23 @@ the full W4 was not run. Outputs: `/scratch/a/a270088/cdors-bench/bench-28007818
   fewer waves.
 - The job's last step, `cdo diffn` on the two `ydaymean` outputs, took 30 min: see the output chunks under
   "Where cdors loses time".
+
+## Output compression (2026-10-10)
+
+Login node (16 threads), warm page cache, `tas` of `ngc4008_P1D_9.zarr` (HEALPix z9, float32) selected with
+`-seltimestep` and written out; `cdo` compresses the uncompressed cdors output with `cdo -z zip -copy`:
+
+| Output | 12 fields (145 MB raw) | 100 fields (1.2 GB raw) |
+|---|---|---|
+| NetCDF, uncompressed | 0.34 s, 145 MB | 1.31 s, 1201 MB |
+| NetCDF, `-z zip` (shuffle + deflate 1) | 0.37 s, 78 MB | 1.07 s, 648 MB |
+| NetCDF, `-z zip_4` | 0.46 s, 76 MB | |
+| Zarr, default (blosc, shuffle, zstd 1) | 0.23 s, 79 MB | 0.74 s, 658 MB |
+| Zarr, previous default (zstd 1, no shuffle) | 0.21 s, 110 MB | |
+| Zarr, `-z zip` / `-z zstd_3` | 0.42 s / 0.66 s, 77 MB | |
+| `cdo -z zip -copy` (deflate 1, one thread) | 3.4 s, 96 MB | 27.7 s, 817 MB |
+
+Single-thread codec speed and ratio on the 12 fields (Python numcodecs): deflate 1 alone 1.50× at 49 MB/s, with
+shuffle 2.00× at 70 MB/s; zstd 1 alone 1.31× at 544 MB/s, with shuffle 1.91× at 576 MB/s; blosc zstd 1 with
+shuffle 1.87× at 654 MB/s. Deflate through netCDF-C would run on the one writer thread (about 2 s for the 145 MB,
+15 s per GB), so cdors deflates the chunks on its threads and stores them with HDF5's direct chunk write.

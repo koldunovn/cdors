@@ -29,6 +29,7 @@ It never prompts and never reads stdin. Add `--json` to any command for machine-
 - Several files as one input: a quoted glob (`'dir/*.nc'`), or `-mergetime a b` / `-mergetime [ a b ]`
   (files or stores only; times must not overlap).
 - An existing output is refused unless `-O` is given. `--lonlat` adds lon/lat to HEALPix outputs (viewers).
+- `-z zip` compresses NetCDF output (about half the size, no slower); Zarr output is always compressed.
 
 ## Recipes
 
@@ -80,6 +81,6 @@ has no read limit. Printing operators stop at 1,000,000 values (`--max-values`):
 - Integer and packed variables are written as float64; cdo keeps integers.
 - A time selection that selects nothing is an error, as in cdo.
 - `sinfo`, `showname`, `showtimestamp` and `griddes` take files or stores, not chains.
-- cdo options that cdors lacks (`-z`, `-k`, `-r`, ...) are refused.
+- cdo options that cdors lacks (`-k`, `-r`, ...) are refused. `-z zstd` works for Zarr outputs only.
 - Grids without cell bounds (HEALPix stores) get equal area weights, with a warning, as in cdo; HEALPix cells have
   equal areas.

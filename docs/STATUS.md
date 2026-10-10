@@ -126,7 +126,8 @@ Deliberate and observed differences from cdo: `docs/deviations.md` (including fo
   held output is in the memory plan.
 - Agents spend most of their extra tokens learning cdors (README + `docs/deviations.md`, 34 kB, read in every
   session): a compact agent-facing reference or an MCP layer would cut that.
-- NetCDF output is uncompressed (`-z` is refused); `-f nc4c` writes the same as `nc4`.
+- `-f nc4c` writes the same as `nc4`. NetCDF output is compressed with deflate only (`-z zip`, since 2026-10-10);
+  `-z zstd` is for Zarr.
 - `s3://` inputs are implemented but were never run against a real bucket; remote reads were tested on the EERIE
   cloud only.
 - "Multi-TB" memory was shown at 1.1 TB (1.9 TB decoded for percentiles); the 13.2 TB PT15M store was not run.

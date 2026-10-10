@@ -919,7 +919,7 @@ fn inflate(data: &[u8], expect: usize) -> Result<Vec<u8>, String> {
 
 /// Undo HDF5 byte shuffle: the stored bytes are all first bytes, then all second bytes, ...
 /// Trailing bytes that do not fill a whole element are stored unshuffled.
-fn unshuffle(data: &[u8], esize: usize) -> Vec<u8> {
+pub(crate) fn unshuffle(data: &[u8], esize: usize) -> Vec<u8> {
     let n = data.len() / esize.max(1);
     if esize <= 1 || n <= 1 {
         // as HDF5's shuffle filter: fewer than two elements are stored as they are

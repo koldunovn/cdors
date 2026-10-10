@@ -3,8 +3,8 @@
 //! `cdors [options] op1[,args] [-op2[,args] ...] inputs... [outputs...]`
 //!
 //! - Global options come first. A dash and a single letter is one of cdo's options, also the
-//!   ones cdors does not support (`-z zip`, `-k grid`, `-r`, ...), which are refused: no operator
-//!   name is one letter long. Anything else starting with `-` (and the first token without a
+//!   ones cdors does not support (`-k grid`, `-r`, ...), which are refused: no operator name is
+//!   one letter long. Anything else starting with `-` (and the first token without a
 //!   dash) is an operator; the leading dash of the first operator is optional, as in cdo.
 //! - Operators have a fixed number of inputs and outputs from the registry. Each input is either
 //!   a nested operator (a token starting with `-`) or a path/URL. Variadic operators
@@ -15,7 +15,9 @@
 //!   with `--plan` the output may be left out (then a last token that is an existing input,
 //!   a URL or a glob pattern is never taken as the output).
 
-use cdors_core::chain::{Command, Input, OpNode, Options, OutFormat, Precision, TimestatDate};
+use cdors_core::chain::{
+    Codec, Command, Compression, Input, OpNode, Options, OutFormat, Precision, TimestatDate,
+};
 use cdors_core::error::{Error, Result};
 use cdors_core::ops::{self, Inputs};
 
@@ -24,6 +26,7 @@ const OPTIONS: &[&str] = &[
     "-P",
     "-f",
     "-b",
+    "-z",
     "-s",
     "-v",
     "-L",
@@ -117,6 +120,41 @@ fn parse_chunks(s: &str) -> Result<Vec<(String, usize)>> {
         .collect()
 }
 
+/// `-z`: cdo's `zip`, `zip_<1-9>` (deflate) and `zstd`, `zstd_<1-22>` (level 1 without one;
+/// `,` also separates the level, as in cdo). cdo's GRIB compressions are refused.
+fn parse_compression(v: &str) -> Result<Compression> {
+    let s = v.to_ascii_lowercase();
+    let (name, level) = match s.split_once(['_', ',']) {
+        Some((n, l)) => (n, Some(l)),
+        None => (s.as_str(), None),
+    };
+    let hint = "-z takes zip, zip_1 ... zip_9 (deflate) or zstd, zstd_1 ... zstd_22";
+    let (codec, max) = match name {
+        "zip" => (Codec::Zip, 9),
+        "zstd" => (Codec::Zstd, 22),
+        "szip" | "aec" | "ccsds" | "jpeg" => {
+            return Err(
+                Error::bad_arguments(format!("cdors does not write {name} compression"))
+                    .with_hint(hint),
+            );
+        }
+        _ => {
+            return Err(Error::bad_arguments(format!("unknown compression '{v}'")).with_hint(hint));
+        }
+    };
+    let level = match level {
+        None => 1,
+        Some(l) => l
+            .parse::<u8>()
+            .ok()
+            .filter(|n| (1..=max).contains(n))
+            .ok_or_else(|| {
+                Error::bad_arguments(format!("invalid compression level in '{v}'")).with_hint(hint)
+            })?,
+    };
+    Ok(Compression { codec, level })
+}
+
 fn bad_chunks(s: &str) -> Error {
     Error::bad_arguments(format!("invalid --chunks '{s}'"))
         .with_hint("--chunks takes dim=n[,dim=n...], e.g. --chunks time=1,cell=49152")
@@ -131,9 +169,7 @@ fn unknown_option(tok: &str) -> Error {
         .collect();
     best.truncate(2);
     let e = Error::bad_arguments(format!("unknown option '{name}'")).with("option", name);
-    if name == "-z" {
-        e.with_hint("cdors writes uncompressed output; leave out -z")
-    } else if name == "-k" {
+    if name == "-k" {
         e.with_hint("output chunks are set with --chunks dim=n[,dim=n...]")
     } else if best.is_empty() {
         e.with_hint(format!("options: {}", OPTIONS.join(" ")))
@@ -223,6 +259,7 @@ fn parse_options(args: &[String]) -> Result<(Options, usize)> {
                     }
                 });
             }
+            "-z" => o.compression = Some(parse_compression(&take(&mut i)?)?),
             "--io-threads" | "--io_threads" => {
                 let v = take(&mut i)?;
                 let n: usize = v.parse().ok().filter(|&n| n >= 1).ok_or_else(|| {

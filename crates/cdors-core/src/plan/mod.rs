@@ -26,7 +26,7 @@ pub mod schedule;
 pub mod stage;
 pub mod tiling;
 
-use crate::chain::{Command, Input, OpNode};
+use crate::chain::{Codec, Command, Compression, Input, OpNode};
 use crate::error::{Error, ErrorCode, Result};
 use crate::io::ChunkSource;
 use crate::model::{
@@ -781,6 +781,8 @@ pub struct Plan {
     pub deferred: bool,
     /// `--lonlat`: write cell-centre coordinates for HEALPix grids too.
     pub lonlat: bool,
+    /// Compression of the written chunks ([`out_compression`]); None: uncompressed.
+    pub compression: Option<Compression>,
 }
 
 impl Plan {
@@ -803,6 +805,7 @@ impl Plan {
             io_threads: 1,
             deferred: false,
             lonlat: false,
+            compression: None,
         }
     }
 
@@ -880,6 +883,30 @@ pub fn out_kind(cmd: &Command, path: &str) -> OutKind {
     }
 }
 
+/// Compression of the output: `-z` (NetCDF-4: deflate only), else none for NetCDF and
+/// [`Compression::ZARR_DEFAULT`] for Zarr. Refuses what the format cannot store: NetCDF-3 has no
+/// compression, and zstd in NetCDF-4 needs an HDF5 plugin that readers (cdo, ncdump, viewers)
+/// do not load by default.
+pub fn out_compression(cmd: &Command, kind: OutKind) -> Result<Option<Compression>> {
+    let z = cmd.options.compression;
+    match (kind, z) {
+        (OutKind::Zarr3 | OutKind::Zarr2, _) => Ok(Some(z.unwrap_or(Compression::ZARR_DEFAULT))),
+        (_, None) => Ok(None),
+        (OutKind::NcClassic, Some(c)) => Err(Error::bad_arguments(format!(
+            "-z {c}: NetCDF-3 output (-f nc) cannot be compressed"
+        ))
+        .with_hint("leave out -z, or write NetCDF-4 (-f nc4) or Zarr")),
+        (OutKind::Nc4, Some(c)) if c.codec == Codec::Zstd => Err(Error::bad_arguments(format!(
+            "-z {c}: NetCDF output is compressed with zip (deflate) only"
+        ))
+        .with_hint(
+            "use -z zip (or zip_1 ... zip_9), which every NetCDF reader opens; zstd is for Zarr \
+             outputs (.zarr)",
+        )),
+        (OutKind::Nc4, Some(c)) => Ok(Some(c)),
+    }
+}
+
 /// Builds the plan for a command with one output; `cdo` says whether remapping may run cdo.
 pub fn build(cmd: &Command, cdo: CdoUse) -> Result<Plan> {
     // `--plan` needs no output file
@@ -889,6 +916,13 @@ pub fn build(cmd: &Command, cdo: CdoUse) -> Result<Plan> {
         .cloned()
         .or_else(|| cmd.options.plan.then(String::new))
         .ok_or_else(|| Error::bad_arguments("no output file given"))?;
+    let kind = out_kind(cmd, &output);
+    // a `--plan` without an output name has no format to check against, unless `-f` gives one
+    let compression = if output.is_empty() && cmd.options.format.is_none() {
+        cmd.options.compression
+    } else {
+        out_compression(cmd, kind)?
+    };
     let mut srcs = Sources {
         timestat_date: cmd.options.timestat_date.map(|t| {
             use crate::chain::TimestatDate as C;
@@ -986,7 +1020,7 @@ pub fn build(cmd: &Command, cdo: CdoUse) -> Result<Plan> {
         sources: srcs.srcs,
         desc,
         stages,
-        out_kind: out_kind(cmd, &output),
+        out_kind: kind,
         output,
         intermediates,
         budget,
@@ -994,5 +1028,6 @@ pub fn build(cmd: &Command, cdo: CdoUse) -> Result<Plan> {
         io_threads,
         deferred: srcs.deferred,
         lonlat: cmd.options.lonlat,
+        compression,
     })
 }

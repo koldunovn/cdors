@@ -56,8 +56,12 @@ files are sorted and concatenated along time. **Output:** the format follows the
 (`.zarr`: Zarr v3, any other name: NetCDF-4) unless `-f nc4|nc4c|nc|zarr|zarr2` says otherwise
 (`nc` is the 64-bit offset format; `nc4c` writes NetCDF-4, not the classic model). Float32
 variables are written as float32, all others as float64 (`-b F32|F64`). NetCDF output is
-uncompressed (`-z` is refused), one chunk per field (all horizontal points of one level and
-step); Zarr chunks hold about 4 MiB. When a statistic runs in lane waves (`--plan`: `waves` >
+uncompressed unless `-z zip` asks for deflate (level 1; `zip_1` ... `zip_9`), as in cdo; Zarr
+output is always compressed (blosc with zstd level 1, or `-z zip_N`, `-z zstd_N`). Both shuffle
+the bytes of each chunk first (smaller files, the same values), and cdors compresses the chunks
+on all its threads: `-z zip` wrote a 1.2 GB output as 648 MB in 1.1 s, faster than
+uncompressed (1.3 s). NetCDF output has one chunk per field (all horizontal points of one level
+and step); Zarr chunks hold about 4 MiB. When a statistic runs in lane waves (`--plan`: `waves` >
 1), output chunks end at wave boundaries and are otherwise as large as these defaults;
 `--chunks dim=n,...` sets them explicitly. HEALPix grids are written as they are stored, with
 their grid mapping and without coordinates; `--lonlat` also writes the cell centres (`lon`,
@@ -111,7 +115,7 @@ b.nc` plans both files. Main fields (schema version `"cdors_plan": 1`):
 
 | field | meaning |
 |---|---|
-| `inputs`, `output`, `format` | what is read and written: `inputs` lists every file or store read, also each file of a glob pattern or `mergetime` (at most 100; `inputs_count` counts all, `inputs_truncated` says whether the list is cut) |
+| `inputs`, `output`, `format`, `compression` | what is read and written: `inputs` lists every file or store read, also each file of a glob pattern or `mergetime` (at most 100; `inputs_count` counts all, `inputs_truncated` says whether the list is cut); `compression` as `-z` names it (`zip_1`, `zstd_1`; bytes shuffled first), null for uncompressed NetCDF |
 | `stages[]` | `operators` merged into the stage in execution order (each operator once, in the stage that runs it), `ignored_operators` (operators of inputs that are not read: the min/max inputs of `timpctl,p in -timmin in -timmax in`), `fold_kernel` (the statistic or remapping that ends it, or null) and `fold_dim`, `passes` (how often the input is read: more than 1 when the lane states do not fit the budget and one chunk holds cells of several lane waves), `lanes`, `waves`, `tiles_in_flight`, `lane_state_bytes`, `peak_bytes_estimate`, `writes_intermediate` (inner stages of a chain: `name`, `bytes` and `chunk_shapes` of the in-memory result, else null), `tiles`, `chunks_read`, `bytes_decoded` (over all passes), `bytes_compressed`, and `variables[]` with the stored variables each reads (`leaves`: source, chunk shape, chunks read, bytes) |
 | `totals` | `chunks_read`, `bytes_decoded` (exact), `bytes_compressed` (estimate from the stored sizes of a few sampled chunks; null if the store cannot tell), `passes` |
 | `memory` | `budget_bytes` and `budget_source` (`--mem` or the default, see 6.), `peak_bytes_estimate` (the largest stage: tiles in flight, lane states, output held for an intermediate or, in lane waves, a wave's share of the written output, the intermediates alive while it runs, remap weights) and its `parts`. The planner sizes tiles, lanes, waves and passes so that the estimate stays within the budget; a single lane that does not fit is refused (`memory_limit`) |
@@ -281,8 +285,9 @@ is accepted; the min/max inputs are not read.
 - Information operators (`sinfo`, `showname`, `showtimestamp`, `griddes`) and `mergetime`/`cat`
   take files or stores only, not the output of another operator.
 - No GRIB input; no native NetCDF-3 reader (NetCDF-3 goes through netCDF-C).
-- NetCDF output is uncompressed, and `-f nc4c` writes NetCDF-4, not the classic model. cdo
-  options that `cdors --help` does not list (`-z`, `-k`, `-r`, ...) are refused.
+- `-f nc4c` writes NetCDF-4, not the classic model. NetCDF output is compressed with deflate
+  only (`-z zstd` is for Zarr). cdo options that `cdors --help` does not list (`-k`, `-r`, ...)
+  are refused.
 - Remote reads were tested against the EERIE cloud (HTTPS) only; `s3://` is implemented but has
   not been run against a real bucket.
 - No rechunking stage: data stored one complete field per chunk (GRIB, NetCDF written per
