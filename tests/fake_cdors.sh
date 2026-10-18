@@ -5,15 +5,15 @@
 #            | shift (time axis +1 hour, values unchanged) | drop (first timestep dropped)
 #            | alt (yearmean computed as divc,365 -yearsum) | text (extra stdout line)
 #            | tiny (~1 ulp, only when the input is the tiny-chunk Zarr copy: planner check must fail)
-# Zarr inputs (<fixture>.zarr2/.zarr3/_tiny.zarr2) are mapped back to <fixture>.nc and "--mem X" is
-# dropped, so the harness's variant plumbing can be checked without a Zarr reader.
+# Zarr inputs (<fixture>.zarr2/.zarr3/_tiny.zarr2) are mapped back to <fixture>.nc and "--mem X",
+# "-P X" and "--io-threads X" (CDORS_THREADS) are dropped, so the harness's variant plumbing can be checked without a Zarr reader.
 # With --json first: prints a JSON object for sinfo, otherwise a {"error": "$FAKE_ERR"} and exit 4.
 CDO=${CDO:-/sw/spack-levante/cdo-2.6.0-akkxhz/bin/cdo}
 mode=${FAKE_MODE:-none}
 args=() tiny=0
 while (($#)); do
   case $1 in
-    --mem) shift 2; continue ;;
+    --mem|-P|--io-threads) shift 2; continue ;;
     *_tiny.zarr2) tiny=1; args+=("${1%_tiny.zarr2}.nc") ;;
     *.zarr2|*.zarr3) args+=("${1%.zarr?}.nc") ;;
     *) args+=("$1") ;;

@@ -56,6 +56,8 @@
 #                     from the base run, so the planner check also checks thread-count invariance)
 #   CDORS_REGIONS     region catalog for cdors (default: $CDORS_FIXTURES/regions, filled by Task 6)
 #   CDORS_REF_ENVS    conda environments of the ref: rows (default: /work/ab0995/a270088/mambaforge/envs)
+#   CDORS_OKCACHE=1   (default) skip a check that passed before on the same bytes (below); 0 repeats
+#                     every check (the passes are still recorded)
 #
 # err rows: the output "$dir/out.nc" is appended unless the arguments contain {noout} (removed).
 # {cdors:OPT} passes OPT to cdors only (options cdo does not have, e.g. {cdors:--lonlat}); such rows
@@ -63,6 +65,18 @@
 # reads the grid.
 # text rows of showname compare the names order-insensitively on the Zarr and tiny variants
 # (Zarr stores have no variable order); values of these variants are compared variable by variable.
+#
+# Speed (the suite should stay well under a minute): a check (names, values, timestamps) is a pure
+# function of the output, the reference and the tools, so a passed one is recorded as an empty file
+# $CDORS_REF/ok/<key>, key over cdo's version, the check and its settings (abslim, rel/abs, pedantic,
+# cdo grid), the sha1 of the reference and of the output, and for ref: rows reference.py and the
+# environment signature; a row whose output bytes did not change runs only cdors. Failures are never
+# recorded (the sha1 and cdo's variable names of each reference are cached next to it, as
+# <key>.sha1 and <key>.names). Within a row, an output byte-identical to one already checked the same way, or to the
+# base output it must equal exactly, is not checked again (Zarr v3 = Zarr v2, --mem = base).
+# The values of ref: rows are compared after all rows, in one Python process per environment and
+# job slot (reference.py compare-batch). Rows on the variant fixtures start first. Each row's wall
+# time (centiseconds) is in its directory, file "time".
 #
 # Self-tests of the harness: tests/selftest.txt and tests/selftest_fake.txt (commands in their
 # headers), tests/selftest_ref.sh (json: and ref: tags).
@@ -77,7 +91,7 @@ export CDORS_TARGET=${CDORS_TARGET:-${CARGO_TARGET_DIR:-/work/ab0995/a270088/cdo
 export CDORS_FIXTURES=${CDORS_FIXTURES:-$CDORS_TARGET/fixtures}
 export CDORS=${CDORS:-$CDORS_TARGET/release/cdors}
 export CDORS_REF=${CDORS_REF:-$CDORS_TARGET/cdo-ref}
-export CDORS_ZARR=${CDORS_ZARR:-1} CDORS_PLANNER=${CDORS_PLANNER:-1} CDORS_PLANNER_MEM=${CDORS_PLANNER_MEM-1M}
+export CDORS_OKCACHE=${CDORS_OKCACHE:-1} CDORS_ZARR=${CDORS_ZARR:-1} CDORS_PLANNER=${CDORS_PLANNER:-1} CDORS_PLANNER_MEM=${CDORS_PLANNER_MEM-1M}
 # modest threads: rows run in parallel on a login node with a per-user thread limit
 export CDORS_THREADS=${CDORS_THREADS--P 2 --io-threads 2} CDORS_THREADS_TINY=${CDORS_THREADS_TINY--P 3 --io-threads 3}
 export CDORS_REGIONS=${CDORS_REGIONS:-$CDORS_FIXTURES/regions}
@@ -115,16 +129,46 @@ path_sig() {  # path_sig WORD...: identity of every fixture path in the words (d
 }
 
 run_job() {
-  local i=$1 lineno tag args fx
+  local i=$1 lineno tag args fx t0 _
+  IFS=' ' read -r t0 _ < /proc/uptime
   IFS=$'\t' read -r lineno tag args fx < <(sed -n "${i}p" "$RUN/jobs.tsv")
   local dir; dir=$RUN/$(printf '%03d' "$i")_${fx//:/+}
   mkdir -p "$dir"
   local log=$dir/log
   echo "line $lineno: $tag | $args | $fx" > "$dir/row"
-  result() { printf '%s\t%s\t%s\n' "$1" "line $lineno: $tag | $args | $fx" "$2" > "$dir/result"; }
+  stamp() { local t1; IFS=' ' read -r t1 _ < /proc/uptime; echo $((${t1/./} - ${t0/./})) > "$dir/time"; }  # centiseconds
+  result() { printf '%s\t%s\t%s\n' "$1" "line $lineno: $tag | $args | $fx" "$2" > "$dir/result"; stamp; }
   pass() { result PASS ""; exit 0; }
-  fail() { result FAIL "$1 -> $log"; exit 0; }
+  fail() { flush_refcmp; result FAIL "$1 -> $log"; exit 0; }
   skip() { result SKIP "$1"; exit 0; }
+
+  local refnames=""; local -a refcmp=() refok=()   # ref: outputs whose values are still to be compared: "<variant>=<file>"
+  flush_refcmp() {  # compare them in one Python process; a failure fails the row (first variant named)
+    ((${#refcmp[@]})) || return 0
+    local -a c=("${refcmp[@]}") ok=("${refok[@]}"); refcmp=() refok=()
+    local first
+    # shellcheck disable=SC2086
+    first=$("${PYENV[@]}" "$py" -I "$REFPY" compare-many "$ref" "$rel" "$abs" "${c[@]}" -- $refnames 2>&1 | tee -a "$log" \
+      | sed -n 's/^first failure: //p'; exit "${PIPESTATUS[0]}") \
+      || fail "values differ from the reference (${first:-${c[0]%%=*}}, rel=$rel abs=$abs)"
+    for first in "${ok[@]}"; do : > "$first"; done
+  }
+  defer_refcmp() {  # ... or leave them to the driver (one Python start for many rows), which writes the result
+    ((${#refcmp[@]})) || return 0
+    local IFS=$'\t'
+    echo "$py	$dir	$log	$ref	$rel	$abs	${refnames//$'\n'/ }	${refcmp[*]}" > "$dir/refcmp"
+    printf '%s\n' "${refok[@]}" > "$dir/refcmp.ok"
+    stamp; exit 0
+  }
+  names_of() {  # names_of VAR FILE: cdo's variable names of FILE, sorted (the reference's: cached)
+    local c=""
+    [[ $2 == "$ref" ]] && c=${ref%.*}.names
+    if [[ -n $c && -s $c ]]; then printf -v "$1" '%s' "$(cat "$c")"; return; fi
+    local n; n=$("$CDO" -s showname "$2" 2>> "$log" | tr -s ' ' '\n' | sed '/^$/d' | sort)
+    local rc=$?
+    ((rc == 0)) && [[ -n $c && -n $n ]] && { echo "$n" > "$c.tmp$$"; mv "$c.tmp$$" "$c"; }
+    printf -v "$1" '%s' "$n"
+  }
 
   local f1=${fx%%:*} f2=${fx#*:}
   local in1=$CDORS_FIXTURES/$f1.nc in2=$CDORS_FIXTURES/$f2.nc
@@ -197,7 +241,9 @@ run_job() {
   local key ref refts
   if [[ $tag == ref:* ]]; then
     # cached reference.py output, keyed by reference.py, environment, row and fixture identity
-    key=$(printf '%s|' ref "$(sha1sum < "$REFPY")" "$(cat "$RUN/envsig-$lib" 2>/dev/null)" "$lib" "$fn" \
+    local w=0  # the driver computes the environment signature while the first rows run
+    until [[ -e $RUN/envsig-$lib ]]; do ((w++ < 3000)) || fail "no environment signature of '$lib'"; sleep 0.1; done
+    key=$(printf '%s|' ref "$(cat "$RUN/refpy.sha1")" "$(cat "$RUN/envsig-$lib")" "$lib" "$fn" \
       "$args" "$(sig "$in1")" "$(sig "$in2")" "$(path_sig "${R[@]}")" | sha1sum | cut -c1-16)
     ref=$CDORS_REF/ref-$key.nc refts=$CDORS_REF/ref-$key.ts
     if [[ ! -e $ref ]]; then
@@ -273,7 +319,20 @@ run_job() {
   esac
   echo "abslim=$abslim ref=$ref" >> "$log"
 
-  local r name ri1 ri2 extra base_out=""
+  # A check is a pure function of the two files, its settings and the tools: a passed check is
+  # recorded as $CDORS_REF/ok/<key> (key over cdo version, check, settings and the sha1 of both
+  # files; ref: rows also over reference.py and the environment) and not repeated while the output
+  # bytes stay the same. Within a row, an output byte-identical to one checked with the same settings,
+  # or to the base output it must equal exactly, needs no check (Zarr v3 writes what Zarr v2 wrote,
+  # --mem what the base run wrote).
+  local refsha="" base_sha=""
+  if [[ $tag != text ]]; then
+    if [[ -s ${ref%.*}.sha1 ]]; then refsha=$(< "${ref%.*}.sha1")
+    else refsha=$(sha1sum < "$ref"); refsha=${refsha%% *}; echo "$refsha" > "${ref%.*}.sha1.tmp$$"; mv "${ref%.*}.sha1.tmp$$" "${ref%.*}.sha1"
+    fi
+  fi
+  local r name ri1 ri2 extra base_out="" wn on
+  local -a seen_sig=() seen_name=() seen_sha=()   # outputs checked so far: check settings, variant, sha1
   for r in "${runs[@]}"; do
     IFS='|' read -r name ri1 ri2 extra <<< "$r"
     args_for "$ri1" "$ri2"
@@ -289,29 +348,44 @@ run_job() {
         diff -u "$want" "$out" >> "$log" || fail "text differs ($name)"
       fi
     else
-      local out=$dir/out_$name.nc
+      local out=$dir/out_$name.nc osha
       "$CDORS" --no_history "${X[@]}" "${R[@]}" "$out" >> "$log" 2>&1 || fail "cdors failed ($name)"
-      local want=$ref lim=$abslim wantts=$refts
+      osha=$(sha1sum < "$out"); osha=${osha%% *}
+      [[ $name == base ]] && base_out=$out base_sha=$osha
+      local want=$ref lim=$abslim wantts=$refts wsha=$refsha
       if [[ $name == tiny || $name == mem ]]; then
-        want=$base_out lim=0 wantts=$dir/ts_base
+        want=$base_out lim=0 wantts=$dir/ts_base wsha=$base_sha
       fi
       local -a ped=(--pedantic); [[ $name == grib ]] && ped=()
       local -a og=()  # rows with cdors-only options: values on cdo's grid
       [[ $args == *'{cdors:'* && $name != tiny && $name != mem ]] && og=(-setgrid,"$want")
-      if [[ $tag == ref:* && $want == "$ref" ]]; then  # same names, then values within the tolerance
-        local wn on
-        wn=$("$CDO" -s showname "$want" 2>> "$log" | tr -s ' ' '\n' | sed '/^$/d' | sort)
-        on=$("$CDO" -s showname "$out" 2>> "$log" | tr -s ' ' '\n' | sed '/^$/d' | sort)
+      local mode=byname; [[ $name == base ]] && mode=whole; [[ $tag == ref:* && $want == "$ref" ]] && mode=ref
+      local csig="$mode|$wsha|$lim|${ped[*]}|${#og[@]}" same="" k okf
+      [[ $want == "$base_out" && $osha == "$base_sha" ]] && same=base
+      for k in "${!seen_sig[@]}"; do
+        [[ -z $same && ${seen_sig[k]} == "$csig" && ${seen_sha[k]} == "$osha" ]] && same=${seen_name[k]}
+      done
+      if [[ -n $same ]]; then
+        echo "output identical to the $same output: checked there" >> "$log"
+        continue
+      fi
+      okf=$(printf '%s|' ok "$CDOVER" "$csig" "$osha" $([[ $mode == ref ]] && echo "$rel" "$abs" "$(< "$RUN/refpy.sha1")" "$(< "$RUN/envsig-$lib")") | sha1sum)
+      okf=$CDORS_REF/ok/${okf:0:16}
+      if [[ $CDORS_OKCACHE == 1 && -e $okf ]]; then
+        echo "passed in an earlier run with these bytes ($okf)" >> "$log"
+        seen_sig+=("$csig") seen_name+=("$name") seen_sha+=("$osha")
+        continue
+      fi
+      [[ $wantts == "$dir/ts_base" && ! -e $wantts ]] && "$CDO" -s showtimestamp "$base_out" > "$wantts" 2>> "$log"
+      if [[ $mode == ref ]]; then  # same names, then values within the tolerance
+        names_of wn "$want"; names_of on "$out"
         [[ $wn == "$on" ]] || { echo "names: want [$wn] got [$on]" >> "$log"; fail "variables differ ($name)"; }
-        # shellcheck disable=SC2086
-        "${PYENV[@]}" "$py" -I "$REFPY" compare "$want" "$out" "$rel" "$abs" $wn >> "$log" 2>&1 \
-          || fail "values differ from the reference ($name, rel=$rel abs=$abs)"
-      elif [[ $name == base ]]; then
+        refnames=$wn refcmp+=("$name=$out")  # values: in one Python process (*_refcmp)
+      elif [[ $mode == whole ]]; then
         "$CDO" --pedantic diffn,abslim="$lim" "$want" "${og[@]}" "$out" >> "$log" 2>&1 || fail "values differ ($name, abslim=$lim)"
       else  # Zarr inputs have no variable order: same names, then each variable by name
-        local wn on v
-        wn=$("$CDO" -s showname "$want" 2>> "$log" | tr -s ' ' '\n' | sed '/^$/d' | sort)
-        on=$("$CDO" -s showname "$out" 2>> "$log" | tr -s ' ' '\n' | sed '/^$/d' | sort)
+        local v
+        names_of wn "$want"; names_of on "$out"
         [[ $wn == "$on" ]] || { echo "names: want [$wn] got [$on]" >> "$log"; fail "variables differ ($name)"; }
         for v in $wn; do
           "$CDO" "${ped[@]}" diffn,abslim="$lim" -selname,"$v" "$want" -selname,"$v" "${og[@]}" "$out" >> "$log" 2>&1 || fail "values differ ($name, $v, abslim=$lim)"
@@ -319,9 +393,12 @@ run_job() {
       fi
       "$CDO" -s showtimestamp "$out" > "$dir/ts_$name" 2>> "$log"
       diff "$wantts" "$dir/ts_$name" >> "$log" || fail "timestamps differ ($name)"
+      if [[ $mode == ref ]]; then refok+=("$okf"); else : > "$okf"; fi
+      seen_sig+=("$csig") seen_name+=("$name") seen_sha+=("$osha")
     fi
     [[ $name == base ]] && base_out=$out
   done
+  defer_refcmp
   pass
 }
 
@@ -332,7 +409,7 @@ CASES=${1:-$HERE/cases.txt}
 JOBS=${CDORS_JOBS:-8}; ((JOBS > 16)) && JOBS=16
 t0=$(date +%s.%N)
 RUN=$CDORS_TARGET/runs/$(date +%Y%m%d-%H%M%S)-$$
-mkdir -p "$RUN"
+mkdir -p "$RUN" "$CDORS_REF/ok"
 CDOVER=$("$CDO" --version 2>&1 | head -1) || CDOVER=none
 
 # expand rows x fixtures into jobs.tsv: lineno, tag, args, fixture
@@ -348,13 +425,45 @@ while IFS= read -r line || [[ -n $line ]]; do
   for fx in $fixtures; do printf '%s\t%s\t%s\t%s\n' "$n" "$tag" "$args" "$fx"; done
 done < "$CASES" > "$RUN/jobs.tsv"
 njobs=$(wc -l < "$RUN/jobs.tsv")
-# environment signatures of the ref: libraries (part of their cache keys), once per run
+# reference.py and the environment signatures of the ref: libraries (part of their cache keys),
+# once per run; the signatures (seconds: they import the library) in the background
+sha1sum < "$REFPY" > "$RUN/refpy.sha1"
 for lib in $(awk -F'\t' '$2 ~ /^ref:/ {s = substr($2, 5); sub(/[.:].*/, "", s); print s}' "$RUN/jobs.tsv" | sort -u); do
-  env_sig "$lib" > "$RUN/envsig-$lib" &
+  { env_sig "$lib" > "$RUN/envsig-$lib.tmp"; mv "$RUN/envsig-$lib.tmp" "$RUN/envsig-$lib"; } &
 done
+
+# slowest first, so that no long row starts last: rows on the variant fixtures (up to five cdors
+# runs), then the rest; ref: rows (which wait for the signatures) after the others of their group,
+# each in file order
+awk -F'\t' -v vf=" $VARIANT_FIXTURES " '{f = $4; sub(/:.*/, "", f)
+  print (index(vf, " " f " ") ? 0 : 2) + ($2 ~ /^ref:/) "\t" NR}' "$RUN/jobs.tsv" | sort -s -n -k1,1 | cut -f2 \
+  | xargs -P "$JOBS" -I{} "$0" __job "$RUN" "$CDOVER" {}
 wait
 
-seq 1 "$njobs" | xargs -P "$JOBS" -I{} "$0" __job "$RUN" "$CDOVER" {}
+# the ref: comparisons the rows left: Python starts once per environment and job slot, not per row
+set +f; reqs=("$RUN"/*/refcmp); set -f
+if [[ -e ${reqs[0]} ]]; then
+  cat "${reqs[@]}" | awk -F'\t' -v J="$JOBS" -v D="$RUN" '
+    !($1 in e) {e[$1] = n++; print $1 > (D "/refcmp-py" e[$1])}
+    {k = e[$1] "-" (c[$1]++ % J); sub(/^[^\t]*\t/, ""); print > (D "/refcmp-" k ".req")}'
+  set +f
+  for f in "$RUN"/refcmp-*.req; do
+    n=${f##*/refcmp-}; n=${n%%-*}
+    "${PYENV[@]}" "$(cat "$RUN/refcmp-py$n")" -I "$REFPY" compare-batch < "$f" > "${f%.req}.out" 2> "${f%.req}.err" &
+  done
+  wait
+  cat "$RUN"/refcmp-*.out > "$RUN/refcmp.out" 2>/dev/null
+  set -f
+  for r in "${reqs[@]}"; do
+    IFS=$'\t' read -r _ d log _ rel abs _ first _ < "$r"
+    if got=$(grep -m1 -F "$d	" "$RUN/refcmp.out"); then first=${got#*$'\t'}; else
+      echo "no result from reference.py compare-batch (see $RUN/refcmp-*.err)" >> "$log"; first=${first%%=*}
+    fi
+    if [[ -z $first ]]; then printf 'PASS\t%s\t\n' "$(cat "$d/row")"; while read -r f; do : > "$f"; done < "$d/refcmp.ok"
+    else printf 'FAIL\t%s\t%s\n' "$(cat "$d/row")" "values differ from the reference ($first, rel=$rel abs=$abs) -> $log"
+    fi > "$d/result"
+  done
+fi
 
 set +f; cat "$RUN"/*/result > "$RUN/results.tsv" 2>/dev/null; set -f
 npass=$(grep -c '^PASS' "$RUN/results.tsv"); nfail=$(grep -c '^FAIL' "$RUN/results.tsv"); nskip=$(grep -c '^SKIP' "$RUN/results.tsv")

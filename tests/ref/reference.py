@@ -3,6 +3,13 @@ environment that <lib> selects, always with -I).
 
     reference.py run LIB FN OUT IN1 IN2 [ARG ...]   write the reference of one row to OUT
     reference.py compare WANT GOT REL ABS NAME ...  compare variables NAME of two NetCDF files
+    reference.py compare-many WANT REL ABS LABEL=GOT ... -- NAME ...
+                                                    the same for several GOT files in one process;
+                                                    a failure ends with "first failure: LABEL"
+    reference.py compare-batch < REQUESTS           compare-many for many rows; one request per line,
+                                                    tab-separated: ID LOG WANT REL ABS NAMES LABEL=GOT...
+                                                    (NAMES space-separated), output appended to LOG;
+                                                    prints "ID<TAB><first failing LABEL or empty>"
     reference.py version LIB                        versions of LIB and the modules it loads
 
 run imports LIB first (a missing package exits with 3), then calls FN(args, inputs, out):
@@ -1422,6 +1429,34 @@ def compare(want, got, rel, abs_, names):
     return 1 if bad else 0
 
 
+def compare_many(want, rel, abs_, gots, names):
+    """Label of the first failing GOT, or None."""
+    first = None
+    for g in gots:
+        label, got = g.split("=", 1)
+        print(f"== compare {label}")
+        try:
+            bad = compare(want, got, rel, abs_, names)
+        except Exception as e:  # unreadable file or missing variable: a failure of that output
+            print(f"{label}: {type(e).__name__}: {e}")
+            bad = 1
+        if bad and first is None:
+            first = label
+    if first is not None:
+        print(f"first failure: {first}")
+    return first
+
+
+def compare_batch():
+    out = sys.stdout
+    for line in sys.stdin:
+        id_, log, want, rel, abs_, names, *gots = line.rstrip("\n").split("\t")
+        with open(log, "a") as sys.stdout:
+            first = compare_many(want, float(rel), float(abs_), gots, names.split())
+        sys.stdout = out
+        print(f"{id_}\t{first or ''}", flush=True)
+
+
 def version(lib):
     """Python and the versions of all modules LIB loads, plus the newest file time of LIB's
     package (editable installs change without a new version)."""
@@ -1458,6 +1493,12 @@ def main():
     elif cmd == "compare":
         want, got, rel, abs_, *names = sys.argv[2:]
         sys.exit(compare(want, got, float(rel), float(abs_), names))
+    elif cmd == "compare-many":
+        want, rel, abs_, *rest = sys.argv[2:]
+        k = rest.index("--")
+        sys.exit(compare_many(want, float(rel), float(abs_), rest[:k], rest[k + 1:]) is not None)
+    elif cmd == "compare-batch":
+        compare_batch()
     elif cmd == "version":
         version(sys.argv[2])
     else:

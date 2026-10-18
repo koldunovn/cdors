@@ -882,6 +882,10 @@ The harness gains three capabilities (Task 2), so that every check in this plan 
 
 - [ ] Every requirement in the Overview is implemented; deviations are in `docs/deviations.md`.
 - [ ] Full suite: `cargo test` and `tests/run_cases.sh` (both NetCDF read paths, all variants).
+  ➕ Harness speed (488 rows, CDORS_JOBS=6, login node): 88–97 s → 32–40 s warm. Passed checks are recorded in
+  `$CDORS_REF/ok` by sha1 of output and reference, so only changed outputs are checked again; identical
+  variant outputs (Zarr v3 = v2, `--mem` = base) are checked once; ref: values are compared in one batched
+  Python step; rows on variant fixtures start first. With every output changed (`CDORS_OKCACHE=0`) it takes ~60 s.
 - [x] `bench/realdata_check.sh` is extended with the round-1 operators on the gate's dataset (login-node subset).
 - ➕ 10 `dart_*` cases in `bench/realdata/run.py` (new mode `check`: a NumPy/nereus/regionmask check function gets the
   cdors output). The cases are mesh info, fldmean per level, regmask vs nereus' Atlantic mask and vs regionmask
