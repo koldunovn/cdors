@@ -226,22 +226,38 @@ The harness gains three capabilities (Task 2), so that every check in this plan 
 - Create: `bench/unstructured/baseline.sh` (login-node subset; an `srun` variant submitted only after a yes)
 - Create: `docs/unstructured-baseline.md`
 
-- [ ] **Find the dataset:** one native-mesh FESOM2 dataset with monthly 3D `temp` and `a_ice`, on dart or ng5, under
+- [x] **Find the dataset:** one native-mesh FESOM2 dataset with monthly 3D `temp` and `a_ice`, on dart or ng5, under
       `/work/bm1344/AWI/` (`Cycle3/IFS_28-FESOM_25-cycle3`, `IFS_9-FESOM_5-cycle3`, `EERIE/…`).
-- [ ] **Describe it** in `docs/unstructured-baseline.md`:
+- [x] **Describe it** in `docs/unstructured-baseline.md`:
   - path, mesh name, years, size;
   - chunking and **dimension order** (`nod2` before or after `nz1`);
   - **how dry levels are stored** (0, `_FillValue` or NaN);
   - whether `autorotate_back_to_geo` is present.
-- [ ] baseline.py: Atlantic OHC 0–700 m monthly series (`nr.heat_content` with the nereus Atlantic basin mask) and NH
+- [x] baseline.py: Atlantic OHC 0–700 m monthly series (`nr.heat_content` with the nereus Atlantic basin mask) and NH
       ice extent (`nr.ice_extent_nh`) over N years. Record wall time, peak RSS and dask settings.
-- [ ] cdors read probe on the same files (`-fldmean -sellevel,…` and `-fldmean -selname,a_ice`). This is the lower
+- [x] cdors read probe on the same files (`-fldmean -sellevel,…` and `-fldmean -selname,a_ice`). This is the lower
       bound for round 1, since reading dominates.
-- [ ] Run the login-node subset first. The node run (`srun -c 128 --hint=nomultithread --mem=0`, ≤ 0.1 node-h) happens
+- [x] Run the login-node subset first. The node run (`srun -c 128 --hint=nomultithread --mem=0`, ≤ 0.1 node-h) happens
       only after Nikolay's yes, with a background `sacct` watcher.
-- [ ] Write the gate: speed pass marks for Task 13. If nereus is already within ~2× of the read lower bound, STOP and
+- [x] Write the gate: speed pass marks for Task 13. If nereus is already within ~2× of the read lower bound, STOP and
       report before Task 2.
-- [ ] tests: none (measurement task); the scripts run end to end on the subset.
+- [x] tests: none (measurement task); the scripts run end to end on the subset.
+- ⚠️ Dataset: AWI-CM3 `TCO319L137-DART/hist1950d` raw FESOM2 output under `/work/ab0995/a270210/…/outdata/fesom/`
+  (dart, 1950–2014). The `/work/bm1344/AWI` candidates are orca25 (Cycle3, post-processed) or ng5 (EERIE, GRIB
+  names). There is no monthly `a_ice` in the run, so the ice extent uses the daily files.
+- ⚠️ **Dimension order is `temp(time, nz1, nod2)`, with the horizontal dimension last** (FESOM ≥ 2.1). Only FESOM 2.0
+  era files (`climatology_PHC/{pi,core2_old}`) have `(time, nod2, nz1)`.
+  - This changes the Context line on `trailing_hdims()`, the Task 2 fixture order and the Task 5 executor item:
+    the current order works today, and the old order only needs "accept both".
+  - Dry levels are exactly 0.0 (no `_FillValue`, no NaN). There is no `calendar` attribute (cdors reads it as
+    standard).
+  - `FESOM_autorotate_back_to_geo = -1` (`.true.`) is present.
+  - `mesh.diag` `nlevels_nod2D` differs from `nlvls.out` at one dart node (node 0). Details are in
+    `docs/unstructured-baseline.md`.
+- ⚠️ The user approved compute-node runs during this task, so login-node runs were cut to a smoke test. The node run
+  was job 28228738: 17 min of a 45 min limit, 0.28 node-h (more than the 0.1 node-h first planned, for cold
+  and warm sets of 3 years). Gate passed: nereus is 10.6× (OHC) and 21.7× (ice) slower than the cdors read bound
+  when cold, and 2.3–3.7× when warm.
 
 ### Task 2: Harness: `ref:` references, `json:` assertions, FESOM planner variant, fixtures
 
