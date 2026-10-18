@@ -108,7 +108,7 @@ OUTPUT
     levels; off a mesh the grid's cell areas and the level bounds. Variables without levels
     are refused (unsupported_dimension).
 EXAMPLE
-    ocean heat content 0-700 m in J (rho*cp = 4.09e6 J m-3 K-1; mulc leaves units "C m3"):
+    ocean heat content 0-700 m in J (4.09e6 = rho0*cp = 1025*3990 J m-3 K-1; mulc leaves units "C m3"):
     cdors -mulc,4.09e6 -volint,0/700 -setgrid,fesom:<meshdir> -selname,temp in.nc ohc.nc
 %%% selpoints
 NAME

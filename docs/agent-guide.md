@@ -58,7 +58,7 @@ layers and each cell's wet levels. Put it right above the input or its selection
 describes the mesh. Operators cdo lacks have `"origin": "cdors"` in `ops --json`; `cdors help <op>` explains them.
 
 ```sh
-cdors -mulc,4.09e6 -volint,0/700 -setgrid,fesom:mesh -selname,temp in.nc ohc.nc   # OHC 0-700 m, J (rho*cp = 4.09e6 J m-3 K-1)
+cdors -mulc,4.09e6 -volint,0/700 -setgrid,fesom:mesh -selname,temp in.nc ohc.nc   # OHC 0-700 m, J: 4.09e6 = rho0*cp (1025*3990 J m-3 K-1); use your own rho0, cp
 cdors -fldint -sellonlatbox,-180,180,0,90 -setgrid,fesom:mesh -selname,a_ice in.nc area.nc  # NH ice area, m2
 cdors -fldhist,edges=0.15/1 -sellonlatbox,-180,180,0,90 -setgrid,fesom:mesh -selname,a_ice in.nc ext.nc  # NH extent: a_ice(time,bin), m2
 cdors -fldint -setgrid,fesom:mesh -selname,m_ice in.nc vol.nc  # ice volume, m3
