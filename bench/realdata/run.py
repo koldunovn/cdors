@@ -48,6 +48,17 @@ ICON_RAW = ("/work/bm1344/k203123/experiments/erc2002/run_19910101T000000-199101
 ICON_GRID = "/pool/data/ICON/grids/public/mpim/0033/icon_grid_0033_R02B08_G.nc"
 FESOM = "/work/bm1344/AWI/Cycle3/IFS_28-FESOM_25-cycle3/daily_means/sst/sst_2020.nc"
 FESOM_MESH = "/pool/data/AWICM/FESOM2/MESHES_FESOM2.1/orca25/orca25_griddes_nodes.nc"
+DART = "/work/ab0995/a270210/runtime/awicm3-v3.1_refactoring/TCO319L137-DART/hist1950d/outdata/fesom"
+DART_T = f"{DART}/temp.fesom.1975.nc"      # monthly (time, nz1, nod2), 12.1 GB; one step is read
+DART_I = f"{DART}/a_ice.fesom.1975.nc"     # daily (time, nod2); 10 steps are read
+DART_MESH = "/pool/data/AWICM/FESOM2/MESHES_FESOM2.1/dart"
+DART_GRID = f"-setgrid,fesom:{DART_MESH}"
+# nereus' own Atlantic mask on dart (nr.get_region_mask on nod2d.out), saved by the Task 1 node run
+NEREUS_NPZ = "/scratch/a/a270088/cdors-bench/unst-baseline-28228738/dart_mesh_cache.npz"
+DART_LEV = "2.5,106,680"                   # layers 1, 12, 36 (0-based 0, 11, 35)
+DART_LEV100 = "2.5,7.5,15,25,35,45,55,65,75,85,95"   # the 11 layers 0-100 m
+ATL = "-maskregion,regions=basins,select=Atlantic_Basin"
+REGIONMASK_PY = "/work/ab0995/a270088/mambaforge/envs/aqua/bin/python"
 HADGEM = ("/work/ik1017/CMIP6/data/CMIP6/CMIP/MOHC/HadGEM3-GC31-LL/historical/r1i1p1f3/Omon/tos/"
           "gn/v20190624/tos_Omon_HadGEM3-GC31-LL_historical_r1i1p1f3_gn_195001-201412.nc")
 
@@ -75,7 +86,9 @@ def pctl3(chain, p=95):
 #                  "abs:<x>", "bin" (cdo's histogram percentiles: one bin of the min/max range,
 #                  see "bin_chain"), "text" (stdout compared line by line), "num:<rel>"
 #                  (numbers printed by cdors vs the py reference), "plan" (only times --plan),
-#                  "mem" (the plan must fit --mem or be refused with memory_limit)
+#                  "mem" (the plan must fit --mem or be refused with memory_limit),
+#                  "check" (the function named by "py" gets the cdors output and returns
+#                  (status, note); "stdout": True for a cdors command without output file)
 #   times          compare timestamps (default True)
 #   needs          paths that must exist (otherwise skipped)
 #   remote         needs network
@@ -167,6 +180,45 @@ CASES = [
     dict(id="hadgem_remapbil", what="HadGEM3 ORCA1 tos remapbil to r360x180, 2000",
          cdors=["-remapbil,r360x180", "-selyear,2000", HADGEM],
          cdo=["-remapbil,r360x180", "-selyear,2000", HADGEM], needs=[HADGEM]),
+    # round 1: the FESOM2 dart mesh (3.16 M nodes) on raw AWI-CM3 output; numpy references read
+    # the same slice and the mesh's own nod_area (per level), nlevels_nod2D and nodes
+    dict(id="dart_mesh_info", what="dart mesh info: sizes, area sum, wet levels vs mesh.diag",
+         cdors=["--json", "mesh", "info", f"fesom:{DART_MESH}"], stdout=True,
+         py="chk_dart_mesh_info", mode="check", times=False, needs=[DART_MESH]),
+    dict(id="dart_fldmean_lev", what="dart fldmean per level (3 levels, one month) vs numpy",
+         cdors=["-fldmean", DART_GRID, f"-sellevel,{DART_LEV}", "-seltimestep,1", "-selname,temp", DART_T],
+         py="chk_dart_fldmean", mode="check", needs=[DART_T, DART_MESH]),
+    dict(id="dart_regmask_atl", what="dart regmask Atlantic_Basin vs nereus' own mask (all nodes)",
+         cdors=["-regmask,regions=basins,select=Atlantic_Basin", DART_GRID, "-seltimestep,1",
+                "-selname,a_ice", DART_I],
+         py="chk_dart_regmask_nereus", mode="check", needs=[DART_I, DART_MESH, NEREUS_NPZ]),
+    dict(id="dart_regmask_ar6", what="dart regmask ar6.ocean vs regionmask (every 10th node)",
+         cdors=["-regmask,regions=ar6.ocean", DART_GRID, "-seltimestep,1", "-selname,a_ice", DART_I],
+         py="chk_dart_regmask_ar6", mode="check", needs=[DART_I, DART_MESH, REGIONMASK_PY]),
+    dict(id="dart_regmean_atl", what="dart regmean Atlantic_Basin of a_ice (10 days) vs numpy, nereus mask",
+         cdors=["-regmean,regions=basins,select=Atlantic_Basin", DART_GRID, "-seltimestep,1/10",
+                "-selname,a_ice", DART_I],
+         py="chk_dart_regmean", mode="check", needs=[DART_I, DART_MESH, NEREUS_NPZ]),
+    dict(id="dart_volint_atl", what="dart Atlantic heat content 0-100 m (volint, maskregion) vs numpy",
+         cdors=["-mulc,4089750", "-volint,0/100", ATL, DART_GRID, f"-sellevel,{DART_LEV100}",
+                "-seltimestep,1", "-selname,temp", DART_T],
+         py="chk_dart_volint", mode="check", needs=[DART_T, DART_MESH, NEREUS_NPZ]),
+    dict(id="dart_extent", what="dart NH ice extent (fldhist,edges=0.15/1, 10 days) vs numpy",
+         cdors=["-fldhist,edges=0.15/1", "-sellonlatbox,-180,180,0,90", DART_GRID,
+                "-seltimestep,1/10", "-selname,a_ice", DART_I],
+         py="chk_dart_extent", mode="check", needs=[DART_I, DART_MESH]),
+    dict(id="dart_icearea", what="dart NH ice area (fldint, 10 days) vs numpy",
+         cdors=["-fldint", "-sellonlatbox,-180,180,0,90", DART_GRID, "-seltimestep,1/10",
+                "-selname,a_ice", DART_I],
+         py="chk_dart_icearea", mode="check", needs=[DART_I, DART_MESH]),
+    dict(id="dart_transect", what="dart Drake transect (nn, 3 levels) vs the nearest node",
+         cdors=["-transect,-65,-55,-60,-65", DART_GRID, f"-sellevel,{DART_LEV}", "-seltimestep,1",
+                "-selname,temp", DART_T],
+         py="chk_dart_sampled", mode="check", needs=[DART_T, DART_MESH]),
+    dict(id="dart_selpoints", what="dart selpoints (3 stations, nn, 3 levels) vs the nearest node",
+         cdors=["-selpoints,lon=-30_lat=45,lon=150_lat=-50,lon=0_lat=80", DART_GRID,
+                f"-sellevel,{DART_LEV}", "-seltimestep,1", "-selname,temp", DART_T],
+         py="chk_dart_sampled", mode="check", needs=[DART_T, DART_MESH]),
     dict(id="mem_remap", what="--mem 300M on a HEALPix remapnn (must fit or be refused)",
          cdors=["--mem", "300M", "-remapnn,r360x180", "-seltimestep,1/64", "-selname,tas", HP_3H],
          mode="mem", needs=[HP_3H]),
@@ -182,6 +234,179 @@ def ref_w1_july():
     ds = xr.open_zarr(W1, consolidated=None)
     t = ds["tas"].sel(time=slice("2020-07-01", "2020-07-31T23:59:59"))
     return [float(t.astype("f8").mean("time").mean().values)]
+
+
+_DART = {}
+
+
+def dart(key):
+    """Pieces of the dart mesh.diag (read once): lon, lat (degrees), wet (number of wet layers of
+    each node), zbar (|interfaces|), area<k> (nod_area of layer k: its top interface)."""
+    if key not in _DART:
+        with netCDF4.Dataset(f"{DART_MESH}/fesom.mesh.diag.nc") as m:
+            if key in ("lon", "lat"):
+                nodes = m["nodes"][:].astype("f8")
+                _DART["lon"], _DART["lat"] = np.degrees(nodes[0]), np.degrees(nodes[1])
+            elif key == "wet":
+                _DART["wet"] = m["nlevels_nod2D"][:].astype("i8") - 1
+            elif key == "zbar":
+                _DART["zbar"] = np.abs(m["zbar"][:].astype("f8"))
+            elif key.startswith("area"):
+                k = int(key[4:])
+                _DART[key] = m["nod_area"][k, :].astype("f8")
+    return _DART[key]
+
+
+def nereus_atl():
+    return np.load(NEREUS_NPZ)["atl"]
+
+
+def rel_status(got, want, rel=1e-6):
+    got, want = np.asarray(got, "f8").ravel(), np.asarray(want, "f8").ravel()
+    if got.shape != want.shape:
+        return "DIFFERENT", f"{got.size} vs {want.size} values"
+    nan = np.isnan(got) != np.isnan(want)
+    if nan.any():
+        return "DIFFERENT", f"missing pattern differs in {int(nan.sum())} values"
+    ok = ~np.isnan(want)
+    d = float(np.max(np.abs(got[ok] - want[ok]) / np.maximum(np.abs(want[ok]), 1e-300))) if ok.any() else 0.0
+    st = "identical" if d == 0 else ("within tolerance" if d <= rel else "DIFFERENT")
+    return st, f"{got.size} values, max rel diff {d:.2g} (tolerance {rel:g}); first {got[0]:.9g}"
+
+
+def dart_slice(var, steps, levels=None):
+    """(time, level, node) float64 of the input slice, levels by value of nz1."""
+    path = DART_T if var == "temp" else DART_I
+    with netCDF4.Dataset(path) as d:
+        v = d[var]
+        if levels is None:
+            x = v[:steps, :][:, None, :]
+            lev = np.zeros(1, "i8")
+        else:
+            z = d["nz1"][:]
+            lev = np.array([int(np.argmin(np.abs(z - float(l)))) for l in levels.split(",")])
+            x = np.stack([v[:steps, k, :] for k in lev], axis=1)
+    return np.asarray(x, "f8"), lev
+
+
+def out_var(path, name):
+    with netCDF4.Dataset(path) as d:
+        return np.ma.filled(d[name][:].astype("f8"), np.nan)
+
+
+def chk_dart_mesh_info(path):
+    info = json.load(open(path))
+    nodes = next(p for p in info["places"] if p["name"] == "nodes")
+    want_area = float(dart("area0").sum())
+    wet = dart("wet")
+    errs = []
+    if nodes["size"] != len(wet):
+        errs.append(f"size {nodes['size']} vs {len(wet)}")
+    d = abs(nodes["area_sum"] - want_area) / want_area
+    if d > 1e-12:
+        errs.append(f"area_sum rel diff {d:.2g}")
+    if [nodes["wet_levels"]["min"], nodes["wet_levels"]["max"]] != [int(wet.min()), int(wet.max())]:
+        errs.append(f"wet_levels {nodes['wet_levels']} vs {wet.min()}..{wet.max()}")
+    note = (f"nodes {nodes['size']}, area_sum {nodes['area_sum']:.6e} m2 (rel diff {d:.1g}), wet levels "
+            f"{nodes['wet_levels']['min']}..{nodes['wet_levels']['max']}, levels {info['vertical']['levels']}, "
+            f"cache {'built' if info['cache']['built'] else 'reused'}")
+    return ("DIFFERENT", "; ".join(errs) + "; " + note) if errs else ("identical", note)
+
+
+def chk_dart_fldmean(path):
+    x, lev = dart_slice("temp", 1, DART_LEV)
+    wet = dart("wet")
+    want = []
+    for j, k in enumerate(lev):
+        a = np.where(k < wet, dart(f"area{k}"), 0.0)
+        want.append((x[0, j] * a).sum() / a.sum())
+    return rel_status(out_var(path, "temp"), want)
+
+
+def chk_dart_regmask_nereus(path):
+    got = out_var(path, "mask").reshape(-1) > 0
+    want = nereus_atl()
+    n = int((got != want).sum())
+    note = f"cdors {int(got.sum())} nodes, nereus {int(want.sum())} nodes, {n} differ"
+    return ("identical" if n == 0 else "DIFFERENT"), note
+
+
+def chk_dart_regmask_ar6(path):
+    got = out_var(path, "mask")                 # (region, nod2)
+    sub = slice(None, None, 10)
+    lon, lat = dart("lon")[sub], dart("lat")[sub]
+    tmp = path + ".lonlat.npz"
+    np.savez(tmp, lon=lon, lat=lat)
+    code = ("import sys, numpy as np, xarray as xr, regionmask\n"
+            "regionmask.set_options(cache_dir='/work/ab0995/a270088/cdors-cache/regionmask')\n"
+            "z = np.load(sys.argv[1])\n"
+            "m = regionmask.defined_regions.ar6.ocean.mask_3D(xr.DataArray(z['lon'], dims='c'), "
+            "xr.DataArray(z['lat'], dims='c'), drop=False)\n"
+            "np.save(sys.argv[2], m.transpose('region', 'c').values)\n")
+    env = dict(os.environ, PROJ_DATA=os.path.join(os.path.dirname(os.path.dirname(REGIONMASK_PY)),
+                                                  "share", "proj"))   # pyproj's database
+    r = subprocess.run([REGIONMASK_PY, "-I", "-c", code, tmp, path + ".regionmask.npy"],
+                       capture_output=True, text=True, env=env)
+    if r.returncode != 0:
+        return "error", "regionmask failed: " + r.stderr.strip().splitlines()[-1]
+    want = np.load(path + ".regionmask.npy")
+    g = got[:, sub] > 0
+    if g.shape != want.shape:
+        return "DIFFERENT", f"shape {g.shape} vs {want.shape}"
+    n = int((g != want).sum())
+    return ("identical" if n == 0 else "DIFFERENT"), (f"{g.shape[1]} nodes x {g.shape[0]} regions, "
+                                                      f"{int(g.sum())} memberships, {n} differ")
+
+
+def chk_dart_regmean(path):
+    x, _ = dart_slice("a_ice", 10)
+    a = np.where(nereus_atl(), dart("area0"), 0.0)
+    want = (x[:, 0] * a).sum(axis=1) / a.sum()
+    return rel_status(out_var(path, "a_ice"), want)
+
+
+def chk_dart_volint(path):
+    x, lev = dart_slice("temp", 1, DART_LEV100)
+    wet, z = dart("wet"), dart("zbar")
+    atl = nereus_atl()
+    s = 0.0
+    for j, k in enumerate(lev):
+        dz = min(z[k + 1], 100.0) - max(z[k], 0.0)
+        s += (x[0, j] * np.where((k < wet) & atl, dart(f"area{k}"), 0.0)).sum() * dz
+    return rel_status(out_var(path, "temp"), [s * 4089750.0])
+
+
+def chk_dart_extent(path):
+    x, _ = dart_slice("a_ice", 10)
+    a = np.where(dart("lat") >= 0, dart("area0"), 0.0)
+    want = (np.where(x[:, 0] >= np.float32(0.15), 1.0, 0.0) * a).sum(axis=1)  # as nereus.ice_extent
+    above = out_var(path, "a_ice_above")
+    st, note = rel_status(out_var(path, "a_ice")[:, 0], want)
+    return st, note + f"; a_ice_above max {np.nanmax(above):g}"
+
+
+def chk_dart_icearea(path):
+    x, _ = dart_slice("a_ice", 10)
+    a = np.where(dart("lat") >= 0, dart("area0"), 0.0)
+    return rel_status(out_var(path, "a_ice"), (x[:, 0] * a).sum(axis=1))
+
+
+def chk_dart_sampled(path):
+    """transect / selpoints with nn: each output point is the value of the mesh node nearest to
+    its lon/lat (unit vectors, scipy's cKDTree), missing where the level is dry there."""
+    from scipy.spatial import cKDTree
+    with netCDF4.Dataset(path) as d:
+        plon, plat = d["lon"][:].astype("f8"), d["lat"][:].astype("f8")
+        got = np.ma.filled(d["temp"][:].astype("f8"), np.nan)       # (time, nz1, point)
+    unit = lambda lo, la: np.stack([np.cos(np.radians(la)) * np.cos(np.radians(lo)),
+                                    np.cos(np.radians(la)) * np.sin(np.radians(lo)),
+                                    np.sin(np.radians(la))], axis=-1)
+    _, idx = cKDTree(unit(dart("lon"), dart("lat"))).query(unit(plon, plat))
+    x, lev = dart_slice("temp", 1, DART_LEV)
+    wet = dart("wet")[idx]
+    want = np.where(lev[:, None] < wet[None, :], x[0][:, idx], np.nan)[None]
+    st, note = rel_status(got, want, rel=0.0)
+    return ("identical" if st == "identical" else st), f"{len(idx)} points x {len(lev)} levels; " + note
 
 
 def timed(cmd, log, stdout=None):
@@ -354,6 +579,24 @@ def run_case(c, d, cdo_threads):
         else:
             out.update(status="ok", note=f"estimate {peak / 1e6:.0f} MB of {budget / 1e6:.0f} MB; "
                                          f"RSS {rss:.0f} MB (also counts remap weights, libraries)")
+        return out
+    if mode == "check":
+        tst = f"{cdir}/cdors.{'json' if c.get('stdout') else 'nc'}"
+        if c.get("stdout"):
+            with open(tst, "w") as f:
+                rc, wall, rss = timed([CDORS] + c["cdors"], f"{cdir}/cdors.log", stdout=f)
+        else:
+            rc, wall, rss = timed([CDORS] + c["cdors"] + [tst], f"{cdir}/cdors.log")
+        out.update(cdors_s=wall, rss_mb=rss)
+        if rc != 0:
+            out.update(status="error", note=f"cdors failed, see {cdir}/cdors.log")
+            return out
+        t0 = time.time()
+        try:
+            st, note = globals()[c["py"]](tst)
+        except Exception as e:  # report, do not stop the sweep
+            st, note = "error", f"reference failed: {e!r}"
+        out.update(status=st, note=note, ref_s=time.time() - t0)
         return out
     text = mode == "text" or mode.startswith("num:")
     tst = f"{cdir}/cdors.{'txt' if text else 'nc'}"

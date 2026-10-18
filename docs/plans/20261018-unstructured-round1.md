@@ -882,7 +882,12 @@ The harness gains three capabilities (Task 2), so that every check in this plan 
 
 - [ ] Every requirement in the Overview is implemented; deviations are in `docs/deviations.md`.
 - [ ] Full suite: `cargo test` and `tests/run_cases.sh` (both NetCDF read paths, all variants).
-- [ ] `bench/realdata_check.sh` is extended with the round-1 operators on the gate's dataset (login-node subset).
+- [x] `bench/realdata_check.sh` is extended with the round-1 operators on the gate's dataset (login-node subset).
+- ➕ 10 `dart_*` cases in `bench/realdata/run.py` (new mode `check`: a NumPy/nereus/regionmask check function gets the
+  cdors output). The cases are mesh info, fldmean per level, regmask vs nereus' Atlantic mask and vs regionmask
+  ar6.ocean, regmean, volint, fldhist extent, fldint ice area, a Drake transect and selpoints. All are identical or
+  within 3.6e-8 (float32 outputs). Table in `docs/unstructured-results.md`.
+- ⚠️ The login runs used cdors' default threads (≤ 16 outside Slurm), not 8; each case took ≤ 1.7 s.
 
 ### Task 13: Real-data validation and speed (compute run, needs Nikolay's yes)
 
@@ -890,10 +895,26 @@ The harness gains three capabilities (Task 2), so that every check in this plan 
 - Modify: `bench/unstructured/baseline.sh`
 - Create: `docs/unstructured-results.md`
 
-- [ ] Same diagnostics as the gate. cdors and nereus agree within `rel=1e-5` (float32 inputs, different summation
+- [x] Same diagnostics as the gate. cdors and nereus agree within `rel=1e-5` (float32 inputs, different summation
       order). Report wall time and peak RSS, and check that the `--mem` bound holds.
-- [ ] The pass marks from Task 1 are met, or reported as missed with the cause.
-- [ ] Node run ≤ 0.25 node-h (`--hint=nomultithread --mem=0`), with a background `sacct` watcher.
+- [x] The pass marks from Task 1 are met, or reported as missed with the cause.
+- [x] Node run ≤ 0.25 node-h (`--hint=nomultithread --mem=0`), with a background `sacct` watcher.
+- ➕ `bench/unstructured/validate.sh` (new, instead of extending `baseline.sh`), `baseline.py --area nod_area` (the
+  nereus reference with mesh.diag's per-level areas and nodes), `bench/unstructured/compare.py`. Jobs 28230544 and
+  28230657: 8 min 24 s, 0.14 node-h. Results: `docs/unstructured-results.md`.
+- ⚠️ **Values pass:** OHC agrees with nereus to 2.9e-8 (the float32 output) and the extent to 3e-14. Ice passes every
+  speed mark: 7.2 s cold, 17.7× nereus. First use of the mesh takes 19.7 s; the cached mesh adds 2.5 s.
+- ⚠️ **OHC misses rows 1, 3 and 5:**
+  - 15.4 s cold and 13.9 s warm; peak RSS 3.0–3.3 GB, and 2.24 GB under `--mem 2G`, 12 % over the budget.
+  - Cause: `volint` folds one lane per output step, so 36 lanes keep only 10–15 cores busy. `fldmean` with the same
+    per-level areas takes 9.7 s on ~90 cores.
+  - The `--mem` estimate leaves out the mesh's 0.26 GB of resident arrays.
+- ➕ Follow-ups, not done here:
+  - fold `volint` per (step, level) and sum the levels in fixed order;
+  - make the region mask a CSR row instead of a whole-mesh leaf per tile;
+  - count the mesh's resident bytes in the `--mem` estimate;
+  - push `volint,z0/z1` down as a level selection. Today `-volint,0/700` without `-sellevel` reads all 79 levels
+    (2.2× the bytes), so the guide's OHC recipe must keep `-sellevel`.
 
 ### Task 14: Agent check on FESOM2 (needs its own yes, ~$3–4)
 

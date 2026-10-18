@@ -3,7 +3,7 @@
 
     baseline.py --years 2001-2002 [--data DIR] [--mesh DIR] [--out DIR] [--workers 16]
                 [--what ohc,ice] [--full-column] [--chunks file|nod2] [--mesh-cache F.npz]
-                [--steps N]
+                [--steps N] [--area triangles|nod_area]
 
 Computes, with nereus' public API on xarray/dask, from raw FESOM2 output (one file per variable
 and year, `temp.fesom.<year>.nc`, `a_ice.fesom.<year>.nc`):
@@ -21,6 +21,13 @@ lon, lat, area, depth, layer thickness and the Atlantic mask after the first run
 "mask" phases are the cold cost) and later runs load them from there, wrapped as dask arrays with
 one chunk exactly as load_mesh returns them (phase "mesh_cache"). Dry layers are stored as 0 in FESOM output, so with the
 reference temperature 0 they add nothing to the sum.
+
+--area nod_area (the Task 13 reference) takes the mesh's own areas from fesom.mesh.diag.nc instead:
+node centres from `nodes` (radians), the Atlantic mask from them, OHC with the per-level areas
+nod_area[k] of the kept layers (a 2-D area, which nereus accepts) and a second series with the
+surface area nod_area[0] only (ohc_atl_0_700_area0), ice with nod_area[0]. These are the areas
+cdors uses with -setgrid,fesom:<dir>, so the series compare at rel=1e-6. Its mesh phase is
+"mesh_diag" (no load_mesh, no cache).
 
 Dask runs on its threaded scheduler with --workers threads; the input is opened with
 xr.open_mfdataset through the netCDF4 engine, which serialises HDF5 reads behind xarray's lock.
@@ -57,11 +64,20 @@ def parse_args():
     p.add_argument("--chunks", choices=["file", "nod2"], default="file")
     p.add_argument("--mesh-cache")
     p.add_argument("--steps", type=int, help="only the first N time steps (smoke tests)")
+    p.add_argument("--area", choices=["triangles", "nod_area"], default="triangles")
     return p.parse_args()
 
 
 def peak_rss_gb():
     return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1e6  # kB on Linux
+
+
+def to_csv(x, path):
+    """A series as CSV (a single step may come back as a scalar: one line)."""
+    if x.ndim:
+        x.to_dataframe().to_csv(path)
+    else:
+        open(path, "w").write(f"{x.name}\n{float(x)}\n")
 
 
 def main():
@@ -80,7 +96,7 @@ def main():
 
     dask.config.set(scheduler="threads", num_workers=a.workers)
     t = {"import": time.perf_counter() - T0}
-    rec = {"tool": "nereus", "years": a.years, "data": a.data, "mesh": a.mesh,
+    rec = {"tool": "nereus", "years": a.years, "area": a.area, "data": a.data, "mesh": a.mesh,
            "workers": a.workers, "scheduler": "threads", "chunks": a.chunks,
            "engine": "netcdf4", "full_column": a.full_column, "steps": a.steps,
            "versions": {"nereus": nr.__version__, "xarray": xr.__version__,
@@ -88,7 +104,23 @@ def main():
 
     import dask.array as da
     s = time.perf_counter()
-    if a.mesh_cache and os.path.exists(a.mesh_cache):
+    area_lev = None
+    if a.area == "nod_area":
+        import netCDF4
+        with netCDF4.Dataset(f"{a.mesh}/fesom.mesh.diag.nc") as m:
+            nodes = m["nodes"][:].astype("f8")
+            lon, lat = np.degrees(nodes[0]), np.degrees(nodes[1])
+            zbar = np.abs(m["zbar"][:].astype("f8"))
+            nlev = int(((zbar[:-1] + zbar[1:]) / 2 <= 700).sum())
+            area_lev = m["nod_area"][:nlev, :].astype("f8")
+        area0 = area_lev[0]
+        area, lat_d = da.from_array(area0, chunks=-1), da.from_array(lat, chunks=-1)
+        depth_all, thick_all = (zbar[:-1] + zbar[1:]) / 2, zbar[1:] - zbar[:-1]
+        t["mesh_diag"] = time.perf_counter() - s
+        s = time.perf_counter()
+        atl = nr.get_region_mask(lon, lat, "Atlantic_Basin", "oceanBasins")
+        t["mask"] = time.perf_counter() - s
+    elif a.mesh_cache and os.path.exists(a.mesh_cache):
         z = np.load(a.mesh_cache)
         lon, lat, atl = z["lon"], z["lat"], z["atl"]
         area, lat_d = da.from_array(z["area"], chunks=-1), da.from_array(lat, chunks=-1)
@@ -126,16 +158,31 @@ def main():
         decoded += temp.size * temp.dtype.itemsize
 
         s = time.perf_counter()
-        ohc = nr.heat_content(temp, area, thick, depth, depth_max=700.0,
+        if area_lev is not None:  # per-level areas, chunked like temp along nz1
+            area_k = da.from_array(area_lev[:temp.shape[1]], chunks=(temp.chunks[1], -1))
+        else:
+            area_k = area
+        ohc = nr.heat_content(temp, area_k, thick, depth, depth_max=700.0,
                               mask=atl, as_xarray=True)
         ohc = ohc.compute()
         t["ohc"] = time.perf_counter() - s
         ohc.name = "ohc_atl_0_700"
         ohc.attrs.update(units="J", long_name="Atlantic heat content 0-700 m (nereus)")
         ohc.to_netcdf(f"{a.out}/nereus_ohc_atl_0_700.nc")
-        ohc.to_dataframe().to_csv(f"{a.out}/nereus_ohc_atl_0_700.csv")
+        to_csv(ohc, f"{a.out}/nereus_ohc_atl_0_700.csv")
         rec["ohc_steps"] = int(ohc.size)
-        rec["ohc_first_last"] = [float(ohc[0]), float(ohc[-1])]
+        if area_lev is not None:
+            s = time.perf_counter()
+            ohc0 = nr.heat_content(temp, area, thick, depth, depth_max=700.0,
+                                   mask=atl, as_xarray=True).compute()
+            t["ohc_area0"] = time.perf_counter() - s
+            ohc0.name = "ohc_atl_0_700_area0"
+            ohc0.attrs.update(units="J", long_name="Atlantic heat content 0-700 m, surface "
+                              "nod_area only (nereus)")
+            ohc0.to_netcdf(f"{a.out}/nereus_ohc_atl_0_700_area0.nc")
+            to_csv(ohc0, f"{a.out}/nereus_ohc_atl_0_700_area0.csv")
+            rec["ohc_area0_first_last"] = [float(v) for v in np.atleast_1d(ohc0.values)[[0, -1]]]
+        rec["ohc_first_last"] = [float(v) for v in np.atleast_1d(ohc.values)[[0, -1]]]
         rec["peak_rss_gb_after_ohc"] = peak_rss_gb()
 
     if "ice" in what:
@@ -154,9 +201,9 @@ def main():
         ext.name = "siextent_nh"
         ext.attrs.update(units="m2", long_name="NH sea-ice extent, a_ice >= 0.15 (nereus)")
         ext.to_netcdf(f"{a.out}/nereus_siextent_nh.nc")
-        ext.to_dataframe().to_csv(f"{a.out}/nereus_siextent_nh.csv")
+        to_csv(ext, f"{a.out}/nereus_siextent_nh.csv")
         rec["ice_steps"] = int(ext.size)
-        rec["ice_first_last"] = [float(ext[0]), float(ext[-1])]
+        rec["ice_first_last"] = [float(v) for v in np.atleast_1d(ext.values)[[0, -1]]]
 
     t["total"] = time.perf_counter() - T0
     rec["wall_s"] = {k: round(v, 2) for k, v in t.items()}
