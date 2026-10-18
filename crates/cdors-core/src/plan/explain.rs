@@ -502,7 +502,7 @@ pub fn to_json(plan: &Plan, cmd: &Command, threads: usize, io_threads: usize) ->
         .unwrap_or_default();
     let tiles_mem = top.window as u64 * top.tile_bytes;
     let inter_mem = top_i.map_or(0, |i| plan.live_intermediate_bytes(i));
-    let peak = plan.peak_bytes() + weights_bytes + mesh_bytes;
+    let peak = plan.peak_bytes() + weights_bytes + mesh_bytes + plan.mesh_resident;
     let window = plan.stages.last().map_or(2, |s| s.sched.window);
     let lim = read_limit(cmd);
     let total_dec: u64 = stats.iter().map(|s| s.bytes_decoded).sum();
@@ -552,6 +552,7 @@ pub fn to_json(plan: &Plan, cmd: &Command, threads: usize, io_threads: usize) ->
                 "intermediates": inter_mem,
                 "remap_weights": weights_bytes,
                 "mesh_weights": mesh_bytes,
+                "mesh_resident": plan.mesh_resident,
             },
         },
         "remap_weights": weights,
@@ -736,6 +737,16 @@ pub fn to_text(p: &Value) -> String {
         b(&m["parts"]["intermediates"]),
         b(&m["parts"]["output_buffers"])
     );
+    let mesh = m["parts"]["mesh_resident"].as_u64().unwrap_or(0)
+        + m["parts"]["mesh_weights"].as_u64().unwrap_or(0);
+    if mesh > 0 {
+        let _ = writeln!(
+            s,
+            "  model mesh: {} resident arrays, {} weights (held outside the stages' budget)",
+            b(&m["parts"]["mesh_resident"]),
+            b(&m["parts"]["mesh_weights"])
+        );
+    }
     let t = &p["totals"];
     let _ = writeln!(
         s,

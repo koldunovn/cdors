@@ -258,9 +258,12 @@ fn layer_bounds(d: &mut Desc) {
 /// `nodes`), or else whose size one place has, becomes that place of the mesh: its centres,
 /// its 2-D areas, and the mesh itself on the grid (`Grid::mesh`); the dry levels of variables
 /// with levels become missing ([`mask_dry_levels`]).
-fn setgrid_mesh(spec: &MeshSpec, mut d: Desc, srcs: &Sources) -> Result<Desc> {
+fn setgrid_mesh(spec: &MeshSpec, mut d: Desc, srcs: &mut Sources) -> Result<Desc> {
     let loaded = mesh_cache::load(spec)?;
     let mesh = loaded.mesh;
+    if !srcs.meshes.iter().any(|m| Arc::ptr_eq(m, &mesh)) {
+        srcs.meshes.push(mesh.clone());
+    }
     let places = || {
         mesh.places
             .iter()
@@ -311,6 +314,12 @@ fn setgrid_mesh(spec: &MeshSpec, mut d: Desc, srcs: &Sources) -> Result<Desc> {
             )));
         }
         d.grids[gi] = mesh_grid(&loaded.spec, &mesh, place, &dim)?;
+        // the grid's copies of the centres and areas (written with the output) stay resident
+        let b = &d.grids[gi].base;
+        srcs.mesh_copies += 8
+            * (3 * place.size
+                + b.xvals.as_ref().map_or(0, Vec::len)
+                + b.yvals.as_ref().map_or(0, Vec::len)) as u64;
         replaced = true;
         for v in &mut d.vars {
             if v.grid == Some(gi) {

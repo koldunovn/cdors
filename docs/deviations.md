@@ -88,7 +88,11 @@ output is created.
   (default 60 % of the Slurm allocation, on login nodes a quarter of the available memory, at most
   4 GiB) and refuses a run that cannot fit: `memory_limit` when the state of a single lane or two
   tiles in flight do not fit, `intermediate_too_large` when the inner results of a chain alive at
-  the same time exceed half of the budget (exit code 2).
+  the same time exceed half of the budget (exit code 2). A model mesh's resident arrays (centres,
+  areas, wet levels, the grids' copies) and the per-level areas the kernels load are held outside
+  the stages: the stages are planned for the budget less them (at least a quarter of it; a mesh
+  that leaves less gets the `mesh_memory` warning), and `--plan` counts them
+  (`memory.parts.mesh_resident`, `mesh_weights`).
 - **Printed values** are limited by `--max-values` (see "Printing values: Flood guard").
 
 ## Statistics
@@ -211,6 +215,8 @@ valid). After `-setgrid,<mesh spec>` cdors uses the mesh:
   Σ area·dz; areas per level on a mesh place that has them (FESOM2 nodes: `nod_area[k]`),
   otherwise the cell areas of `fldint`. `volmean` is not `fldmean -vertmean`: every wet cell
   counts with its volume. Variables without levels are refused (`unsupported_dimension`).
+  With a depth range (also `vertint,<z0>/<z1>`) only the levels whose layer reaches into it are
+  read, and only their per-level areas are loaded.
   `volint` writes float64 with the units `<input units> m3` (`m3` without units); `volmean`
   keeps the input's units and type.
 - **`intlevel`** interpolates as cdo does (float32 weights, cdo's missing-value rule, targets

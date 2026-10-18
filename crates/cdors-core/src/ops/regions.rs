@@ -39,8 +39,8 @@ use crate::model::{
     Variable, ZAxis,
 };
 use crate::plan::{
-    BinOp, Desc, Expr, FixedGrid, GridCoords, GridDesc, IndexMap, Labels, Leaf, Sources, VarDesc,
-    ZDesc,
+    CellMask, Desc, Expr, FixedGrid, GridCoords, GridDesc, IndexMap, Labels, Leaf, Sources,
+    VarDesc, ZDesc,
 };
 use cdors_mesh::regions::{self, RegionSet};
 use cdors_mesh::{Csr, MeshError};
@@ -432,20 +432,6 @@ impl ChunkSource for MaskSource {
         Err(Error::internal(format!(
             "the region mask has no stored variable '{var}'"
         )))
-    }
-}
-
-/// A table of one row: the cells where `inside` holds.
-fn one_row(inside: &[bool]) -> Csr {
-    let col: Vec<u32> = (0..inside.len())
-        .filter(|&i| inside[i])
-        .map(|i| i as u32)
-        .collect();
-    Csr {
-        row_ptr: vec![0, col.len()],
-        col,
-        w: None,
-        ncols: inside.len(),
     }
 }
 
@@ -880,19 +866,28 @@ fn maskregion(node: &OpNode, mut d: Desc, srcs: &mut Sources) -> Result<Desc> {
                 cdo_mask_cells(&lon, &lat, &polys, false)
             }
         };
-        let rows = one_row(&inside);
         let name = match &spec {
             Some(s) => format!("regions:{}", s.describe()),
             None => format!("regions:{}", node.args.join(",")),
         };
+        let inside = Arc::new(inside);
         let users: Vec<usize> = (0..d.vars.len())
             .filter(|&i| d.vars[i].grid == Some(gi))
             .collect();
         for i in users {
             let v = &mut d.vars[i];
             let hd = v.hdims();
-            let hdims: Vec<VarDim> = hd.iter().map(|&k| v.dims[k].clone()).collect();
-            let leaf = MaskSource::new(&name, rows.clone(), &hdims, false).leaf(srcs, &hd);
+            // the cells outside are set missing in each evaluated tile (cdo's ifthen with a 0/1
+            // mask); no mask values are read or gathered
+            let mask = CellMask {
+                name: name.clone(),
+                inside: inside.clone(),
+                dims: hd
+                    .iter()
+                    .map(|&k| (k, IndexMap::identity(v.dims[k].size)))
+                    .collect(),
+                sizes: hd.iter().map(|&k| v.dims[k].size).collect(),
+            };
             let e = std::mem::replace(
                 &mut v.expr,
                 Expr::Leaf(Leaf {
@@ -901,12 +896,7 @@ fn maskregion(node: &OpNode, mut d: Desc, srcs: &mut Sources) -> Result<Desc> {
                     maps: vec![],
                 }),
             );
-            v.expr = Expr::Binary(
-                BinOp::IfThen,
-                v.dtype,
-                Box::new(Expr::Leaf(leaf)),
-                Box::new(e),
-            );
+            v.expr = Expr::Cells(Arc::new(mask), Box::new(e));
         }
     }
     Ok(d)

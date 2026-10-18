@@ -45,6 +45,8 @@
 #                     NetCDF fixture itself (one field per chunk), both with "--mem $CDORS_PLANNER_MEM"
 #                     (default 1M: finer tiles, lane waves, several passes); each must equal the first
 #                     cdors output exactly. CDORS_PLANNER_MEM= drops --mem and the second run.
+#                     Rows on a model mesh (fesom: in the arguments) use CDORS_PLANNER_MEM_MESH
+#                     (default 3M): the mesh's arrays are held outside the stages' budget.
 #   (always)          rows on a fixture <f> with gribscan references <f>.json next to it (the grb_*
 #                     fixtures, NetCDF copies cdo made of GRIB files) also run cdors on the references
 #                     (variant "grib", vs the cdo reference on the NetCDF copy; compared without
@@ -92,6 +94,7 @@ export CDORS_FIXTURES=${CDORS_FIXTURES:-$CDORS_TARGET/fixtures}
 export CDORS=${CDORS:-$CDORS_TARGET/release/cdors}
 export CDORS_REF=${CDORS_REF:-$CDORS_TARGET/cdo-ref}
 export CDORS_OKCACHE=${CDORS_OKCACHE:-1} CDORS_ZARR=${CDORS_ZARR:-1} CDORS_PLANNER=${CDORS_PLANNER:-1} CDORS_PLANNER_MEM=${CDORS_PLANNER_MEM-1M}
+export CDORS_PLANNER_MEM_MESH=${CDORS_PLANNER_MEM_MESH:-3M}
 # modest threads: rows run in parallel on a login node with a per-user thread limit
 export CDORS_THREADS=${CDORS_THREADS--P 2 --io-threads 2} CDORS_THREADS_TINY=${CDORS_THREADS_TINY--P 3 --io-threads 3}
 export CDORS_REGIONS=${CDORS_REGIONS:-$CDORS_FIXTURES/regions}
@@ -284,11 +287,15 @@ run_job() {
       done
     fi
     if [[ $CDORS_PLANNER == 1 ]]; then
+      # a model mesh is held outside the stages' budget (pi: up to ~2 MB of centres, areas and
+      # per-level areas), so rows with one get the stages' small budget on top of it
+      local pm=$CDORS_PLANNER_MEM
+      [[ -n $pm && $args == *fesom:* ]] && pm=$CDORS_PLANNER_MEM_MESH
       local tp=$CDORS_FIXTURES/${f1}_tiny.zarr2; [[ $f2 == "$f1" ]] && z2=$tp
-      [[ -e $tp ]] && runs+=("tiny|$tp|$z2|$CDORS_THREADS_TINY${CDORS_PLANNER_MEM:+ --mem $CDORS_PLANNER_MEM}") || echo "planner variant skipped: $tp missing" >> "$log"
+      [[ -e $tp ]] && runs+=("tiny|$tp|$z2|$CDORS_THREADS_TINY${pm:+ --mem $pm}") || echo "planner variant skipped: $tp missing" >> "$log"
       # the NetCDF fixture (one field per chunk) under the small budget: finer tiles, lane waves
       # and several passes over the input
-      [[ -n $CDORS_PLANNER_MEM ]] && runs+=("mem|$in1|$in2|$CDORS_THREADS_TINY --mem $CDORS_PLANNER_MEM")
+      [[ -n $pm ]] && runs+=("mem|$in1|$in2|$CDORS_THREADS_TINY --mem $pm")
     fi
   fi
   # GRIB fixtures: cdors also reads gribscan's references to the GRIB file the fixture was made from

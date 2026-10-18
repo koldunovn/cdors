@@ -1043,8 +1043,12 @@ def outer_mulc(args):
 
 def mesh_columns(args, inputs):
     """Per 3-D variable of the row: name, values (time, level, cell) with the dry levels
-    missing, levels, areas per level (level, cell), and the mesh."""
+    missing (and the nodes outside the regions of a -maskregion,regions=<set>, regionmask's
+    mask: rows ref:regionmask.*), levels, areas per level (level, cell), and the mesh."""
     mesh = read_mesh(args)
+    keep = None
+    if any(a.startswith("-maskregion,") for a in args):
+        keep = _mask_3D(args, inputs, "maskregion")[0].any(axis=0)
     with netCDF4.Dataset(inputs[0]) as src:
         for n in selected(args, data_vars(src)):
             v = src[n]
@@ -1054,7 +1058,10 @@ def mesh_columns(args, inputs):
             nc = x.shape[2]
             nodes = nc == mesh["nod_area"].shape[1]
             a = mesh["nod_area"][lev] if nodes else np.broadcast_to(mesh["elem_area"], (len(lev), nc))
-            yield n, np.where(wet(mesh, nc, lev, False)[None], x, np.nan), lev, a, mesh
+            x = np.where(wet(mesh, nc, lev, False)[None], x, np.nan)
+            if keep is not None:
+                x = np.where(keep[None, None, :], x, np.nan)
+            yield n, x, lev, a, mesh
 
 
 def write_time_series(inputs, out, series, cells=None):

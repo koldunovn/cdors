@@ -210,6 +210,104 @@ impl WetMask {
     }
 }
 
+/// A set of cells (`maskregion`, [`Expr::Cells`]): a value whose cell is outside is missing.
+/// The cells are a flag per cell of the horizontal dimensions as they were when the mask was
+/// made (`sizes`, C order); like a leaf's maps, `dims` follow the output dimensions through
+/// selections and renumbering. Applied to the evaluated tile in place: no mask values are read
+/// or gathered per tile.
+#[derive(Debug, Clone)]
+pub struct CellMask {
+    /// Name for `--plan` (`regions:basins[Atlantic_Basin]`).
+    pub name: String,
+    pub inside: Arc<Vec<bool>>,
+    /// Per horizontal dimension: the output dimension and the index (at creation) of each index
+    /// along it.
+    pub dims: Vec<(usize, IndexMap)>,
+    pub sizes: Vec<usize>,
+}
+
+impl CellMask {
+    fn select(&mut self, dim: usize, sel: &IndexMap) {
+        for (d, m) in &mut self.dims {
+            if *d == dim {
+                *m = m.compose(sel);
+            }
+        }
+    }
+
+    fn retarget(&mut self, f: &dyn Fn(usize) -> (usize, Option<IndexMap>)) {
+        for (d, m) in &mut self.dims {
+            let (nd, sel) = f(*d);
+            *d = nd;
+            if let Some(s) = sel {
+                *m = m.compose(&s);
+            }
+        }
+    }
+
+    /// Sets the values of an evaluated tile (box `bx`) whose cell is outside to NaN.
+    pub fn apply(&self, bx: &tiling::TileBox, v: &mut crate::io::Values) {
+        let shape = bx.shape();
+        let nd = shape.len();
+        if nd == 0 || bx.is_empty() || self.dims.iter().any(|(d, _)| *d >= nd) {
+            return;
+        }
+        // flat cell index contributed by each tile index along each dimension
+        let mut contrib: Vec<Vec<usize>> = vec![Vec::new(); nd];
+        for (h, (d, m)) in self.dims.iter().enumerate() {
+            let stride: usize = self.sizes[h + 1..].iter().product();
+            contrib[*d] = bx.ranges[*d].clone().map(|i| m.get(i) * stride).collect();
+        }
+        let last = nd - 1;
+        let n = shape[last];
+        let inside = &*self.inside;
+        fn mask<T: Copy>(
+            v: &mut [T],
+            nan: T,
+            n: usize,
+            shape: &[usize],
+            contrib: &[Vec<usize>],
+            inside: &[bool],
+        ) {
+            let last = shape.len() - 1;
+            let mut idx = vec![0usize; last];
+            for row in v.chunks_mut(n) {
+                let base: usize = (0..last)
+                    .filter(|&d| !contrib[d].is_empty())
+                    .map(|d| contrib[d][idx[d]])
+                    .sum();
+                match contrib[last].as_slice() {
+                    [] => {
+                        if !inside[base] {
+                            row.iter_mut().for_each(|x| *x = nan);
+                        }
+                    }
+                    c => {
+                        for (x, &f) in row.iter_mut().zip(c) {
+                            if !inside[base + f] {
+                                *x = nan;
+                            }
+                        }
+                    }
+                }
+                let mut d = last;
+                while d > 0 {
+                    d -= 1;
+                    idx[d] += 1;
+                    if idx[d] < shape[d] {
+                        break;
+                    }
+                    idx[d] = 0;
+                }
+            }
+        }
+        match v {
+            crate::io::Values::F32(x) => mask(x, f32::NAN, n, &shape, &contrib, inside),
+            crate::io::Values::F64(x) => mask(x, f64::NAN, n, &shape, &contrib, inside),
+        }
+    }
+}
+
 /// Pointwise operators with one input.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum UnOp {
@@ -239,6 +337,8 @@ pub enum Expr {
     Binary(BinOp, DType, Box<Expr>, Box<Expr>),
     /// The value of the expression with its dry levels missing (`setgrid,<mesh spec>`).
     Mask(Arc<WetMask>, Box<Expr>),
+    /// The value of the expression missing outside a set of cells (`maskregion`).
+    Cells(Arc<CellMask>, Box<Expr>),
 }
 
 impl Expr {
@@ -258,6 +358,10 @@ impl Expr {
                 b.select(dim, sel);
             }
             Self::Mask(m, e) => {
+                Arc::make_mut(m).select(dim, sel);
+                e.select(dim, sel);
+            }
+            Self::Cells(m, e) => {
                 Arc::make_mut(m).select(dim, sel);
                 e.select(dim, sel);
             }
@@ -285,6 +389,10 @@ impl Expr {
                 Arc::make_mut(m).retarget(f);
                 e.retarget(f);
             }
+            Self::Cells(m, e) => {
+                Arc::make_mut(m).retarget(f);
+                e.retarget(f);
+            }
         }
     }
 
@@ -294,7 +402,7 @@ impl Expr {
         fn walk<'a>(e: &'a Expr, out: &mut Vec<&'a Leaf>) {
             match e {
                 Expr::Leaf(l) => out.push(l),
-                Expr::Unary(_, _, a) | Expr::Mask(_, a) => walk(a, out),
+                Expr::Unary(_, _, a) | Expr::Mask(_, a) | Expr::Cells(_, a) => walk(a, out),
                 Expr::Binary(_, _, a, b) => {
                     walk(a, out);
                     walk(b, out);
@@ -311,7 +419,7 @@ impl Expr {
         fn walk<'a>(e: &'a mut Expr, out: &mut Vec<&'a mut Leaf>) {
             match e {
                 Expr::Leaf(l) => out.push(l),
-                Expr::Unary(_, _, a) | Expr::Mask(_, a) => walk(a, out),
+                Expr::Unary(_, _, a) | Expr::Mask(_, a) | Expr::Cells(_, a) => walk(a, out),
                 Expr::Binary(_, _, a, b) => {
                     walk(a, out);
                     walk(b, out);
@@ -329,7 +437,7 @@ impl Expr {
         match self {
             Self::Mask(m, _) => Some((m.clone(), m.level.0, m.level.1.clone())),
             Self::Leaf(_) => None,
-            Self::Unary(_, _, e) => e.wet_mask(),
+            Self::Unary(_, _, e) | Self::Cells(_, e) => e.wet_mask(),
             Self::Binary(_, _, a, b) => a.wet_mask().or_else(|| b.wet_mask()),
         }
     }
@@ -350,7 +458,7 @@ impl Expr {
                 );
             }
             Self::Leaf(_) => {}
-            Self::Unary(_, _, e) => e.unmask(),
+            Self::Unary(_, _, e) | Self::Cells(_, e) => e.unmask(),
             Self::Binary(_, _, a, b) => {
                 a.unmask();
                 b.unmask();
@@ -363,7 +471,7 @@ impl Expr {
         match self {
             Self::Leaf(l) => leaf_dtype(plan_sources[l.src].as_ref(), &l.var),
             Self::Unary(_, t, _) | Self::Binary(_, t, _, _) => *t,
-            Self::Mask(_, e) => e.dtype(plan_sources),
+            Self::Mask(_, e) | Self::Cells(_, e) => e.dtype(plan_sources),
         }
     }
 
@@ -372,6 +480,7 @@ impl Expr {
         match self {
             Self::Leaf(l) => format!("{}:{}", sources[l.src].dataset().source, l.var),
             Self::Mask(m, e) => format!("wet({}, {})", e.describe(sources), m.place),
+            Self::Cells(m, e) => format!("ifthen({}, {})", m.name, e.describe(sources)),
             Self::Unary(op, _, e) => {
                 let (n, c) = match op {
                     UnOp::AddC(c) => ("addc", c),
@@ -828,6 +937,11 @@ pub struct Sources {
     /// Warnings of operators that are not folds (`regmask`: cells filled, empty regions), for
     /// `--plan`'s `warnings[]`; they are printed to stderr when they arise.
     pub warnings: Vec<serde_json::Value>,
+    /// Model meshes the chain uses (`-setgrid,<mesh spec>`): their resident arrays (centres,
+    /// 2-D areas, wet levels) stay in memory for the whole run.
+    pub meshes: Vec<Arc<cdors_mesh::Mesh>>,
+    /// Bytes of the copies of mesh centres and areas the grids of `setgrid` hold.
+    pub mesh_copies: u64,
 }
 
 /// When planning may run cdo (and write `$CDORS_CACHE`) for remapping.
@@ -980,6 +1094,10 @@ pub struct Plan {
     pub intermediates: Vec<intermediate::Intermediate>,
     /// Memory budget (`--mem` or [`schedule::default_mem`]).
     pub budget: u64,
+    /// Part of the budget held outside the stages: the resident arrays of the meshes and the
+    /// mesh weights (per-level areas, tables) the kernels load.
+    pub mesh_resident: u64,
+    pub mesh_weights: u64,
     /// Compute threads and reads in flight, sized to the work.
     pub threads: usize,
     pub io_threads: usize,
@@ -1009,6 +1127,8 @@ impl Plan {
             out_kind,
             intermediates: Vec::new(),
             budget: 0,
+            mesh_resident: 0,
+            mesh_weights: 0,
             threads: 1,
             io_threads: 1,
             deferred: false,
@@ -1197,6 +1317,35 @@ pub fn build(cmd: &Command, cdo: CdoUse) -> Result<Plan> {
     // memory budget, threads, and the schedule of every stage
     let budget = cmd.options.mem.unwrap_or_else(schedule::default_mem);
     intermediate::check_budget(&intermediates, budget)?;
+    // the meshes and the weights the kernels load stay resident: the stages get what is left
+    let mesh_resident: u64 =
+        srcs.meshes.iter().map(|m| m.resident_bytes()).sum::<u64>() + srcs.mesh_copies;
+    let mesh_weights: u64 = stages
+        .iter()
+        .filter_map(|s| s.kernel.as_ref()?.plan_info())
+        .filter_map(|i| i.get("mesh_weights").and_then(|w| w.as_array()).cloned())
+        .flatten()
+        .filter_map(|e| e["bytes"].as_u64())
+        .sum();
+    let held = mesh_resident + mesh_weights;
+    // the stages keep at least a quarter of the budget: a mesh that leaves less is warned
+    // about (the run then exceeds the budget by about the difference) rather than refused
+    let floor = budget / 4;
+    if held > 0 && budget.saturating_sub(held) < floor {
+        let msg = format!(
+            "the model mesh holds {} of resident arrays and {} of weights, more than three \
+             quarters of the memory budget of {}: the stages are planned for a quarter of it, \
+             so the run may need about {}. Fix: raise --mem, or select fewer levels first \
+             (the per-level areas of the levels read count)",
+            schedule::human(mesh_resident),
+            schedule::human(mesh_weights),
+            schedule::human(budget),
+            schedule::human(held + floor)
+        );
+        crate::exec::threads::warn("mesh_memory", &msg);
+        srcs.warnings
+            .push(serde_json::json!({"warning": "mesh_memory", "message": msg}));
+    }
     let (threads, io_threads) = (
         crate::exec::default_threads(cmd).max(1),
         crate::exec::default_io_threads(cmd).max(1),
@@ -1229,7 +1378,29 @@ pub fn build(cmd: &Command, cdo: CdoUse) -> Result<Plan> {
         let hold = intermediates.get(i).map_or(0, |im| im.bytes);
         let live = intermediate::live_bytes(&intermediates, i);
         let w: &[u64] = if i == out_stage { &written } else { &[] };
-        st.sched = schedule::schedule(st, threads, io_threads, budget - live, hold, w)?;
+        let left = budget.saturating_sub(live + held).max(floor).max(1);
+        st.sched =
+            schedule::schedule(st, threads, io_threads, left, hold, w).map_err(|mut e| {
+                if held > 0 && e.code == ErrorCode::MemoryLimit {
+                    // the stage's share of the budget is what the mesh leaves
+                    e.message = format!(
+                        "{} (the memory budget of {} less the model mesh's {} of resident \
+                         arrays and weights)",
+                        e.message,
+                        schedule::human(budget),
+                        schedule::human(held)
+                    );
+                    if let Some(need) = e.fields.iter().find(|(k, _)| k == "bytes") {
+                        let need = need.1.as_u64().unwrap_or(0) + held + live;
+                        e.hint = Some(format!(
+                            "raise --mem to at least {}, or select fewer cells, levels or \
+                             timesteps first (-sellonlatbox, -sellevel, -seltimestep)",
+                            schedule::human(need)
+                        ));
+                    }
+                }
+                e
+            })?;
         st.sched.bytes_read = explain::stage_stats(st).bytes_decoded;
     }
     Ok(Plan {
@@ -1240,6 +1411,8 @@ pub fn build(cmd: &Command, cdo: CdoUse) -> Result<Plan> {
         output,
         intermediates,
         budget,
+        mesh_resident,
+        mesh_weights,
         threads,
         io_threads,
         deferred: srcs.deferred,

@@ -12,10 +12,14 @@
 //! cells and levels, and that divided by the volume of the cells and levels with valid values
 //! (Σ area·dz). Areas: on a mesh place with per-level areas (FESOM2 nodes) the area of each level
 //! (`nod_area[k]`), otherwise the cell areas `fldint` uses (m²). This is not `fldmean -vertmean`:
-//! every wet cell counts with its volume. Fold order: one accumulator per (timestep, level, row of
-//! the grid), each fed its cells in ascending order across all chunks; the result adds the
-//! accumulators level by level (rows ascending within a level), so it is the same for every chunk
-//! layout and thread count.
+//! every wet cell counts with its volume. Two folds: the first, like `fldint`, has lanes of
+//! timesteps and levels (so as many cores work as for `fldmean`) and keeps per (timestep, level)
+//! the partial sums Σ w·x, Σ w and the count, one accumulator per grid row fed its cells in
+//! ascending order across all chunks, rows added in ascending order; a small intermediate
+//! (timestep, level, part) carries them to the second fold, which adds the levels in ascending
+//! order. The result is the same for every chunk layout and thread count. A depth range is
+//! pushed into the read: only the levels whose layer reaches into it are selected, as by
+//! `-sellevel` ([`push_down_range`]).
 //!
 //! **intlevel** (cdo `Intlevel.cc`): linear interpolation between the two levels around each
 //! target level, with cdo's float32 weights and missing-value rule (with one neighbour missing
@@ -231,6 +235,48 @@ fn unknown_mesh_levels(op: &str, v: &VarDesc, g: &GridDesc, zdim: &str) -> Optio
 // volint, volmean
 // ---------------------------------------------------------------------------------------------
 
+/// The levels a depth range touches: `input`'s variables with levels keep only the levels whose
+/// layer intersects [z0, z1], so the levels outside are never read (nor their per-level areas
+/// loaded), as with `-sellevel`. Variables whose layers are not known are left as they are (the
+/// operator refuses them later); a range that misses every level keeps them all (all missing).
+pub(crate) fn push_down_range(input: &mut Desc, range: (f64, f64)) {
+    let mut made: HashMap<(usize, Vec<usize>), usize> = HashMap::new();
+    for i in 0..input.vars.len() {
+        let v = &input.vars[i];
+        let Some(zd) = v.dim_of(DimRole::Vertical) else {
+            continue;
+        };
+        let nlev = v.dims[zd].size;
+        let layers = match mesh_levels(v, zd) {
+            Some(m) => m.layers(),
+            None => axis_layers(v.zaxis.map(|z| &input.zaxes[z].axis), nlev),
+        };
+        let Some(layers) = layers else {
+            continue;
+        };
+        let keep: Vec<usize> = cut_thickness(&layers, Some(range))
+            .iter()
+            .enumerate()
+            .filter(|(_, t)| **t > 0.0)
+            .map(|(k, _)| k)
+            .collect();
+        if keep.is_empty() || keep.len() == nlev {
+            continue;
+        }
+        let zi = v.zaxis.map(|z| {
+            *made.entry((z, keep.clone())).or_insert_with(|| {
+                let mut nz = input.zaxes[z].clone();
+                nz.select(&IndexMap::from_list(keep.clone()));
+                input.zaxes.push(nz);
+                input.zaxes.len() - 1
+            })
+        });
+        let v = &mut input.vars[i];
+        v.select(zd, &IndexMap::from_list(keep));
+        v.zaxis = zi;
+    }
+}
+
 /// Cell areas of a variable.
 enum Area {
     Const(f64),
@@ -238,10 +284,10 @@ enum Area {
     PerLevel(Arc<LevelWeights>),
 }
 
-/// What a dimension of the input variable is to the volume fold.
+/// What a dimension of the input variable is to the per-level fold.
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Role {
-    /// Not folded (time, ...): contributes to the output index.
+    /// Neither levels nor cells (time, ...): kept.
     Outer,
     Level,
     /// The first horizontal dimension (rows of a 2-D grid, the cells of a 1-D one).
@@ -250,31 +296,39 @@ enum Role {
     H1,
 }
 
-struct VolPlan {
+/// Components of the per-level partial sums: Σ w·x, Σ w, number of valid values.
+const PARTS: usize = 3;
+
+struct LevelPlan {
     roles: Vec<Role>,
-    nlev: usize,
+    zd: usize,
     /// Cells per row of a 2-D grid (0 for 1-D grids) and rows (1 for 1-D grids).
     nx: usize,
     nrows: usize,
     dz: Vec<f64>,
     area: Area,
-    /// For each output dimension the input dimension it keeps, `None` for the 1-point grid.
-    out_dims: Vec<Option<usize>>,
 }
 
-struct VolKernel {
-    mean: bool,
-    vars: Vec<Arc<VolPlan>>,
+/// Stage 1 of `volint`/`volmean`: per (timestep, level) the partial sums over the cells, folded
+/// like `fldint` (lanes of timesteps and levels, cells in order), written as a small
+/// intermediate (outer dimensions, level, part).
+struct LevelKernel {
+    vars: Vec<Arc<LevelPlan>>,
     info: Option<serde_json::Value>,
 }
 
-impl FoldKernel for VolKernel {
+/// Products of a lane's extents along its outer dimensions and along its levels.
+fn lane_sizes(p: &LevelPlan, lane: &TileBox) -> (usize, usize) {
+    let outer = (0..lane.ranges.len())
+        .filter(|&d| p.roles[d] == Role::Outer)
+        .map(|d| lane.ranges[d].len())
+        .product();
+    (outer, lane.ranges[p.zd].len())
+}
+
+impl FoldKernel for LevelKernel {
     fn fold_dim(&self) -> DimRole {
         DimRole::Horizontal
-    }
-
-    fn folds(&self, role: DimRole) -> bool {
-        matches!(role, DimRole::Horizontal | DimRole::Vertical)
     }
 
     fn plan_info(&self) -> Option<serde_json::Value> {
@@ -283,12 +337,13 @@ impl FoldKernel for VolKernel {
 
     fn state_bytes(&self, var: usize, lane: &TileBox) -> usize {
         let p = &self.vars[var];
-        outer_len(p, lane) * (p.nlev * p.nrows * 24 + 8)
+        let (outer, nlev) = lane_sizes(p, lane);
+        outer * nlev * (p.nrows * 24 + PARTS * 8)
     }
 
     fn start(&self, var: usize, lane: &TileBox) -> Box<dyn FoldState> {
         let p = self.vars[var].clone();
-        let outer = outer_len(&p, lane);
+        let (outer, nlev) = lane_sizes(&p, lane);
         let nd = lane.ranges.len();
         let mut ostride = vec![0usize; nd];
         let mut s = 1;
@@ -298,46 +353,40 @@ impl FoldKernel for VolKernel {
                 s *= lane.ranges[d].len();
             }
         }
-        let n = outer * p.nlev * p.nrows;
-        Box::new(VolState {
+        Box::new(LevelState {
             var,
-            mean: self.mean,
             lane: lane.clone(),
             outer,
+            nlev,
             ostride,
-            acc: vec![(0.0, 0.0, 0); n],
+            acc: vec![(0.0, 0.0, 0); outer * nlev * p.nrows],
             areas: None,
             p,
         })
     }
 }
 
-fn outer_len(p: &VolPlan, lane: &TileBox) -> usize {
-    (0..lane.ranges.len())
-        .filter(|&d| p.roles[d] == Role::Outer)
-        .map(|d| lane.ranges[d].len())
-        .product()
-}
-
-struct VolState {
+struct LevelState {
     var: usize,
-    p: Arc<VolPlan>,
-    mean: bool,
+    p: Arc<LevelPlan>,
     lane: TileBox,
     outer: usize,
-    /// Stride of each outer dimension in the output index (0 for folded dimensions).
+    /// Levels of the lane.
+    nlev: usize,
+    /// Stride of each outer dimension in the lane's outer index (0 for the others).
     ostride: Vec<usize>,
-    /// (Σ w·x, Σ w, valid values) per (outer, level, row).
+    /// (Σ w·x, Σ w, valid values) per (outer, lane level, row).
     acc: Vec<(f64, f64, u64)>,
-    /// Per-level areas of the levels, loaded with the first tile.
+    /// Per-level areas of the lane's levels, loaded with its first tile.
     areas: Option<Vec<Arc<Vec<f64>>>>,
 }
 
-impl VolState {
+impl LevelState {
     fn ensure_areas(&mut self) -> Result<()> {
         if let (None, Area::PerLevel(lw)) = (&self.areas, &self.p.area) {
             self.areas = Some(
-                (0..self.p.nlev)
+                self.lane.ranges[self.p.zd]
+                    .clone()
                     .map(|j| lw.level(j).map(|(a, _)| a))
                     .collect::<Result<_>>()?,
             );
@@ -355,10 +404,11 @@ impl VolState {
         }
         let last = nd - 1;
         let n = bx.ranges[last].len();
-        // (outer, level, cell, row) of index i along dimension d, added up over the dimensions
+        let k0 = self.lane.ranges[p.zd].start;
+        // (outer, lane level, cell, row) of index i along dimension d, added up
         let contrib = |d: usize, i: usize, a: &mut [usize; 4]| match p.roles[d] {
             Role::Outer => a[0] += (i - self.lane.ranges[d].start) * self.ostride[d],
-            Role::Level => a[1] = i,
+            Role::Level => a[1] = i - k0,
             Role::H0 if p.nx > 0 => {
                 a[2] += i * p.nx;
                 a[3] = i;
@@ -380,10 +430,10 @@ impl VolState {
                     Area::Each(w) => w[f],
                     Area::PerLevel(_) => self.areas.as_ref().expect("loaded")[j][f],
                 };
-                let w = area * p.dz[j];
+                let w = area * p.dz[k0 + j];
                 let x: f64 = x.into();
                 if !x.is_nan() && w != 0.0 {
-                    let e = &mut self.acc[(o * p.nlev + j) * p.nrows + r];
+                    let e = &mut self.acc[(o * self.nlev + j) * p.nrows + r];
                     e.0 += w * x;
                     e.1 += w;
                     e.2 += 1;
@@ -402,7 +452,7 @@ impl VolState {
     }
 }
 
-impl FoldState for VolState {
+impl FoldState for LevelState {
     fn push(&mut self, tile: Tile) -> Result<Vec<Tile>> {
         self.ensure_areas()?;
         match &tile.values {
@@ -412,25 +462,106 @@ impl FoldState for VolState {
         Ok(Vec::new())
     }
 
+    /// (outer, level, part): the rows of each level added in ascending order.
     fn finish(&mut self) -> Result<Vec<Tile>> {
         let p = &*self.p;
-        let per = p.nlev * p.nrows;
-        let out: Vec<f64> = (0..self.outer)
-            .map(|o| {
-                let (mut s, mut w, mut n) = (0.0, 0.0, 0u64);
-                for e in &self.acc[o * per..(o + 1) * per] {
-                    s += e.0;
-                    w += e.1;
-                    n += e.2;
+        let mut out = Vec::with_capacity(self.outer * self.nlev * PARTS);
+        for rows in self.acc.chunks_exact(p.nrows) {
+            let (mut s, mut w, mut n) = (0.0, 0.0, 0u64);
+            for e in rows {
+                s += e.0;
+                w += e.1;
+                n += e.2;
+            }
+            out.extend([s, w, n as f64]);
+        }
+        let mut ranges: Vec<_> = (0..self.lane.ranges.len())
+            .filter(|&d| p.roles[d] == Role::Outer)
+            .map(|d| self.lane.ranges[d].clone())
+            .collect();
+        ranges.push(self.lane.ranges[p.zd].clone());
+        ranges.push(0..PARTS);
+        Ok(vec![Tile {
+            var: self.var,
+            bx: TileBox { ranges },
+            values: Values::F64(out),
+        }])
+    }
+}
+
+/// Stage 2: the partial sums of the levels added in ascending level order per timestep, then
+/// volint = Σ w·x, volmean = Σ w·x / Σ w (missing without valid values).
+struct SumKernel {
+    mean: bool,
+    /// Per variable, for each output dimension the intermediate's dimension it keeps (`None`:
+    /// the 1-point grid).
+    out_dims: Vec<Vec<Option<usize>>>,
+}
+
+impl FoldKernel for SumKernel {
+    fn fold_dim(&self) -> DimRole {
+        DimRole::Vertical
+    }
+
+    fn folds(&self, role: DimRole) -> bool {
+        matches!(role, DimRole::Vertical | DimRole::Other)
+    }
+
+    fn state_bytes(&self, _var: usize, lane: &TileBox) -> usize {
+        lane.len() / lane.ranges.last().map_or(1, |r| r.len().max(1)) * 32
+    }
+
+    fn start(&self, var: usize, lane: &TileBox) -> Box<dyn FoldState> {
+        let nd = lane.ranges.len();
+        let outer: usize = lane.ranges[..nd - 2].iter().map(|r| r.len()).product();
+        Box::new(SumState {
+            var,
+            mean: self.mean,
+            lane: lane.clone(),
+            out_dims: self.out_dims[var].clone(),
+            acc: vec![[0.0; PARTS]; outer],
+        })
+    }
+}
+
+struct SumState {
+    var: usize,
+    mean: bool,
+    lane: TileBox,
+    out_dims: Vec<Option<usize>>,
+    acc: Vec<[f64; PARTS]>,
+}
+
+impl FoldState for SumState {
+    fn push(&mut self, tile: Tile) -> Result<Vec<Tile>> {
+        let nd = tile.bx.ranges.len();
+        let (nk, nc) = (tile.bx.ranges[nd - 2].len(), tile.bx.ranges[nd - 1].len());
+        let c0 = tile.bx.ranges[nd - 1].start;
+        let v = match &tile.values {
+            Values::F64(v) => v.clone(),
+            Values::F32(v) => v.iter().map(|&x| f64::from(x)).collect(),
+        };
+        for (o, a) in self.acc.iter_mut().enumerate() {
+            for k in 0..nk {
+                for c in 0..nc {
+                    a[c0 + c] += v[(o * nk + k) * nc + c];
                 }
-                match (self.mean, n) {
-                    (_, 0) => f64::NAN,
-                    (true, _) => s / w,
-                    (false, _) => s,
-                }
+            }
+        }
+        Ok(Vec::new())
+    }
+
+    fn finish(&mut self) -> Result<Vec<Tile>> {
+        let out = self
+            .acc
+            .iter()
+            .map(|&[s, w, n]| match (self.mean, n == 0.0) {
+                (_, true) => f64::NAN,
+                (true, _) => s / w,
+                (false, _) => s,
             })
             .collect();
-        let ranges = p
+        let ranges = self
             .out_dims
             .iter()
             .map(|d| match d {
@@ -446,16 +577,22 @@ impl FoldState for VolState {
     }
 }
 
-fn volume(node: &OpNode, input: Desc, srcs: &Sources) -> Result<Desc> {
+fn volume(node: &OpNode, mut input: Desc, srcs: &mut Sources) -> Result<Desc> {
     let op = node.name.as_str();
     let mean = op == "volmean";
     let range = node.args.first().map(|a| depth_range(op, a)).transpose()?;
+    if let Some(r) = range {
+        push_down_range(&mut input, r);
+    }
     let mut out = input.clone();
+    // stage 1 writes (outer..., level, part) per variable
+    let mut mid = input.clone();
     let mut plans = Vec::with_capacity(out.vars.len());
+    let mut out_dims = Vec::with_capacity(out.vars.len());
     let mut made: HashMap<usize, (GridDesc, Vec<VarDim>)> = HashMap::new();
     let (mut winfo, mut minfo) = (Vec::new(), Vec::new());
     let mut loaded = HashSet::new();
-    for v in &mut out.vars {
+    for (v, mv) in out.vars.iter_mut().zip(&mut mid.vars) {
         let zs: Vec<usize> = (0..v.dims.len())
             .filter(|&d| v.dims[d].role == DimRole::Vertical)
             .collect();
@@ -534,6 +671,7 @@ fn volume(node: &OpNode, input: Desc, srcs: &Sources) -> Result<Desc> {
                 None => format!("bounds of the vertical axis '{zdim}'"),
             },
             "range": range.map(|(a, b)| vec![a, b]),
+            "levels": nlev,
             "thickness": dz.iter().sum::<f64>(),
         });
         if let Some(w) = winfo.last_mut() {
@@ -554,8 +692,9 @@ fn volume(node: &OpNode, input: Desc, srcs: &Sources) -> Result<Desc> {
             .1
             .clone();
         let mut roles = Vec::with_capacity(v.dims.len());
+        let mut mdims = Vec::new();
         let mut dims = Vec::new();
-        let mut out_dims = Vec::new();
+        let mut od = Vec::new();
         for (d, vd) in v.dims.iter().enumerate() {
             match vd.role {
                 DimRole::Vertical => roles.push(Role::Level),
@@ -564,26 +703,37 @@ fn volume(node: &OpNode, input: Desc, srcs: &Sources) -> Result<Desc> {
                     if d == h0 {
                         for m in &made_dims {
                             dims.push(m.clone());
-                            out_dims.push(None);
+                            od.push(None);
                         }
                     }
                 }
                 _ => {
                     roles.push(Role::Outer);
+                    od.push(Some(mdims.len()));
+                    mdims.push(vd.clone());
                     dims.push(vd.clone());
-                    out_dims.push(Some(d));
                 }
             }
         }
-        plans.push(Arc::new(VolPlan {
+        mdims.push(v.dims[zd].clone());
+        mdims.push(VarDim {
+            name: format!("{}_parts", v.name),
+            size: PARTS,
+            role: DimRole::Other,
+        });
+        plans.push(Arc::new(LevelPlan {
             roles,
-            nlev,
+            zd,
             nx,
             nrows,
             dz,
             area,
-            out_dims,
         }));
+        out_dims.push(od);
+        mv.dims = mdims;
+        mv.grid = None;
+        mv.zaxis = None;
+        mv.dtype = crate::model::DType::F64;
         v.dims = dims;
         v.zaxis = None;
         fldstat::add_cell_method(
@@ -601,13 +751,17 @@ fn volume(node: &OpNode, input: Desc, srcs: &Sources) -> Result<Desc> {
     if !minfo.is_empty() {
         info["mesh_weights"] = serde_json::json!(minfo);
     }
-    out.fold = Some(Fold {
+    mid.fold = Some(Fold {
         input: Box::new(input),
-        kernel: Arc::new(VolKernel {
-            mean,
+        kernel: Arc::new(LevelKernel {
             vars: plans,
             info: Some(info),
         }),
+    });
+    let mid = crate::plan::intermediate::materialize(mid, op, srcs)?;
+    out.fold = Some(Fold {
+        input: Box::new(mid),
+        kernel: Arc::new(SumKernel { mean, out_dims }),
     });
     Ok(out)
 }
@@ -999,7 +1153,7 @@ fn intlevel(node: &OpNode, input: Desc) -> Result<Desc> {
 }
 
 /// Output description of `volint`, `volmean`, `intlevel`.
-pub fn describe(node: &OpNode, mut inputs: Vec<Desc>, srcs: &Sources) -> Result<Desc> {
+pub fn describe(node: &OpNode, mut inputs: Vec<Desc>, srcs: &mut Sources) -> Result<Desc> {
     let input = inputs.remove(0);
     match node.name.as_str() {
         "intlevel" => intlevel(node, input),

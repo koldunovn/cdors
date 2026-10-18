@@ -425,6 +425,18 @@ ref:numpy.analytic_vertint:exact | -vertint,0/700 -addc,1 -mulc,1e-30 -setgrid,f
 # cell's top and below its bottom interface (not the value half a layer into the ground)
 ref:numpy.mesh_bottomvalue:exact | -bottomvalue -selname,temp,u -setgrid,fesom:{fix}/fesom_pi {in} | fesom_pi_data fesom_pi_data_v20
 ref:numpy.mesh_intlevel | -intlevel,10,100,700,3000,6200 -selname,temp,u -setgrid,fesom:{fix}/fesom_pi {in} | fesom_pi_data fesom_pi_data_v20
+# the Atlantic OHC recipe (maskregion on the mesh nodes: the cells outside set missing in each
+# tile) vs NumPy with regionmask's mask of the same nodes
+ref:regionmask.mesh_vol | -mulc,4.09e6 -volint,0/700 -maskregion,regions=srex,select=WAF,EAF,SAH,CAM,NEB -setgrid,fesom:{fix}/fesom_pi -selname,temp {in} | fesom_pi_data fesom_pi_data_v20
+# --plan counts what is read: maskregion's cells are not read from a file, so the chain plans
+# the same bytes and chunks with and without it (temp: 24 x 47 x 3140 x 4 B)
+json:.out.read_limit.bytes == 14167680 and .out.totals.chunks_read == 216 | --json --plan -volint,0/700 -maskregion,regions=basins,select=Atlantic_Basin -setgrid,fesom:{fix}/fesom_pi -selname,temp {in} {out} | fesom_pi_data
+json:.out.read_limit.bytes == 14167680 and .out.totals.chunks_read == 216 | --json --plan -volint,0/700 -setgrid,fesom:{fix}/fesom_pi -selname,temp {in} {out} | fesom_pi_data
+# --plan counts the mesh's resident arrays (centres, areas, wet levels: 252172 B, mesh info) and
+# the grids' copies of the centres and areas of nodes and elements (24 x 8979 B); the stages are
+# planned for the budget less these and the per-level areas
+json:.out.memory.parts.mesh_resident == 467668 and .out.memory.peak_bytes_estimate > 467668 | --json --plan -fldmean -setgrid,fesom:{fix}/fesom_pi -selname,a_ice {in} {out} | fesom_pi_data
+json:any(.stderr[]; .warning == "mesh_memory") and (.out.memory.parts.mesh_weights == 1180640) | --json --plan --mem 2M -fldmean -setgrid,fesom:{fix}/fesom_pi -selname,temp {in} {out} | fesom_pi_data
 # ice-shelf cavities (fesom_pi_cav: the first wet layer is 4 at 354 nodes south of 65 S): the
 # levels above the top are dry too
 ref:numpy.mesh_vert | -vertmean -selname,temp -setgrid,fesom:{fix}/fesom_pi_cav {in} | fesom_pi_cav_data
@@ -432,9 +444,14 @@ ref:numpy.analytic_vertint:exact | -vertint,0/700 -addc,1 -mulc,1e-30 -setgrid,f
 ref:numpy.mesh_vol | -volmean,0/700 -selname,temp,u -setgrid,fesom:{fix}/fesom_pi_cav {in} | fesom_pi_cav_data
 ref:numpy.mesh_bottomvalue:exact | -bottomvalue -selname,temp -setgrid,fesom:{fix}/fesom_pi_cav {in} | fesom_pi_cav_data
 ref:numpy.mesh_intlevel | -intlevel,5,20,700 -selname,temp -setgrid,fesom:{fix}/fesom_pi_cav {in} | fesom_pi_cav_data
-# --plan: volmean lists the per-level areas (47 x 3140 x 8 B) and the layers; origin cdors;
+# --plan: volmean,0/700 lists the per-level areas of the 23 layers it reads (23 x 3140 x 8 B)
+# and the layers; origin cdors;
 # refusals: 2-D variables, layers without bounds off a mesh, a bad range
-json:.out.memory.parts.mesh_weights == 1180640 and .out.stages[0].kernel.mesh_weights[0].levels == 47 and .out.stages[0].kernel.area_weights[0].layers.thickness == 700 | --json --plan -volmean,0/700 -selname,temp -setgrid,fesom:{fix}/fesom_pi {in} {out} | fesom_pi_data
+json:.out.memory.parts.mesh_weights == 577760 and .out.stages[0].kernel.mesh_weights[0].levels == 23 and .out.stages[0].kernel.area_weights[0].layers.thickness == 700 | --json --plan -volmean,0/700 -selname,temp -setgrid,fesom:{fix}/fesom_pi {in} {out} | fesom_pi_data
+# the depth range is pushed into the read: of the tiny copy's 10-level chunks only those of the
+# 23 layers above 790 m are decoded (30 of 47 levels; volint adds its 13 kB intermediate)
+json:.out.totals.bytes_decoded == 9043200 | --json --plan -vertint,0/700 -selname,temp -setgrid,fesom:{fix}/fesom_pi {fix}/fesom_pi_data_tiny.zarr2 {out} | fesom_pi_data
+json:.out.totals.bytes_decoded == 9056448 and .out.totals.stages == 2 | --json --plan -volint,0/700 -selname,temp -setgrid,fesom:{fix}/fesom_pi {fix}/fesom_pi_data_tiny.zarr2 {out} | fesom_pi_data
 json:[.out.operators[] | select(.name == "vertint" or .name == "volint" or .name == "volmean") | .origin] == ["cdors", "cdors", "cdors"] | --json ops | r36x18_std
 err:unsupported_dimension | -volmean -setgrid,fesom:{fix}/fesom_pi {in} | fesom_pi_data
 err:no_coordinates | -vertint,0/700 -selname,temp {in}  | fesom_pi_data

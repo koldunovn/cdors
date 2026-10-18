@@ -767,6 +767,20 @@ The harness gains three capabilities (Task 2), so that every check in this plan 
   given the mesh's own `nod_area`, so its R = 6371 km does not enter.
 - ⚠️ An analytic constant needs `-addc,1 -mulc,1e-30`: cdo's `mulc,0` of a missing value is 0
   (MULM), so `-mulc,0` would erase the dry levels.
+- ➕ After the Task 13 node run (OHC missed its marks because of `volint`), on a 6-step dart slice
+  on the login node (-P 8): Atlantic OHC with `-sellevel` 3.6–5.7 s → 1.8–2.0 s, without the
+  region 4.2 s → 1.6 s (= `fldmean` on the same data), the natural chain without `-sellevel`
+  9.1 s / 2.8 GB → 1.8 s / 1.8 GB; outputs bit-identical to before.
+  - `volint`/`volmean` are two folds: per (step, level) like `fldint` (1296 lanes for 3 years
+    instead of 36), then the levels in ascending order over a small intermediate.
+  - `vertint`/`volint`/`volmean,z0/z1` select the levels whose layer reaches into the range
+    (`push_down_range`): 35.95 → 16.38 GB and 2.0 → 0.91 GB of areas for 3 years.
+  - `maskregion` is an expression node (`Expr::Cells`) applied to each evaluated tile: no mask
+    leaf, tiles 22 → 9.5 MB, `--plan` bytes of a 2-year OHC 121 GB → 10.9 GB (was refused by
+    the 64 GB login read limit).
+  - The plan holds the mesh's resident arrays and weights outside the stages' budget (floor a
+    quarter, `mesh_memory` warning). ⚠️ The harness's planner variant gives rows on a mesh
+    `--mem 3M` (`CDORS_PLANNER_MEM_MESH`) instead of 1M: the pi mesh holds up to 1.7 MB.
 
 ### Task 10: Sampling of scalar fields: `selpoints` and `transect`
 

@@ -1710,6 +1710,13 @@ pub fn describe(node: &OpNode, mut inputs: Vec<Desc>, srcs: &Sources) -> Result<
         _ => None,
     };
     refuse_mesh_levels(name, fam, zonaldes.is_some(), &input)?;
+    let mut input = input;
+    if name == "vertint"
+        && let Some(a) = node.args.first()
+    {
+        // only the levels inside the depth range are read
+        vertical::push_down_range(&mut input, vertical::depth_range(name, a)?);
+    }
     let mut out = input.clone();
     let mut plans = Vec::with_capacity(out.vars.len());
     let mut info = None;

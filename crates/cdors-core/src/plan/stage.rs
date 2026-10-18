@@ -223,6 +223,11 @@ pub fn eval(expr: &Expr, leaves: &mut std::vec::IntoIter<Values>, bx: &TileBox) 
             m.apply(bx, &mut v);
             v
         }
+        Expr::Cells(m, e) => {
+            let mut v = eval(e, leaves, bx);
+            m.apply(bx, &mut v);
+            v
+        }
         Expr::Unary(op, t, e) => {
             let mut v = to_f64(eval(e, leaves, bx));
             for x in &mut v {
