@@ -16,7 +16,7 @@ use crate::error::{Error, ErrorCode, Result};
 use crate::io::ChunkSource;
 use crate::io::multifile::{MultiFileSource, expand_glob, is_glob};
 use crate::model::mesh_cache;
-use crate::model::{DimRole, GridKind};
+use crate::model::{AttrValue, Attrs, DimRole, Grid, GridKind, ZAxis};
 use crate::plan::{CdoUse, Desc, Expr, GridDesc, IndexMap, Sources, VarDesc, WetMask, ZDesc};
 use cdors_mesh::models::{self, DimRule, MeshSpec};
 use cdors_mesh::{Mesh, Place};
@@ -286,6 +286,151 @@ fn pending_warning(loaded: &mesh_cache::Loaded, srcs: &mut Sources) {
     );
 }
 
+/// Variables whose place and level dimensions the reader took as one generic 2-D grid, as
+/// FESOM 2.0 files without an `nz1` coordinate variable come (`temp(time, nod2, nz1)`: one grid
+/// of 3140 × 47 points): when the model's rules name one of the two dimensions a place of the
+/// mesh and the other its mid-levels or interfaces, with the mesh's sizes, the variable gets a
+/// 1-D grid over the place dimension (the one other variables on it have, if any) and a level
+/// axis with the mesh's depths (|Z| for mid-levels, |zbar| for interfaces, positive down; mid
+/// levels get the layer bounds later, as files with the coordinate do). Either order.
+fn split_levels(d: &mut Desc, mesh: &Mesh) -> Vec<usize> {
+    let mut split = Vec::new();
+    let Some(vert) = mesh.vertical.as_ref() else {
+        return split;
+    };
+    for gi in 0..d.grids.len() {
+        let g = &d.grids[gi];
+        if g.sel.len() != 2 || g.base.dims.len() != 2 || g.kind != GridKind::Generic {
+            continue;
+        }
+        let sizes = [g.sel[0].len(), g.sel[1].len()];
+        if (0..2).any(|k| !g.sel[k].is_identity(sizes[k])) {
+            continue;
+        }
+        let rules: Vec<Option<DimRule>> = g
+            .base
+            .dims
+            .iter()
+            .map(|n| models::dim_rule(mesh, n))
+            .collect();
+        let Some(h) = (0..2).find(|&k| {
+            matches!(rules[k], Some(DimRule::Place(p))
+                if mesh.place(p).is_some_and(|pl| pl.size == sizes[k]))
+        }) else {
+            continue;
+        };
+        let z = 1 - h;
+        let (zrule, values) = match rules[z] {
+            Some(DimRule::Mid) => (DimRule::Mid, &vert.mid),
+            Some(DimRule::Interfaces) => (DimRule::Interfaces, &vert.interfaces),
+            _ => continue,
+        };
+        if values.len() != sizes[z] {
+            continue;
+        }
+        let (hname, zname) = (g.base.dims[h].clone(), g.base.dims[z].clone());
+        // the 1-D grid over the place dimension
+        let hgrid = match d.grids.iter().position(|o| {
+            o.sel.len() == 1 && o.base.dims == [hname.clone()] && o.size() == sizes[h]
+        }) {
+            Some(i) => i,
+            None => {
+                let mut base = Grid::new(GridKind::Generic, vec![hname.clone()], sizes[h], 0);
+                base.size = sizes[h];
+                let src = d.grids[gi].src.clone();
+                d.grids.push(GridDesc {
+                    kind: GridKind::Generic,
+                    base,
+                    src,
+                    sel: vec![IndexMap::identity(sizes[h])],
+                    xvals: None,
+                    fixed: None,
+                });
+                d.grids.len() - 1
+            }
+        };
+        // the level axis
+        let zi = match d.zaxes.iter().position(|a| a.axis.dim == zname) {
+            Some(i) => i,
+            None => {
+                let long = if zrule == DimRule::Mid {
+                    "depth at layer midpoint"
+                } else {
+                    "depth of level interfaces"
+                };
+                let text = |t: &str| AttrValue::Text(t.to_owned());
+                d.zaxes.push(ZDesc {
+                    axis: ZAxis {
+                        var: zname.clone(),
+                        dim: zname.clone(),
+                        values: values.iter().map(|x| x.abs()).collect(),
+                        units: Some("m".into()),
+                        long_name: Some(long.into()),
+                        standard_name: Some("depth".into()),
+                        positive: Some("down".into()),
+                        bounds: None,
+                    },
+                    attrs: Attrs(vec![
+                        ("standard_name".into(), text("depth")),
+                        ("long_name".into(), text(long)),
+                        ("units".into(), text("m")),
+                        ("positive".into(), text("down")),
+                        ("axis".into(), text("Z")),
+                        (
+                            "comment".into(),
+                            text(&format!("level depths of the mesh {}", mesh.name)),
+                        ),
+                    ]),
+                    bounds_var: None,
+                    labels: Vec::new(),
+                });
+                d.zaxes.len() - 1
+            }
+        };
+        split.push(gi);
+        for v in &mut d.vars {
+            if v.grid != Some(gi) {
+                continue;
+            }
+            v.grid = Some(hgrid);
+            v.zaxis = Some(zi);
+            for dim in &mut v.dims {
+                if dim.name == zname {
+                    dim.role = DimRole::Vertical;
+                }
+            }
+        }
+    }
+    split
+}
+
+/// The hint for a 2-D generic grid whose size is that of a place times the mesh's levels: the
+/// reader grouped cells and levels into one grid, and `split_levels` could not tell them apart
+/// because the model's rules do not name both dimensions.
+fn levels_hint(mesh: &Mesh, g: &GridDesc) -> Option<String> {
+    let nlev = mesh.vertical.as_ref()?.nlev();
+    if g.sel.len() != 2 {
+        return None;
+    }
+    let n = g.size();
+    mesh.places.iter().find_map(|p| {
+        let k = [nlev, nlev + 1].into_iter().find(|&k| p.size * k == n)?;
+        let known: Vec<&str> = models::model(&mesh.source.model)
+            .map(|m| m.dims.iter().map(|d| d.0).collect())
+            .unwrap_or_default();
+        Some(format!(
+            "{n} = {} {} x {k} levels: the reader took the cells and the levels ({}) as one \
+             grid; setgrid separates them when the dimensions have the names the {} rules give \
+             them ({})",
+            p.size,
+            p.name,
+            g.base.dims.join(", "),
+            mesh.source.model,
+            known.join(", ")
+        ))
+    })
+}
+
 /// `setgrid,<mesh spec>`: each input grid whose dimension the model's rules name (`nod2` →
 /// `nodes`), or else whose size one place has, becomes that place of the mesh: its centres,
 /// its 2-D areas, and the mesh itself on the grid (`Grid::mesh`); the dry levels of variables
@@ -311,10 +456,15 @@ fn setgrid_mesh(spec: &MeshSpec, mut d: Desc, srcs: &mut Sources) -> Result<Desc
             .collect::<Vec<_>>()
             .join(", ")
     };
+    let split = split_levels(&mut d, &mesh);
     let mut replaced = false;
     let mut unmatched = Vec::new();
     for gi in 0..d.grids.len() {
         let old = &d.grids[gi];
+        if split.contains(&gi) {
+            // its variables moved to a grid over their place dimension
+            continue;
+        }
         let dim = old.base.dims.first().cloned().unwrap_or_default();
         let named = match models::dim_rule(&mesh, &dim) {
             Some(DimRule::Place(p)) => mesh.place(p),
@@ -335,10 +485,24 @@ fn setgrid_mesh(spec: &MeshSpec, mut d: Desc, srcs: &mut Sources) -> Result<Desc
             }
         };
         if old.sel.len() != 1 || old.size() != place.size || old.base.size != place.size {
+            let what = if old.sel.len() == 1 {
+                format!("dimension '{dim}'")
+            } else {
+                format!("the grid {}", old.base.dims.join(" x "))
+            };
+            let hint = levels_hint(&mesh, old).unwrap_or_else(|| {
+                format!(
+                    "the data must be on the full mesh {} (places: {}); apply selections after \
+                     -setgrid, and check that the mesh directory is the one the data was computed \
+                     on",
+                    mesh.name,
+                    places()
+                )
+            });
             return Err(Error::new(
                 ErrorCode::GridMismatch,
                 format!(
-                    "setgrid: dimension '{dim}' has {} points, place '{}' of the mesh {} has {}",
+                    "setgrid: {what} has {} points, place '{}' of the mesh {} has {}",
                     old.size(),
                     place.name,
                     mesh.name,
@@ -346,12 +510,7 @@ fn setgrid_mesh(spec: &MeshSpec, mut d: Desc, srcs: &mut Sources) -> Result<Desc
                 ),
             )
             .with("mesh", loaded.spec.clone())
-            .with_hint(format!(
-                "the data must be on the full mesh {} (places: {}); apply selections after \
-                 -setgrid, and check that the mesh directory is the one the data was computed on",
-                mesh.name,
-                places()
-            )));
+            .with_hint(hint));
         }
         d.grids[gi] = mesh_grid(&loaded.spec, &mesh, place, &dim)?;
         // the grid's copies of the centres and areas (written with the output) stay resident
@@ -372,6 +531,15 @@ fn setgrid_mesh(spec: &MeshSpec, mut d: Desc, srcs: &mut Sources) -> Result<Desc
     }
     layer_bounds(&mut d);
     if !replaced {
+        let hint = d
+            .grids
+            .iter()
+            .find_map(|g| levels_hint(&mesh, g))
+            .unwrap_or_else(|| {
+                "the horizontal dimension must be named as the model writes it (FESOM2: nod2, \
+                 elem) or have the size of one place; check that the mesh is the one of the data"
+                    .into()
+            });
         return Err(Error::new(
             ErrorCode::GridMismatch,
             format!(
@@ -386,10 +554,7 @@ fn setgrid_mesh(spec: &MeshSpec, mut d: Desc, srcs: &mut Sources) -> Result<Desc
             ),
         )
         .with("mesh", loaded.spec.clone())
-        .with_hint(
-            "the horizontal dimension must be named as the model writes it (FESOM2: nod2, elem) \
-             or have the size of one place; check that the mesh is the one of the data",
-        ));
+        .with_hint(hint));
     }
     Ok(d)
 }

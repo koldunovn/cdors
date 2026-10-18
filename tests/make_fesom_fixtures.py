@@ -17,6 +17,9 @@ writes into OUTDIR, each atomically (temporary name, then rename) and never over
                  elem), float32; levels below each node's / element's bottom stored as 0;
 - fesom_pi_data_v20.nc  the same values in FESOM 2.0's layout: temp, salt (time, nod2, nz1),
                  u, v (time, elem, nz1) (horizontal dimension before the levels);
+- fesom_pi_data_v20_nocoord.nc  fesom_pi_data_v20 without the nz1 coordinate variable, as
+                 FESOM 2.0 files such as climatology_PHC/pi/temp.fesom.1948.nc come (readers then
+                 take nod2 x nz1 as one generic grid);
 - fesom_pi_cav/  the pi mesh with ice-shelf cavities added: ulevels_nod2D / ulevels (first wet
                  layer, 1-based) = CAV_TOP for the nodes south of CAV_LAT that are at least
                  CAV_MIN_LEVELS interfaces deep and for the elements whose nodes are all such nodes,
@@ -203,7 +206,7 @@ def v_vel(lon, lat, z, m):
     return 0.05 * np.sin(2 * lo) * np.cos(la) * np.exp(-z / 1500) + 0.01 * np.sin(la) * season(m, 3)
 
 
-def fesom_data(tmp, order_node=ORDER_NODE, order_elem=ORDER_ELEM, cavities=False):
+def fesom_data(tmp, order_node=ORDER_NODE, order_elem=ORDER_ELEM, cavities=False, zcoord=True):
     with netCDF4.Dataset(os.path.join(MESH, "fesom.mesh.diag.nc")) as m:
         u_nod, u_elem = cavity_tops(m) if cavities else (1, 1)
         lon, lat = np.rad2deg(m["nodes"][:])
@@ -230,9 +233,10 @@ def fesom_data(tmp, order_node=ORDER_NODE, order_elem=ORDER_ELEM, cavities=False
     sizes = {"time": None, "nod2": len(lon), "elem": tri.shape[1], "nz1": nz1}
     for d in ("nz1", "nod2", "elem", "time"):
         ds.createDimension(d, sizes[d])
-    v = ds.createVariable("nz1", "f8", ("nz1",))
-    v.setncatts({"long_name": "depth at layer midpoint", "units": "m", "positive": "down", "axis": "Z"})
-    v[:] = z
+    if zcoord:
+        v = ds.createVariable("nz1", "f8", ("nz1",))
+        v.setncatts({"long_name": "depth at layer midpoint", "units": "m", "positive": "down", "axis": "Z"})
+        v[:] = z
     v = ds.createVariable("time", "f8", ("time",))
     v.setncatts({"long_name": "time", "standard_name": "time", "units": "seconds since 2000-01-01 0:0:0",
                  "axis": "T", "stored_direction": "increasing"})
@@ -323,6 +327,8 @@ atomic_dir("fesom_pi", copy_mesh)
 atomic_dir("fesom_pi_deg", deg_mesh)
 atomic_file("fesom_pi_data.nc", fesom_data)
 atomic_file("fesom_pi_data_v20.nc", lambda tmp: fesom_data(tmp, ORDER_NODE_V20, ORDER_ELEM_V20))
+atomic_file("fesom_pi_data_v20_nocoord.nc",
+            lambda tmp: fesom_data(tmp, ORDER_NODE_V20, ORDER_ELEM_V20, zcoord=False))
 atomic_file("r1x1_edges.nc", edges_grid)
 atomic_file("fesom_pi_w.nc", fesom_w)
 atomic_dir("fesom_pi_cav", cav_mesh)

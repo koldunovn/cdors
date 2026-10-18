@@ -436,6 +436,16 @@ The harness gains three capabilities (Task 2), so that every check in this plan 
   - `fldhist`: at most 100000 bins (`bad_arguments` before any edge is made; `bins=0/1e9/1e-9`
     aborted on an 8e18-byte allocation), and the fold state of 2-D grids counts the bins (it
     counted only the lane's values, so `--mem` did not bound it).
+- ⚠️ Real-data fix (2026-10-19): FESOM 2.0 files without an `nz1` coordinate variable
+  (`climatology_PHC/<mesh>/temp.fesom.1948.nc`) are read as one generic grid of nodes × levels
+  (147580 = 3140 × 47 on pi). `-setgrid,fesom:` now separates them (`split_levels` in
+  `ops/files.rs`) when the model's rules name both dimensions with the mesh's sizes, in either
+  order: a 1-D grid over the place dimension and a level axis with the mesh's depths (|Z|, |zbar|,
+  positive down; mid-levels get the zbar layer bounds), so dry masks, per-level areas, `vert*` and
+  `volint` work as with the coordinate. Otherwise `grid_mismatch` names the grid and, when its size
+  is a place times the levels, says so and lists the dimension names the rules know. Fixture
+  `fesom_pi_data_v20_nocoord.nc` (make_fesom_fixtures.py); its fldmean/volint/vertmean equal those of
+  `fesom_pi_data_v20` bit for bit.
 
 ### Task 5: FESOM2 loader, `-setgrid,fesom:`, per-level weights, FESOM dimension order, `tonodes`/`toelems`
 
