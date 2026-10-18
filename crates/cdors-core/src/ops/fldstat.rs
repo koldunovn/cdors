@@ -1514,6 +1514,26 @@ fn zonal_bands(g: &GridDesc, op: &str, inc: f64) -> Result<(RowMap, Vec<f64>, Ve
     Ok((RowMap::Bands(Arc::new(m.transpose())), lats, bnds))
 }
 
+/// Units and type of the integrals cdo does not have (`vertint`, `volint`, `regint`): the
+/// input's units times `measure` (`m`, `m2`, `m3`; just that for an input without units),
+/// written as float64 (cdo's `fldint` keeps the input's units and type).
+pub(crate) fn integral_output(v: &mut VarDesc, measure: &str) {
+    let units = match v.attrs.get_str("units").map(str::trim) {
+        Some(u) if !u.is_empty() => format!("{u} {measure}"),
+        _ => measure.to_owned(),
+    };
+    let a = &mut v.attrs.0;
+    match a.iter_mut().find(|(k, _)| k == "units") {
+        Some(e) => e.1 = text(&units),
+        None => a.push(("units".to_owned(), text(&units))),
+    }
+    if v.dtype == crate::model::DType::F32 {
+        // the float missing value as the double it reads as (-9e33f -> -9e33)
+        v.missval = format!("{}", v.missval as f32).parse().unwrap_or(v.missval);
+    }
+    v.dtype = crate::model::DType::F64;
+}
+
 pub(crate) fn add_cell_method(v: &mut VarDesc, method: &str) {
     let a = &mut v.attrs.0;
     a.retain(|(k, _)| k != "cell_measures");
@@ -1950,6 +1970,9 @@ pub fn describe(node: &OpNode, mut inputs: Vec<Desc>, srcs: &Sources) -> Result<
                     v.zaxis = None;
                     if stat != Stat::Bottom {
                         add_cell_method(v, &format!("{zdim}: {}", stat.cell_method()));
+                    }
+                    if stat == Stat::VertInt {
+                        integral_output(v, "m");
                     }
                 }
             }

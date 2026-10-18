@@ -66,7 +66,8 @@ cdors --json outputtab,date,value -regmean,regions=basins,select=Atlantic_Basin 
 cdors -transect,-65,-55,-60,-65 -setgrid,fesom:mesh -selname,temp in.nc drake.nc  # temp(time,nz1,distance)
 ```
 
-The `units` attribute stays the input's: multiply it by m (`vertint`), m2 (`fldint`, `regint`) or m3 (`volint`).
+`vertint`, `regint`, `volint` write float64 with the units times m, m2, m3 (`fldint` keeps them, as cdo). `-mulc`
+keeps units: the OHC above reads "C m3" but is in J.
 
 ## Output shapes
 

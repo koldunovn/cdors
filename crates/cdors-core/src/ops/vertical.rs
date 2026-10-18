@@ -590,6 +590,9 @@ fn volume(node: &OpNode, input: Desc, srcs: &Sources) -> Result<Desc> {
             v,
             &format!("area: {zdim}: {}", if mean { "mean" } else { "sum" }),
         );
+        if !mean {
+            fldstat::integral_output(v, "m3");
+        }
     }
     for (gi, (gd, _)) in made {
         out.grids[gi] = gd;

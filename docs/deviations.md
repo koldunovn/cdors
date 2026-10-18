@@ -204,12 +204,15 @@ valid). After `-setgrid,<mesh spec>` cdors uses the mesh:
   warning), on a mesh from its interfaces. `vertint,<z0>/<z1>` cuts the layers at the depths z0
   and z1 (positive down: absolute values of the bounds; metres on a mesh) and counts the part of
   each layer inside the range; without layer bounds it is refused (`no_coordinates`). A cell
-  without a valid value inside the range is missing.
+  without a valid value inside the range is missing. The output is float64 with the units
+  `<input units> m` (`m` without units).
 - **`volint`, `volmean`, `volint,<z0>/<z1>`, `volmean,<z0>/<z1>` (cdors).** Per timestep
   Σ area·dz·value over all cells and levels with valid values, and that divided by their volume
   Σ area·dz; areas per level on a mesh place that has them (FESOM2 nodes: `nod_area[k]`),
   otherwise the cell areas of `fldint`. `volmean` is not `fldmean -vertmean`: every wet cell
   counts with its volume. Variables without levels are refused (`unsupported_dimension`).
+  `volint` writes float64 with the units `<input units> m3` (`m3` without units); `volmean`
+  keeps the input's units and type.
 - **`intlevel`** interpolates as cdo does (float32 weights, cdo's missing-value rule, targets
   outside the levels missing unless `extrapolate=true`), from positional targets or `level=`;
   `zdescription=` and `zvarname=` are not implemented. Every variable with more than one level
@@ -327,8 +330,9 @@ the two views differ, cdors follows the references:
 - **Region statistics** `regmin`, `regmax`, `regsum`, `regint`, `regmean`, `regstd`
   (`regions=<set>[,select=...][,fill=nearest]`), cdors operators: the `fld*` statistic over the
   cells of each region (membership as `regmask`; overlapping sets count a cell in each of its
-  regions). `regsum`, `regmin`, `regmax` are unweighted; `regint` is Σ area·value (m², as
-  `fldint`), `regmean` and `regstd` are weighted by cell area (`regstd` with cdo's one-pass
+  regions). `regsum`, `regmin`, `regmax` are unweighted; `regint` is Σ area·value (float64,
+  units `<input units> m2`; cdo 2.6.0's `fldint` keeps the input's units and float32),
+  `regmean` and `regstd` are weighted by cell area (`regstd` with cdo's one-pass
   variance, as `fldstd`); on a model mesh per level with that level's areas. The horizontal
   dimensions become `region` (cdo reads it as a generic grid); a region without valid cells is
   missing (without any cell also the warning `regions_empty`).

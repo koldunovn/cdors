@@ -871,6 +871,12 @@ The harness gains three capabilities (Task 2), so that every check in this plan 
   in place of `sst`, which the fixture lacks).
 - ➕ Warning rows: `regions_empty` and `points_outside` in `--plan` `warnings[]`, `linear_as_nn` on stderr (the
   other combinations had rows); `mesh_cache_rebuilt` is covered by `crates/cdors/tests/mesh_cache.rs`.
+- ➕ **Units of the cdors integrals (decision 2026-10-19):** `vertint`, `volint`, `regint` write float64 with the
+  units `<input units> m`, `m3`, `m2` (just that without units; `fldstat::integral_output`, the one helper);
+  `volmean`, `regmean` keep the input's units and type; cdo-named operators keep cdo's behaviour (cdo 2.6.0
+  `fldint` on r36x18_std: float32, units unchanged, checked with a `units=K` copy). `-mulc` keeps the units, so
+  the OHC recipe reads "C m3" for a result in J (one line in the guide). Help texts, `docs/deviations.md` and 8
+  `json:` rows (units and dtype through `outputtab --json` `variables[]`) updated; guide addition now 1482 bytes.
 
 ### Task 12: Verify acceptance criteria (local)
 

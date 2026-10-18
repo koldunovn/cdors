@@ -36,7 +36,7 @@ SYNOPSIS
 OPERATORS
     regmin, regmax  minimum, maximum (unweighted)
     regsum          sum (unweighted, as fldsum)
-    regint          sum of area times value (the unit times m2, as fldint)
+    regint          sum of area times value (units "<input units> m2", float64)
     regmean         area-weighted mean (as fldmean)
     regstd          area-weighted standard deviation (as fldstd)
     On a model mesh a variable with the mesh's levels is weighted at each level by that
@@ -83,8 +83,8 @@ PARAMETERS
     z0/z1  depth range (positive down, 0 <= z0 < z1; metres on a model mesh, else the units of
            the vertical axis): the layers cut at z0 and z1
 OUTPUT
-    <var>(time, <cells>): the vertical dimension is folded (cell_methods "<zdim>: sum"); the
-    value is the unit times m, the units attribute stays the input's. On a model mesh the
+    <var>(time, <cells>) float64, units "<input units> m" ("m" without units); the vertical
+    dimension is folded (cell_methods "<zdim>: sum"). On a model mesh the
     mesh's layers (|zbar| differences) over each cell's wet levels; off a mesh the layers come
     from the level bounds (no bounds: no_coordinates).
 EXAMPLE
@@ -97,18 +97,18 @@ SYNOPSIS
     cdors -volmean[,<z0>/<z1>] <in> <out>
 OPERATORS
     volint   sum of area(level) times layer thickness times value over all cells and levels
-             (the unit times m3)
+             (float64, units "<input units> m3"; "m3" without units)
     volmean  volint divided by the volume of the cells and levels with values (not fldmean of
              vertmean)
 PARAMETERS
     z0/z1  depth range as vertint: the layers cut at z0 and z1
 OUTPUT
-    <var>(time, <one cell>) as fldmean (cell_methods "area: <zdim>: sum|mean"); the units
-    attribute stays the input's. On a model mesh each level's areas and each cell's wet
+    <var>(time, <one cell>) as fldmean (cell_methods "area: <zdim>: sum|mean"); volmean keeps
+    the input's units and type. On a model mesh each level's areas and each cell's wet
     levels; off a mesh the grid's cell areas and the level bounds. Variables without levels
     are refused (unsupported_dimension).
 EXAMPLE
-    ocean heat content 0-700 m in J (rho*cp = 4.09e6 J m-3 K-1):
+    ocean heat content 0-700 m in J (rho*cp = 4.09e6 J m-3 K-1; mulc leaves units "C m3"):
     cdors -mulc,4.09e6 -volint,0/700 -setgrid,fesom:<meshdir> -selname,temp in.nc ohc.nc
 %%% selpoints
 NAME

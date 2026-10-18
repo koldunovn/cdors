@@ -475,3 +475,14 @@ err:bad_arguments | outputtab,distance,value -fldmean {in} {noout} | r36x18_std
 json:any(.out.warnings[]; .warning == "regions_empty" and .regions == ["SWS", "MDG", "CAU", "EAU"]) | --plan --json -regmask,regions=ar6.all {in} | hpz2_noleap
 json:any(.out.warnings[]; .warning == "points_outside" and .points == 12 and .of == 18) | --plan --json -transect,-30,0,20,40,method=linear -selname,temp -setgrid,fesom:{fix}/fesom_pi {in} | fesom_pi_data
 json:any(.stderr[]; .warning == "linear_as_nn" and .place == "elements") | --json -selpoints,lon=-63_lat=-58,method=linear -selname,u -setgrid,fesom:{fix}/fesom_pi {in} {out} | fesom_pi_data
+# integrals cdo lacks write float64 with the units times m, m2, m3 ("m3" etc. without units);
+# volmean, regmean keep the input's units and type; cdo's fldint keeps them (cdo 2.6.0: float32,
+# units unchanged); -mulc keeps the units
+json:(.out.variables | map([.name, .units, .dtype])) == [["temp", "C m", "float64"], ["u", "m/s m", "float64"]] | --json outputtab,value -seltimestep,1 -vertint,0/700 -selname,temp,u -setgrid,fesom:{fix}/fesom_pi {in} | fesom_pi_data
+json:(.out.variables | map([.name, .units, .dtype])) == [["temp", "C m3", "float64"]] and (.out.records[0].value / 1.1904553816706284e+25 - 1 | fabs) < 1e-12 | --json outputtab,value -seltimestep,1 -mulc,4.09e6 -volint,0/700 -setgrid,fesom:{fix}/fesom_pi -selname,temp {in} | fesom_pi_data
+json:(.out.variables | map([.name, .units, .dtype])) == [["temp", "C", "float32"]] | --json outputtab,value -seltimestep,1 -volmean -setgrid,fesom:{fix}/fesom_pi -selname,temp {in} | fesom_pi_data
+json:(.out.variables | map([.name, .units, .dtype])) == [["a_ice", "% m2", "float64"]] | --json outputtab,value -seltimestep,1 -regint,regions=nino -setgrid,fesom:{fix}/fesom_pi -selname,a_ice {in} | fesom_pi_data
+json:(.out.variables | map([.name, .units, .dtype])) == [["a_ice", "%", "float32"]] | --json outputtab,value -seltimestep,1 -regmean,regions=nino -setgrid,fesom:{fix}/fesom_pi -selname,a_ice {in} | fesom_pi_data
+json:(.out.variables | map([.name, .units, .dtype])) == [["tas", "m2", "float64"]] | --json outputtab,value -seltimestep,1 -regint,regions=srex -selname,tas {in} | r36x18_std
+json:(.out.variables | map([.name, .units, .dtype])) == [["tas", "m", "float64"]] | --json -w outputtab,value -seltimestep,1 -vertint {in} | r36x18_2lev
+json:(.out.variables | map([.name, .units, .dtype])) == [["tas", null, "float32"]] | --json outputtab,value -seltimestep,1 -fldint -selname,tas {in} | r36x18_std

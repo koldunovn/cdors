@@ -364,7 +364,7 @@ pub fn describe(node: &OpNode, mut inputs: Vec<Desc>, srcs: &mut Sources) -> Res
                 "rows": set.len(), "links": rows.nnz(), "bytes": bytes,
             }));
         }
-        let fv = FieldVar::new(op, v, g.size(), vec![set.len()])?;
+        let mut fv = FieldVar::new(op, v, g.size(), vec![set.len()])?;
         let mut ov = v.clone();
         ov.dims.splice(
             fv.hfirst..fv.hfirst + fv.hcount,
@@ -395,6 +395,10 @@ pub fn describe(node: &OpNode, mut inputs: Vec<Desc>, srcs: &mut Sources) -> Res
             ),
         );
         ov.attrs.0.extend(reg::region_attrs(&spec, &set, filled).0);
+        if stat == Stat::Int {
+            fldstat::integral_output(&mut ov, "m2");
+            fv.out_dtype = ov.dtype;
+        }
         fvars.push(fv);
         rvars.push(RegVar {
             rows: rows.clone(),
