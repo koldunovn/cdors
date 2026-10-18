@@ -15,7 +15,7 @@ pub static MODEL: Model = Model {
     name: "fesom2",
     prefix: "fesom",
     files: &["fesom.mesh.diag.nc"],
-    options: &["units"],
+    options: &[("units", &["deg", "degrees", "rad", "radians"])],
     load: loader::load,
     version: 1,
     dims: rules::DIMS,

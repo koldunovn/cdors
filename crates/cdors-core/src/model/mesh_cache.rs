@@ -16,9 +16,15 @@
 //!   per-level areas (one level per read) and tables on first use. Building streams the
 //!   per-level areas through one level at a time.
 //!
+//! - **Read-only loads** ([`load_with`] without `write`: `--plan`, and the first planning pass
+//!   of a run, before its refusals): an existing, usable entry is opened; otherwise the mesh is
+//!   read from its source files (lazily, as from an entry) and nothing is written, not even an
+//!   unusable entry renamed aside. [`Loaded::pending`] then names the entry a writing load
+//!   builds.
+//!
 //! Without `CDORS_CACHE` meshes are loaded from their source files on every run. Loaded meshes
-//! are also kept for the rest of the process (keyed like the cache), so planning passes share
-//! one mesh.
+//! are also kept for the rest of the process (keyed like the cache, read-only loads apart), so
+//! planning passes share one mesh.
 
 use crate::error::{Error, ErrorCode, Result};
 use crate::io::mesh_reader::SourceReader;
@@ -49,6 +55,9 @@ pub struct Loaded {
     pub entry: Option<PathBuf>,
     /// Whether this process built the entry.
     pub built: bool,
+    /// A read-only load that found no usable entry: the mesh came from the source files, and a
+    /// writing load will build `entry`.
+    pub pending: bool,
 }
 
 static MEMO: Mutex<Option<HashMap<String, Loaded>>> = Mutex::new(None);
@@ -133,12 +142,24 @@ fn fingerprint(files: &[PathBuf]) -> Result<String> {
 /// Loads the mesh of `spec`: from this process's memo, from the cache entry, or built from the
 /// source files (and cached).
 pub fn load(spec: &MeshSpec) -> Result<Loaded> {
+    load_with(spec, true)
+}
+
+/// [`load`], or with `write = false` a load that writes nothing into the cache (see the module
+/// documentation).
+pub fn load_with(spec: &MeshSpec, write: bool) -> Result<Loaded> {
     let files = source_files(spec)?;
     let key = key(spec, &files)?;
+    // a read-only load from the source files must not stand in for the entry later
+    let memo_key = if write {
+        key.clone()
+    } else {
+        format!("{key}|read-only")
+    };
     if let Some(l) = MEMO
         .lock()
         .ok()
-        .and_then(|m| m.as_ref()?.get(&key).cloned())
+        .and_then(|m| m.as_ref()?.get(&memo_key).cloned())
     {
         return Ok(l);
     }
@@ -151,7 +172,24 @@ pub fn load(spec: &MeshSpec) -> Result<Loaded> {
             spec: spec.text(),
             entry: None,
             built: false,
+            pending: false,
         },
+        Some(dir) if !write => {
+            let entry = dir.join(format!("{key}.zarr"));
+            let usable = entry.exists() && entry_problem(&entry, &fingerprint(&files)?).is_none();
+            let mesh = if usable {
+                open_entry(&entry)?
+            } else {
+                load_source(spec, &files)?
+            };
+            Loaded {
+                mesh: Arc::new(mesh),
+                spec: spec.text(),
+                entry: Some(entry),
+                built: false,
+                pending: !usable,
+            }
+        }
         Some(dir) => {
             let (mesh, entry, built) = cached(spec, &files, &dir, &key)?;
             Loaded {
@@ -159,12 +197,13 @@ pub fn load(spec: &MeshSpec) -> Result<Loaded> {
                 spec: spec.text(),
                 entry: Some(entry),
                 built,
+                pending: false,
             }
         }
     };
     if let Ok(mut m) = MEMO.lock() {
         m.get_or_insert_with(HashMap::new)
-            .insert(key, loaded.clone());
+            .insert(memo_key, loaded.clone());
     }
     Ok(loaded)
 }

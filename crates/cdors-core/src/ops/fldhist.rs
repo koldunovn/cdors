@@ -63,6 +63,10 @@ enum Part {
     Above,
 }
 
+/// Most bins a histogram may have: every field holds two f64 per bin while it is folded and
+/// written, and an output of `bins` × fields values; a typo in `step` must not ask for terabytes.
+const MAX_BINS: usize = 100_000;
+
 /// Parsed arguments.
 struct Args {
     edges: Vec<f64>,
@@ -81,6 +85,19 @@ fn parse_list(op: &str, key: &str, s: &str) -> Result<Vec<f64>> {
                 })
         })
         .collect()
+}
+
+fn too_many(op: &str, what: &str, n: f64) -> Error {
+    Error::bad_arguments(format!(
+        "{op}: {what} gives {n:.0} bins, more than the {MAX_BINS} a histogram may have"
+    ))
+    .with("operator", op.to_owned())
+    .with("bins", n)
+    .with("max_bins", MAX_BINS)
+    .with_hint(format!(
+        "use a larger step (bins=<lo>/<hi>/<step> gives (hi - lo) / step bins) or fewer edges; \
+         at most {MAX_BINS} bins"
+    ))
 }
 
 fn parse_args(op: &str, args: &[String]) -> Result<Args> {
@@ -106,6 +123,9 @@ fn parse_args(op: &str, args: &[String]) -> Result<Args> {
                     )));
                 };
                 let n = (hi - lo) / step;
+                if step > 0.0 && hi > lo && n > MAX_BINS as f64 + 0.5 {
+                    return Err(too_many(op, &format!("bins={v}"), n));
+                }
                 if !(step > 0.0 && hi > lo) || (n - n.round()).abs() > 1e-9 * n.max(1.0) {
                     return Err(bad(format!(
                         "{op}: bins={v}: need lo < hi and a step > 0 that divides hi - lo"
@@ -123,6 +143,9 @@ fn parse_args(op: &str, args: &[String]) -> Result<Args> {
                     return Err(bad(format!(
                         "{op}: edges={v} must be at least two strictly increasing numbers"
                     )));
+                }
+                if e.len() - 1 > MAX_BINS {
+                    return Err(too_many(op, "edges=...", (e.len() - 1) as f64));
                 }
                 edges = Some(e);
             }
@@ -199,15 +222,19 @@ impl FoldKernel for HistKernel {
         self.vars[var].outputs.to_vec()
     }
 
+    /// The slots of every field (accumulators, then the output tiles made from them: 16 B per
+    /// slot), plus for 2-D grids the row strip of tiles held until it is complete.
     fn state_bytes(&self, var: usize, lane: &TileBox) -> usize {
         let p = &self.vars[var];
-        if p.nb == 2 {
-            return lane.len() * 8;
-        }
         let shape = lane.shape();
         let outer: usize = shape[..p.b0].iter().product();
         let inner: usize = shape[p.b0 + p.nb..].iter().product();
-        outer * inner * p.slots() * 16
+        let hist = outer * inner * p.slots() * 16;
+        if p.nb == 2 {
+            hist + lane.len() * 8
+        } else {
+            hist
+        }
     }
 
     fn start(&self, var: usize, lane: &TileBox) -> Box<dyn FoldState> {

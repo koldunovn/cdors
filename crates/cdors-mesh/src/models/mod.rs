@@ -48,8 +48,9 @@ pub struct Model {
     pub prefix: &'static str,
     /// Files of the mesh directory the loader reads, in the order it takes them.
     pub files: &'static [&'static str],
-    /// Spec options the loader understands (`units`).
-    pub options: &'static [&'static str],
+    /// Spec options the loader understands, each with its allowed values (`units`: `deg`,
+    /// `rad`, ...); [`parse_spec`] refuses other names and values.
+    pub options: &'static [(&'static str, &'static [&'static str])],
     /// Builds the mesh from readers over [`Model::files`].
     pub load: LoadFn,
     /// Version of the loader: part of the mesh cache key, raised whenever the loader changes
@@ -121,10 +122,17 @@ pub fn parse_spec(spec: &str) -> Option<Result<MeshSpec>> {
                 "mesh spec '{spec}': '{p}' is not <option>=<value>"
             ))));
         };
-        if !model.options.contains(&k) {
+        let Some((_, allowed)) = model.options.iter().find(|(name, _)| *name == k) else {
+            let known: Vec<&str> = model.options.iter().map(|o| o.0).collect();
             return Some(Err(MeshError::Invalid(format!(
                 "mesh spec '{spec}': unknown option '{k}' (known: {})",
-                model.options.join(", ")
+                known.join(", ")
+            ))));
+        };
+        if !allowed.contains(&v) {
+            return Some(Err(MeshError::Invalid(format!(
+                "mesh spec '{spec}': {k}={v} is not allowed ({k}={})",
+                allowed.join(" | ")
             ))));
         }
         options.push((k.to_owned(), v.to_owned()));

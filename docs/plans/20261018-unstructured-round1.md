@@ -424,6 +424,18 @@ The harness gains three capabilities (Task 2), so that every check in this plan 
 - ➕ ng5 (7.4M nodes, 69 levels) on the login node: cold `mesh info` (builds the entry, 2.9 GB) 37 s,
   peak RSS 1.6 GB; warm 1.6 s, 0.9 GB; without `CDORS_CACHE` 4.2 s, 1.0 GB. Per-level areas
   (4.1 GB) and `elem_nodes` (295 MB) stay unloaded.
+- ⚠️ Acceptance review fixes (2026-10-19):
+  - `--plan` and a run's first planning pass (before its refusals) no longer write the mesh cache
+    (`mesh_cache::load_with(spec, write)`): they open a usable entry or read the source files, and
+    rename nothing aside. `--plan` then warns `mesh_cache_pending` (entry path, `build_bytes`,
+    `estimated_build_s` at the measured 130 MB/s); a run replans its final pass, which builds the
+    entry. Test: `plan_writes_nothing` in `crates/cdors/tests/mesh_cache.rs` (fresh cache stays
+    empty under `--plan`). ng5 `--plan` on a fresh cache: 4.4 s, 1.2 GB RSS, nothing written.
+  - Mesh spec option values are checked in `models::parse_spec` (`Model::options` lists the allowed
+    values): `units=foo` is `bad_arguments`, not `bad_data`.
+  - `fldhist`: at most 100000 bins (`bad_arguments` before any edge is made; `bins=0/1e9/1e-9`
+    aborted on an 8e18-byte allocation), and the fold state of 2-D grids counts the bins (it
+    counted only the lane's values, so `--mem` did not bound it).
 
 ### Task 5: FESOM2 loader, `-setgrid,fesom:`, per-level weights, FESOM dimension order, `tonodes`/`toelems`
 

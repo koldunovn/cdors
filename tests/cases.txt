@@ -225,6 +225,7 @@ json:.out.stages[0].kernel.area_weights | map(.area_weights) == ["mesh", "mesh"]
 err:grid_mismatch | -fldmean -setgrid,fesom:{fix}/fesom_pi {in} | hpz2_noleap
 err:not_implemented | -zonmean -selname,salt -setgrid,fesom:{fix}/fesom_pi {in} | fesom_pi_data
 err:bad_arguments | -fldmean -setgrid,fesom:{fix}/fesom_pi,unit=rad {in} | fesom_pi_data
+err:bad_arguments | -fldmean -setgrid,fesom:{fix}/fesom_pi,units=foo {in} | fesom_pi_data   # an option value outside deg|rad
 # fldint (cdo's Σ area·value) on cdo's grids
 ulp      | -fldint {in}                                | r36x18_std
 ulp      | -fldint {in}                                | unst_360
@@ -321,6 +322,11 @@ ref:numpy.fldhist | -fldhist,edges=0/0.15/0.999,out=fraction -selname,a_ice {in}
 json:any(.stderr[]; .warning == "equal_weights") | --json -fldhist,edges=0/0.15/1,out=fraction -selname,a_ice {in} {out} | fesom_pi_data
 err:unsupported_grid | -fldhist,edges=0/0.15/1 -selname,a_ice {in} | fesom_pi_data
 err:bad_arguments    | -fldhist,bins=0/0.15/1 {in}     | r36x18_std   # bins= is lo/hi/step; edges go into edges=
+# at most 100000 bins (refused before the edges are made); the fold state counts against --mem
+err:bad_arguments    | -fldhist,bins=0/1e9/1e-9 {in}   | r36x18_std
+err:bad_arguments    | -fldhist,bins=0/1/1e-7 {in}     | hpz2_noleap
+json:.out.memory.parts.fold_state >= 1600048 | --json --plan -fldhist,bins=0/1/1e-5 {in} {out} | r36x18_std   # at least one lane: (1e5 + 3) slots x 16 B
+err:memory_limit     | --mem 1M -fldhist,bins=0/1/1e-5 {in} | r36x18_std
 # fldhist reads its input once (one fold emits <var>, <var>_below, <var>_above): the bytes decoded
 # are those of the input, 2 variables x 648 cells x 1096 steps x 4 B and 3140 nodes x 24 steps x 4 B
 json:.out.totals.bytes_decoded == 5681664 | --plan --json -fldhist,bins=280/310/5 {in} | r36x18_std

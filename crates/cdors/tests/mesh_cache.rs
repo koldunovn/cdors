@@ -2,7 +2,8 @@
 //! (`$CDORS_FIXTURES/fesom_pi`, else the pool copy): two concurrent `cdors mesh info` runs on a
 //! fresh cache both succeed and leave one entry; an entry whose fingerprint does not match is
 //! set aside and rebuilt; per-level areas and the element table read back lazily from the entry
-//! equal the source file's. Each test uses its own new cache directory under the cargo target
+//! equal the source file's; `--plan` writes nothing into a fresh cache and says that the first run
+//! builds the entry, which that run then does. Each test uses its own new cache directory under the cargo target
 //! directory (left in place).
 
 use std::path::{Path, PathBuf};
@@ -125,4 +126,47 @@ fn lazy_parts_read_back_from_the_entry() {
         let want: Vec<u32> = (0..3).map(|k| elem[k * ne + e] as u32 - 1).collect();
         assert_eq!(en.row(e), want.as_slice(), "element {e}");
     }
+}
+
+#[test]
+fn plan_writes_nothing() {
+    let Some(pi) = pi_dir() else { return };
+    let Some(data) = std::env::var_os("CDORS_FIXTURES")
+        .map(|d| PathBuf::from(d).join("fesom_pi_data.nc"))
+        .filter(|f| f.exists())
+    else {
+        eprintln!("skipped: no CDORS_FIXTURES/fesom_pi_data.nc");
+        return;
+    };
+    let cache = fresh_cache("plan");
+    let out = cache.with_extension("nc");
+    let run = |plan: bool| {
+        let mut c = Command::new(env!("CARGO_BIN_EXE_cdors"));
+        c.arg("--json");
+        if plan {
+            c.arg("--plan");
+        }
+        c.args(["-fldmean", "-selname,a_ice"])
+            .arg(format!("-setgrid,fesom:{}", pi.display()))
+            .arg(&data)
+            .arg(&out)
+            .env("CDORS_CACHE", &cache)
+            .output()
+            .unwrap()
+    };
+    let pending = |v: &serde_json::Value| {
+        v["warnings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|w| w["warning"] == "mesh_cache_pending" && w["estimated_build_s"].is_number())
+    };
+    let plan = json(&run(true));
+    assert!(pending(&plan), "{plan}");
+    let left: Vec<_> = std::fs::read_dir(&cache).unwrap().collect();
+    assert!(left.is_empty(), "--plan wrote into the cache: {left:?}");
+    let o = run(false);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert_eq!(entries(&cache).len(), 1);
+    assert!(!pending(&json(&run(true))));
 }

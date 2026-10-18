@@ -61,6 +61,7 @@ fn resolve(spec: &str) -> Result<Loaded> {
         spec: spec.to_owned(),
         entry: None,
         built: false,
+        pending: false,
     })
 }
 

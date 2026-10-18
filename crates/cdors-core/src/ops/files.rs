@@ -17,7 +17,7 @@ use crate::io::ChunkSource;
 use crate::io::multifile::{MultiFileSource, expand_glob, is_glob};
 use crate::model::mesh_cache;
 use crate::model::{DimRole, GridKind};
-use crate::plan::{Desc, Expr, GridDesc, IndexMap, Sources, VarDesc, WetMask, ZDesc};
+use crate::plan::{CdoUse, Desc, Expr, GridDesc, IndexMap, Sources, VarDesc, WetMask, ZDesc};
 use cdors_mesh::models::{self, DimRule, MeshSpec};
 use cdors_mesh::{Mesh, Place};
 use std::sync::Arc;
@@ -254,12 +254,52 @@ fn layer_bounds(d: &mut Desc) {
     }
 }
 
+/// Rate at which building a mesh cache entry reads and writes the mesh (measured on a Levante
+/// login node: FESOM2 ng5, 5.0 GB in 37 s), for `--plan`'s rough estimate.
+const MESH_BUILD_BYTES_PER_S: f64 = 1.3e8;
+
+/// `--plan` without a usable mesh cache entry: what the first run will build.
+fn pending_warning(loaded: &mesh_cache::Loaded, srcs: &mut Sources) {
+    let Some(entry) = &loaded.entry else {
+        return;
+    };
+    let m = &loaded.mesh;
+    let bytes = m.resident_bytes() + m.lazy_bytes().0;
+    let secs = (bytes as f64 / MESH_BUILD_BYTES_PER_S).ceil().max(1.0);
+    super::regions::warn(
+        srcs,
+        "mesh_cache_pending",
+        format!(
+            "the mesh cache entry {} does not exist yet (or is not usable): this plan read the mesh \
+             {} from its source files and wrote nothing; the first run builds the entry \
+             (about {} B, roughly {secs:.0} s)",
+            entry.display(),
+            m.name,
+            bytes
+        ),
+        serde_json::json!({
+            "mesh": loaded.spec,
+            "cache_entry": entry.display().to_string(),
+            "build_bytes": bytes,
+            "estimated_build_s": secs,
+        }),
+    );
+}
+
 /// `setgrid,<mesh spec>`: each input grid whose dimension the model's rules name (`nod2` →
 /// `nodes`), or else whose size one place has, becomes that place of the mesh: its centres,
 /// its 2-D areas, and the mesh itself on the grid (`Grid::mesh`); the dry levels of variables
 /// with levels become missing ([`mask_dry_levels`]).
 fn setgrid_mesh(spec: &MeshSpec, mut d: Desc, srcs: &mut Sources) -> Result<Desc> {
-    let loaded = mesh_cache::load(spec)?;
+    // only a run's final planning pass writes the mesh cache: `--plan` and the pass the
+    // refusals are checked on read an existing entry or the source files
+    let loaded = mesh_cache::load_with(spec, srcs.cdo == CdoUse::Now)?;
+    if loaded.pending {
+        match srcs.cdo {
+            CdoUse::Defer => srcs.deferred = true,
+            _ => pending_warning(&loaded, srcs),
+        }
+    }
     let mesh = loaded.mesh;
     if !srcs.meshes.iter().any(|m| Arc::ptr_eq(m, &mesh)) {
         srcs.meshes.push(mesh.clone());
