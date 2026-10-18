@@ -7,6 +7,7 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+cdors-mesh.workspace = true
 zarrs.workspace = true
 zarrs_object_store.workspace = true
 object_store.workspace = true

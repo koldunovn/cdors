@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/cdors-core", "crates/cdors"]
+members = ["crates/cdors-mesh", "crates/cdors-core", "crates/cdors"]
 
 [workspace.package]
 version = "0.1.0"
@@ -10,6 +10,7 @@ license = "BSD-3-Clause"
 
 [workspace.dependencies]
 cdors-core = { path = "crates/cdors-core" }
+cdors-mesh = { path = "crates/cdors-mesh" }
 
 # Zarr: filesystem store is a default feature; remote access goes through
 # zarrs_object_store + object_store (http, aws). `async` enables zarrs' async array API

@@ -264,6 +264,7 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "blosc-src",
+ "cdors-mesh",
  "cdshealpix",
  "crossbeam-channel",
  "flate2",
@@ -281,6 +282,14 @@ dependencies = [
  "tokio",
  "zarrs",
  "zarrs_object_store",
+]
+
+[[package]]
+name = "cdors-mesh"
+version = "0.1.0"
+dependencies = [
+ "rayon",
+ "thiserror",
 ]
 
 [[package]]

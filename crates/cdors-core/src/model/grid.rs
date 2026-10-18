@@ -17,7 +17,11 @@
 //! chunk source (`ChunkSource::read_var`).
 
 use super::dataset::Attrs;
+use super::{Dataset, ReadVar, Variable, area, hpcoords};
+use crate::error::{Error, ErrorCode, Result};
+use cdors_mesh::{Mesh, Place, Source};
 use serde::Serialize;
+use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -123,6 +127,9 @@ pub struct Grid {
     /// Unstructured grids that are GRIB reduced grids (set by the reader of gribscan
     /// references): the rows, from which the cell areas are computed.
     pub reduced: Option<ReducedRows>,
+    /// The model mesh the grid lives on (set by `setgrid` with a mesh spec); `None` for the
+    /// grids of the file, which then behave as without meshes.
+    pub mesh: Option<Arc<Mesh>>,
 }
 
 /// The rows of a reduced grid (GRIB's reduced Gaussian and reduced lon-lat grids, stored as one
@@ -166,6 +173,7 @@ impl Grid {
             mapping: None,
             reference: None,
             reduced: None,
+            mesh: None,
         }
     }
 
@@ -181,6 +189,94 @@ impl Grid {
     /// Whether the grid has horizontal coordinates (or, for HEALPix, an analytic definition).
     pub fn has_coordinates(&self) -> bool {
         self.kind != GridKind::Generic
+    }
+
+    /// The grid as a mesh: its own mesh if it has one, otherwise a one-place view (`cells`) with
+    /// the cell centres in degrees and the cell areas of `gridarea` ([`area::cell_areas`]: the
+    /// file's `cell_measures` variable, else computed, m²). Fails where `gridarea` fails (no
+    /// coordinates, no bounds).
+    pub fn mesh_view(&self, ds: &Dataset, var: &Variable, read: ReadVar<'_>) -> Result<Arc<Mesh>> {
+        if let Some(m) = &self.mesh {
+            return Ok(m.clone());
+        }
+        let areas = area::cell_areas(ds, var, self, read)?;
+        let (lon, lat) = self.cell_centres(read)?;
+        let mesh_err = |e: cdors_mesh::MeshError| Error::new(ErrorCode::Internal, e.to_string());
+        let cells = Place::new("cells", lon, lat, areas.values).map_err(mesh_err)?;
+        let name = match self.kind {
+            GridKind::Regular | GridKind::Gaussian => {
+                format!("{} {}x{}", self.kind.name(), self.xsize, self.ysize)
+            }
+            _ => format!("{} {}", self.kind.name(), self.size),
+        };
+        let source = Source {
+            model: "grid".into(),
+            files: Vec::new(),
+            notes: vec![areas.source.describe()],
+        };
+        Ok(Arc::new(Mesh::one_place(&name, cells, source)))
+    }
+
+    /// Cell centres in degrees, in storage order (regular grids: longitude fastest).
+    pub fn cell_centres(&self, read: ReadVar<'_>) -> Result<(Vec<f64>, Vec<f64>)> {
+        let none = || {
+            Error::new(
+                ErrorCode::NoCoordinates,
+                "the grid has no cell centre coordinates",
+            )
+            .with("grid", self.kind.name())
+        };
+        match self.kind {
+            GridKind::Regular | GridKind::Gaussian => {
+                let (Some(x), Some(y)) = (&self.xvals, &self.yvals) else {
+                    return Err(none());
+                };
+                let lon = y.iter().flat_map(|_| x.iter().copied()).collect();
+                let lat = y
+                    .iter()
+                    .flat_map(|&v| std::iter::repeat_n(v, x.len()))
+                    .collect();
+                Ok((lon, lat))
+            }
+            GridKind::Healpix => {
+                let hp = self.healpix.as_ref().ok_or_else(none)?;
+                let cells: Vec<u64> = match &hp.index_var {
+                    Some(iv) => read(iv)?.into_iter().map(|i| i as u64).collect(),
+                    None => (0..self.size as u64).collect(),
+                };
+                let layer = cdshealpix::nested::get(hp.nside.trailing_zeros() as u8);
+                Ok(cells
+                    .iter()
+                    .map(|&c| {
+                        let h = match hp.order {
+                            HealpixOrder::Nested => c,
+                            HealpixOrder::Ring => layer.from_ring(c),
+                        };
+                        let (lon, lat) = hpcoords::center_nested(hp.nside, h);
+                        (hpcoords::rad2deg(lon), hpcoords::rad2deg(lat))
+                    })
+                    .unzip())
+            }
+            GridKind::Curvilinear | GridKind::Unstructured => {
+                let (Some(xa), Some(ya)) = (&self.x, &self.y) else {
+                    return Err(none());
+                };
+                let deg = |a: &CoordAxis| -> Result<Vec<f64>> {
+                    let mut v = read(&a.var)?;
+                    if a.units
+                        .as_deref()
+                        .unwrap_or("")
+                        .trim()
+                        .starts_with("radian")
+                    {
+                        v.iter_mut().for_each(|x| *x = hpcoords::rad2deg(*x));
+                    }
+                    Ok(v)
+                };
+                Ok((deg(xa)?, deg(ya)?))
+            }
+            GridKind::Generic => Err(none()),
+        }
     }
 }
 
@@ -242,4 +338,27 @@ pub fn latitudes_are_gaussian(lats: &[f64]) -> bool {
     let fwd = (0..n).all(|i| (g[i] - lats[i]).abs() <= tol);
     let bwd = (0..n).all(|i| (g[i] - lats[n - 1 - i]).abs() <= tol);
     fwd || bwd
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::io::ChunkSource;
+
+    #[test]
+    fn mesh_view_of_builtin_grids() {
+        // one place `cells` with the gridarea areas: the sphere's area in total
+        for (name, n) in [("r36x18", 648), ("hpz2", 192)] {
+            let src = crate::remap::target::from_name(name).unwrap();
+            let ds = src.dataset();
+            let var = ds.data_vars().next().unwrap();
+            let grid = &ds.grids[var.grid.unwrap()];
+            let m = grid.mesh_view(ds, var, &|v| src.read_var(v)).unwrap();
+            let c = m.place("cells").unwrap();
+            assert_eq!((m.places.len(), c.size), (1, n), "{name}");
+            let total: f64 = c.area.iter().sum();
+            let sphere = 4.0 * std::f64::consts::PI * super::area::EARTH_RADIUS.powi(2);
+            assert!((total / sphere - 1.0).abs() < 1e-12, "{name}: {total}");
+            assert!(c.lat.iter().all(|y| y.abs() < 90.0) && c.lon.iter().all(|x| x.is_finite()));
+        }
+    }
 }

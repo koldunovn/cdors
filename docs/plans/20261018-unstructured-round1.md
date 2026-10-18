@@ -289,16 +289,29 @@ The harness gains three capabilities (Task 2), so that every check in this plan 
   - `crates/cdors-core/src/model/area.rs`;
   - `crates/cdors-core/src/model/grid.rs`: `mesh: Option<Arc<Mesh>>`.
 
-- [ ] Vocabulary types. Components that grow with the number of cells (per-level areas, topology) load lazily through
+- [x] Vocabulary types. Components that grow with the number of cells (per-level areas, topology) load lazily through
       the reader, and their bytes count against `--mem`. A grid without a mesh behaves exactly as today.
-- [ ] Built-in grids (regular, Gaussian, HEALPix, unstructured with areas) give a one-place `Mesh` view: centres and
+- [x] Built-in grids (regular, Gaussian, HEALPix, unstructured with areas) give a one-place `Mesh` view: centres and
       areas.
-- [ ] `geom.rs` primitives and the KD-tree locator.
-- [ ] Write tests (unit):
+- [x] `geom.rs` primitives and the KD-tree locator.
+- [x] Write tests (unit):
   - polygon area against today's `huiliers_area` results;
   - point-in-polygon cases: on an edge, at −180/180, at −90, inside a hole, on a long AR6 edge at high latitude
     (planar, not great circle).
-- [ ] Run tests: `cargo test` and the full harness.
+- [x] Run tests: `cargo test` and the full harness.
+- ⚠️ Lazy components (`Lazy<T>`, per-level areas as one `Lazy` per level) report their size
+  (`Lazy::bytes`, `Mesh::resident_bytes`, `Mesh::lazy_bytes`) but are not yet counted by the planner:
+  the operator that touches them (Task 5 `Weights::PerLevel`) adds them to its estimate, as
+  `plan/explain.rs` does for remap weights.
+- ⚠️ `Regions::new(regions, overlap)` takes the set's overlap flag: regionmask's `mask_3D` on a set
+  without overlap (AR6 `all`, whose land and ocean outlines overlap in slivers) gives a cell to the
+  last region containing it only. Checked against regionmask 0.13 on AR6 `all` and SREX: 1° grid on
+  integer degrees (outlines, −180, −90) plus 20 000 random points, all memberships identical on both
+  of its paths (rasterize and shapely).
+- ⚠️ KD-tree: a small own implementation (`locate.rs`, ~100 lines) instead of `kiddo` (not in the
+  cargo cache; no new dependency, and a fixed tie rule: on equal distances the smallest cell index).
+- ➕ `Grid::cell_centres` (degrees, storage order) and `Grid::mesh_view` (one place `cells`, areas from
+  `area::cell_areas`); a unit test checks r36x18 and hpz2 (areas sum to 4πR²).
 
 ### Task 4: Mesh cache and `cdors mesh info`
 

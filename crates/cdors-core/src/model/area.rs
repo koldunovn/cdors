@@ -559,72 +559,8 @@ fn gen_area_unstruct(ds: &Dataset, grid: &Grid, read: ReadVar<'_>) -> Result<Are
     }))
 }
 
-fn xyz(lon: f64, lat: f64) -> [f64; 3] {
-    // lonlat_to_xyz, mpim_grid/grid_convert.h:9
-    let c = lat.cos();
-    [c * lon.cos(), c * lon.sin(), lat.sin()]
-}
-
-fn cross_norm(a: &[f64; 3], b: &[f64; 3]) -> f64 {
-    let c = [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ];
-    (c[0] * c[0] + c[1] * c[1] + c[2] * c[2]).sqrt()
-}
-
-/// Spherical triangle area by L'Huilier's theorem (`mod_tri_area`, `grid_area.cc:138`).
-fn tri_area(u: &[f64; 3], v: &[f64; 3], w: &[f64; 3]) -> f64 {
-    let a = cross_norm(u, v).asin();
-    let b = cross_norm(u, w).asin();
-    let c = cross_norm(w, v).asin();
-    let s = 0.5 * (a + b + c);
-    let t = (s * 0.5).tan() * ((s - a) * 0.5).tan() * ((s - b) * 0.5).tan() * ((s - c) * 0.5).tan();
-    (4.0 * t.abs().sqrt().atan()).abs()
-}
-
-/// Fan of triangles from vertex 0 (`mod_huiliers_area`, `grid_area.cc:180`). Radians.
-pub fn huiliers_area(lon: &[f64], lat: &[f64]) -> f64 {
-    let n = lon.len();
-    if n < 3 {
-        return 0.0;
-    }
-    let p1 = xyz(lon[0], lat[0]);
-    let mut p2 = xyz(lon[1], lat[1]);
-    let mut sum = 0.0;
-    for i in 2..n {
-        let p3 = xyz(lon[i], lat[i]);
-        sum += tri_area(&p1, &p2, &p3);
-        p2 = p3;
-    }
-    sum
-}
-
-/// Fan of triangles from the cell centre, skipping repeated vertices
-/// (`mod_huiliers_area2`, `grid_area.cc:210`). Radians.
-pub fn huiliers_area_centre(lon: &[f64], lat: &[f64], clon: f64, clat: f64) -> f64 {
-    let n = lon.len();
-    if n < 3 {
-        return 0.0;
-    }
-    // is_equal (compare.h) is an exact comparison for these values
-    let p1 = xyz(clon, clat);
-    let mut p2 = xyz(lon[0], lat[0]);
-    let mut sum = 0.0;
-    for i in 1..n {
-        if lon[i] == lon[i - 1] && lat[i] == lat[i - 1] {
-            continue;
-        }
-        let p3 = xyz(lon[i], lat[i]);
-        sum += tri_area(&p1, &p2, &p3);
-        p2 = p3;
-    }
-    if !(lon[0] == lon[n - 1] && lat[0] == lat[n - 1]) {
-        sum += tri_area(&p1, &p2, &xyz(lon[0], lat[0]));
-    }
-    sum
-}
+// The spherical polygon areas live in cdors-mesh (pure geometry); re-exported unchanged.
+pub use cdors_mesh::geom::{huiliers_area, huiliers_area_centre};
 
 // ---------------------------------------------------------------------------------------------
 // Per-operator rules
