@@ -15,8 +15,10 @@ use crate::chain::{Input, OpNode};
 use crate::error::{Error, ErrorCode, Result};
 use crate::io::ChunkSource;
 use crate::io::multifile::{MultiFileSource, expand_glob, is_glob};
+use crate::model::mesh_cache;
 use crate::model::{DimRole, GridKind};
 use crate::plan::{Desc, GridDesc, IndexMap, Sources};
+use cdors_mesh::models::{self, DimRule, MeshSpec};
 use std::sync::Arc;
 
 /// Whether `name` is an operator that concatenates its input files along time.
@@ -81,8 +83,123 @@ pub fn describe_concat(node: &OpNode, srcs: &mut Sources) -> Result<Desc> {
     crate::plan::describe_source(srcs, si)
 }
 
+/// `setgrid,<mesh spec>`: each input grid whose dimension the model's rules name (`nod2` →
+/// `nodes`), or else whose size one place has, becomes that place of the mesh: its centres,
+/// its 2-D areas, and the mesh itself on the grid (`Grid::mesh`).
+fn setgrid_mesh(spec: &MeshSpec, mut d: Desc) -> Result<Desc> {
+    let loaded = mesh_cache::load(spec)?;
+    let mesh = loaded.mesh;
+    let places = || {
+        mesh.places
+            .iter()
+            .map(|p| format!("{} {}", p.name, p.size))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let mut replaced = false;
+    let mut unmatched = Vec::new();
+    for gi in 0..d.grids.len() {
+        let old = &d.grids[gi];
+        let dim = old.base.dims.first().cloned().unwrap_or_default();
+        let named = match models::dim_rule(&mesh, &dim) {
+            Some(DimRule::Place(p)) => mesh.place(p),
+            _ => None,
+        };
+        let place = match named {
+            Some(p) => p,
+            None if old.sel.len() == 1 => match mesh.place_of_size(old.size()) {
+                Some(p) => p,
+                None => {
+                    unmatched.push(format!("{dim} {}", old.size()));
+                    continue;
+                }
+            },
+            None => {
+                unmatched.push(format!("{} {}", old.base.dims.join("x"), old.size()));
+                continue;
+            }
+        };
+        if old.sel.len() != 1 || old.size() != place.size || old.base.size != place.size {
+            return Err(Error::new(
+                ErrorCode::GridMismatch,
+                format!(
+                    "setgrid: dimension '{dim}' has {} points, place '{}' of the mesh {} has {}",
+                    old.size(),
+                    place.name,
+                    mesh.name,
+                    place.size
+                ),
+            )
+            .with("mesh", loaded.spec.clone())
+            .with_hint(format!(
+                "the data must be on the full mesh {} (places: {}); apply selections after \
+                 -setgrid, and check that the mesh directory is the one the data was computed on",
+                mesh.name,
+                places()
+            )));
+        }
+        let first = mesh.places.first().is_some_and(|p| p.name == place.name);
+        let gsrc = crate::remap::target::mesh_place(&loaded.spec, &dim, place, !first)?;
+        let mut grid = gsrc.dataset().grids.first().cloned().ok_or_else(|| {
+            Error::internal(format!(
+                "no grid for place '{}' of {}",
+                place.name, mesh.name
+            ))
+        })?;
+        grid.mesh = Some(mesh.clone());
+        grid.mesh_place = Some(place.name.clone());
+        d.grids[gi] = GridDesc {
+            kind: grid.kind,
+            sel: vec![IndexMap::identity(grid.size)],
+            base: grid,
+            src: Arc::new(gsrc),
+            xvals: None,
+            fixed: None,
+        };
+        replaced = true;
+        for v in &mut d.vars {
+            if v.grid == Some(gi) {
+                for i in v.hdims() {
+                    v.dims[i].role = DimRole::Horizontal;
+                }
+            }
+        }
+    }
+    if !replaced {
+        return Err(Error::new(
+            ErrorCode::GridMismatch,
+            format!(
+                "setgrid: no input grid fits the mesh {}: input grids {}, mesh places {}",
+                mesh.name,
+                if unmatched.is_empty() {
+                    "none".into()
+                } else {
+                    unmatched.join(", ")
+                },
+                places()
+            ),
+        )
+        .with("mesh", loaded.spec.clone())
+        .with_hint(
+            "the horizontal dimension must be named as the model writes it (FESOM2: nod2, elem) \
+             or have the size of one place; check that the mesh is the one of the data",
+        ));
+    }
+    Ok(d)
+}
+
 fn setgrid(node: &OpNode, mut d: Desc, srcs: &mut Sources) -> Result<Desc> {
+    // a mesh spec may carry options: `-setgrid,fesom:<dir>,units=deg`
+    if let Some(spec) = mesh_cache::parse_spec(&node.args.join(",")) {
+        return setgrid_mesh(&spec?, d);
+    }
     let path = &node.args[0];
+    if node.args.len() > 1 {
+        return Err(Error::bad_arguments(format!(
+            "setgrid,{}: options are for mesh specs only (fesom:<dir>,units=deg)",
+            node.args.join(",")
+        )));
+    }
     if !std::path::Path::new(path).exists() {
         return Err(Error::new(
             ErrorCode::NotImplemented,

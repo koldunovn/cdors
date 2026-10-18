@@ -1,5 +1,6 @@
 //! cdors: CDO-style climate statistics on Zarr and NetCDF.
 
+mod mesh_cmd;
 mod ops_cmd;
 mod parse;
 mod sigpipe;
@@ -17,6 +18,9 @@ const USAGE: &str =
        cdors guide                 a short guide for agents: workflow, syntax, recipes, errors
        cdors ops [--json]          list operators (implemented ones with arguments, all of cdo's)
        cdors help <operator>       cdo's help text plus cdors notes (also: cdors -h <operator>)
+       cdors mesh info <spec> [--json]
+                                   places, areas, levels and cache entry of a mesh
+                                   (fesom:<dir>[,units=deg|rad]), a data file or a grid name
 
 options:
   -O                  overwrite existing outputs
@@ -160,6 +164,7 @@ fn main() {
         let r = match sub {
             "ops" => Ok(ops_cmd::ops(json)),
             "guide" => Ok(GUIDE.to_owned()),
+            "mesh" => mesh_cmd::run(&rest, json),
             _ => match rest.iter().find(|a| !a.starts_with("--")) {
                 Some(op) => ops_cmd::help(op.trim_start_matches('-'), json),
                 None => Ok(format!("{USAGE}\n")),

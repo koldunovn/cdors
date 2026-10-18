@@ -110,7 +110,7 @@ fn remove_all_own() -> bool {
     removed
 }
 
-fn hostname() -> String {
+pub(crate) fn hostname() -> String {
     let h = std::fs::read_to_string("/proc/sys/kernel/hostname")
         .ok()
         .or_else(|| std::env::var("HOSTNAME").ok())
@@ -126,7 +126,7 @@ fn hostname() -> String {
     if h.is_empty() { "host".into() } else { h }
 }
 
-fn random_u32() -> u32 {
+pub(crate) fn random_u32() -> u32 {
     use std::hash::{BuildHasher, Hasher};
     let mut h = std::collections::hash_map::RandomState::new().build_hasher();
     h.write_u128(

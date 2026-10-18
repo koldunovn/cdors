@@ -39,6 +39,7 @@ fn usage(s: &OpSpec) -> String {
         .args
         .iter()
         .map(|a| match (a.default, a.repeated) {
+            (Some(_), true) => format!("[{}...]", a.name),
             (Some(d), _) => format!("[{}={d}]", a.name),
             (None, true) => format!("{}...", a.name),
             (None, false) => a.name.to_owned(),

@@ -65,7 +65,7 @@ With `--json` a failure prints one object on stderr: `{"error": code, "message",
 |---|---|---|
 | 1 | `unknown_operator` (see `suggestions`), `bad_arguments`, `missing_input` | fix the command |
 | 1 | `not_implemented` | the operator exists only in cdo: run that step with cdo |
-| 2 | `bad_data`, `unsupported_grid`, `memory_limit`, `no_coordinates` | select less, raise `--mem`, or check the input |
+| 2 | `bad_data`, `unsupported_grid`, `grid_mismatch`, `memory_limit`, `no_coordinates` | select less, raise `--mem`, or check the input (`grid_mismatch`: wrong mesh for the data) |
 | 3 | `io_error` (`"retryable": true`) | retry |
 | 4 | `read_limit`, `too_many_values`, `output_exists` | run on a compute node, reduce what is printed, or add `-O` |
 

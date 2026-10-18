@@ -11,11 +11,16 @@
 //! - [`locate`]: a KD-tree on unit vectors for nearest-cell lookups.
 //! - [`reader`]: the [`ArrayReader`] interface through which loaders read mesh files; the
 //!   NetCDF and Zarr implementations live in cdors-core.
+//! - [`models`]: the model registry (one table: model → loader, rules, capabilities) and the
+//!   model loaders (`models/<name>/`); mesh specs (`fesom:<dir>`).
+//! - [`ugrid`]: a mesh as UGRID 1.0 arrays and back (the layout of the mesh cache).
 
 pub mod geom;
 pub mod locate;
 pub mod mesh;
+pub mod models;
 pub mod reader;
+pub mod ugrid;
 
 pub use mesh::{
     Csr, Lazy, Levels, Mesh, Place, Polygons, Source, Table, Thickness, Vertical, WetLevels,

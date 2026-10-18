@@ -130,6 +130,8 @@ pub struct Grid {
     /// The model mesh the grid lives on (set by `setgrid` with a mesh spec); `None` for the
     /// grids of the file, which then behave as without meshes.
     pub mesh: Option<Arc<Mesh>>,
+    /// The place of `mesh` the grid's cells are (`nodes`, `elements`).
+    pub mesh_place: Option<String>,
 }
 
 /// The rows of a reduced grid (GRIB's reduced Gaussian and reduced lon-lat grids, stored as one
@@ -174,7 +176,13 @@ impl Grid {
             reference: None,
             reduced: None,
             mesh: None,
+            mesh_place: None,
         }
+    }
+
+    /// The mesh place the grid's cells are, if the grid lives on a mesh.
+    pub fn mesh_place(&self) -> Option<&Place> {
+        self.mesh.as_ref()?.place(self.mesh_place.as_deref()?)
     }
 
     /// Whether two grids describe the same coordinates (used to deduplicate grids).
@@ -212,6 +220,7 @@ impl Grid {
         let source = Source {
             model: "grid".into(),
             files: Vec::new(),
+            units: None,
             notes: vec![areas.source.describe()],
         };
         Ok(Arc::new(Mesh::one_place(&name, cells, source)))

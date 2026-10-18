@@ -207,3 +207,29 @@ json:any(.stderr[]; .warning == "equal_weights") | --json -fldmean -selname,a_ic
 # r1x1_edges: 1 deg cells centred on integer degrees, lon -180..179, lat -90..90 (region edge rows)
 text     | griddes {in}                                | r1x1_edges
 exact    | -copy {in}                                  | r1x1_edges
+#
+# Task 4 (plan 20261018-unstructured-round1): cdors mesh info. Built-in grids: the one-place view
+# (cells, areas of gridarea), no cache entry, nothing lazy; 510064471909788.25 m2 = 4 pi R^2.
+json:.out.model == "grid" and .out.places[0].name == "cells" and .out.places[0].size == 192 and .out.cache == null and .out.memory.lazy_bytes == 0 and ((.out.places[0].area_sum / 510064471909788.25 - 1) | fabs) < 1e-12 | --json mesh info {in} | hpz2_noleap
+json:.out.places | length == 1 and .[0].size == 648 and .[0].lat_range == [-85, 85] and ((.[0].area_sum / 510064471909788.25 - 1) | fabs) < 1e-12 | --json mesh info {in} | r36x18_std
+
+# Task 5 (loader half): FESOM2 pi in its old layout (radians, nod_n/elem_n/nl) and in ng5's layout
+# with degrees (fesom_pi_deg): the same places, areas, centres (to 1e-6 degrees) and wet levels,
+# per-level areas and elem_nodes lazy (nothing loaded), the units decision shown, a cache entry.
+json:(.out.places | map([.name, .size, (.area_sum | . * 1e-3 | round), (.lon_range + .lat_range | map(. * 1e6 | round)), .wet_levels.min, .wet_levels.max])) == [["nodes", 3140, 339720478580, [-179963006, 179958769, -78516841, 89404840], 4, 45], ["elements", 5839, 339720478580, [-179936944, 179935174, -77865513, 89319950], 4, 45]] and .out.places[0].area_per_level.levels == 47 and .out.memory.lazy_loaded_bytes == 0 and .out.vertical.levels == 47 and .out.vertical.interfaces == [-6250, 0] and .out.topology[0].name == "elem_nodes" and (.out.cache.path | endswith(".zarr")) and (.out.units | startswith("radians")) | --json mesh info fesom:{fix}/fesom_pi | r36x18_std
+json:(.out.places | map([.name, .size, (.area_sum | . * 1e-3 | round), (.lon_range + .lat_range | map(. * 1e6 | round)), .wet_levels.min, .wet_levels.max])) == [["nodes", 3140, 339720478580, [-179963006, 179958769, -78516841, 89404840], 4, 45], ["elements", 5839, 339720478580, [-179936944, 179935174, -77865513, 89319950], 4, 45]] and .out.places[0].area_per_level.levels == 47 and .out.memory.lazy_loaded_bytes == 0 and .out.vertical.levels == 47 and .out.vertical.interfaces == [-6250, 0] and .out.topology[0].name == "elem_nodes" and (.out.cache.path | endswith(".zarr")) and (.out.units | startswith("degrees")) | --json mesh info fesom:{fix}/fesom_pi_deg | r36x18_std
+json:.out.units | startswith("radians (given: units=rad)") | --json mesh info fesom:{fix}/fesom_pi,units=rad | r36x18_std
+# -setgrid,fesom: the 2-D variables use the mesh's node areas (--plan says so); a grid that fits no
+# place is grid_mismatch; 3-D variables are refused until per-level weights exist (Task 5, other half)
+json:.out.stages[0].kernel.area_weights | map(.area_weights) == ["mesh", "mesh"] | --json --plan -fldmean -selname,a_ice,m_ice -setgrid,fesom:{fix}/fesom_pi_deg {in} {out} | fesom_pi_data
+err:grid_mismatch | -fldmean -setgrid,fesom:{fix}/fesom_pi {in} | hpz2_noleap
+err:not_implemented | -fldmean -selname,temp -setgrid,fesom:{fix}/fesom_pi {in} | fesom_pi_data
+err:bad_arguments | -fldmean -setgrid,fesom:{fix}/fesom_pi,unit=rad {in} | fesom_pi_data
+# fldint (cdo's Σ area·value) on cdo's grids
+ulp      | -fldint {in}                                | r36x18_std
+ulp      | -fldint {in}                                | unst_360
+ulp      | -fldint {in}                                | hpz2_noleap
+# fldmean/fldint of 2-D FESOM2 fields vs NumPy with nod_area[0] (reference.py: mesh_fldmean,
+# mesh_fldint); float32 data and output, measured max rel diff 5.3e-8
+ref:numpy.mesh_fldmean | -fldmean -selname,a_ice,m_ice -setgrid,fesom:{fix}/fesom_pi {in} | fesom_pi_data
+ref:numpy.mesh_fldint  | -fldint -selname,a_ice,m_ice -setgrid,fesom:{fix}/fesom_pi_deg {in} | fesom_pi_data

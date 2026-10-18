@@ -222,7 +222,7 @@ not area-weighted). As in cdo, `-w` drops all warnings (also the JSON lines) and
 |---|---|---|
 | 0 | success | |
 | 1 | usage error | `unknown_operator`, `not_implemented`, `bad_arguments` (also: a time selection that selects nothing, `CDORS_CACHE` not set for a remapping that needs cdo), `missing_input`, `permission_denied` (also read-only file system), `no_space` (also quota exceeded), `cdo_not_found` (weights or a target-grid template must be made by cdo, but neither `$CDO` is set nor `cdo` on `PATH`) |
-| 2 | data error | `bad_data`, `no_coordinates`, `unsupported_grid`, `unsupported_dimension`, `memory_limit`, `intermediate_too_large`, `io_failed` (an I/O failure not known to be transient), `internal` |
+| 2 | data error | `bad_data`, `no_coordinates`, `unsupported_grid`, `grid_mismatch` (`-setgrid`: the data does not fit the grid or mesh), `unsupported_dimension`, `memory_limit`, `intermediate_too_large`, `io_failed` (an I/O failure not known to be transient), `internal` |
 | 3 | I/O error, worth retrying | `io_error` (timeouts, connection reset or refused, EAGAIN/EINTR, HTTP 5xx and 429); only these have `"retryable": true` |
 | 4 | refused | `read_limit`, `too_many_values`, `output_exists` |
 

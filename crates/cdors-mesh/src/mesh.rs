@@ -75,6 +75,20 @@ impl<T> Lazy<T> {
         Ok(v)
     }
 
+    /// The value without keeping it: the loaded value if there is one, else a fresh load that
+    /// is not remembered (for streaming a component through once, e.g. into the mesh cache,
+    /// without leaving gigabytes of per-level areas resident).
+    pub fn get_uncached(&self) -> Result<Arc<T>> {
+        if let Some(v) = self.cell.get() {
+            return Ok(v.clone());
+        }
+        let load = self
+            .load
+            .as_ref()
+            .ok_or_else(|| MeshError::Invalid("lazy component without a loader".into()))?;
+        Ok(Arc::new(load()?))
+    }
+
     pub fn is_loaded(&self) -> bool {
         self.cell.get().is_some()
     }
@@ -311,6 +325,14 @@ impl Levels {
             .get()
     }
 
+    /// Values of level `k` without keeping them ([`Lazy::get_uncached`]).
+    pub fn level_uncached(&self, k: usize) -> Result<Arc<Vec<f64>>> {
+        self.levels
+            .get(k)
+            .ok_or_else(|| MeshError::Invalid(format!("level {k} of {}", self.nlev())))?
+            .get_uncached()
+    }
+
     pub fn bytes(&self) -> u64 {
         self.levels.iter().map(Lazy::bytes).sum()
     }
@@ -438,6 +460,13 @@ impl WetLevels {
         self.range(cell).contains(&level)
     }
 
+    /// The interfaces (0-based, half open) that bound the wet mid-levels of `cell`: one more
+    /// than [`WetLevels::range`]; empty for a cell without wet levels.
+    pub fn interfaces(&self, cell: usize) -> Range<usize> {
+        let r = self.range(cell);
+        if r.is_empty() { r } else { r.start..r.end + 1 }
+    }
+
     /// Smallest and largest number of wet levels.
     pub fn depth_range(&self) -> Option<(usize, usize)> {
         let n = (0..self.top.len()).map(|i| self.range(i).len());
@@ -509,7 +538,10 @@ pub struct Source {
     /// `grid` for the one-place view of a built-in grid, else the model (`fesom2`, ...).
     pub model: String,
     pub files: Vec<PathBuf>,
-    /// Decisions a user may want to see (`nodes in radians: |lat| <= pi/2`, ...).
+    /// How the units of the coordinates were decided (`radians: max |lat| 1.56 <= pi/2 ...`),
+    /// for loaders that have to decide.
+    pub units: Option<String>,
+    /// Other decisions a user may want to see.
     pub notes: Vec<String>,
 }
 

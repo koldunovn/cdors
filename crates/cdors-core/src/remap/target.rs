@@ -218,6 +218,64 @@ fn healpix(origin: &str, nside: u64, ring: bool, zoom: bool) -> Result<GridSourc
     )
 }
 
+/// The cells of a mesh place as an unstructured grid over the data's dimension `dim`:
+/// `lon(dim)`, `lat(dim)` (degrees), `cell_area(dim)` and `const(dim)` naming them in
+/// `coordinates` and `cell_measures` (`-setgrid,<mesh spec>`). With `suffix` (every place but
+/// the mesh's first) the coordinates are `lon_<dim>`, `lat_<dim>`, `cell_area_<dim>`, so that
+/// an output with variables on nodes and on elements has distinct coordinates for each.
+pub fn mesh_place(
+    origin: &str,
+    dim: &str,
+    place: &cdors_mesh::Place,
+    suffix: bool,
+) -> Result<GridSource> {
+    let n = place.size;
+    let name = |b: &str| {
+        if suffix {
+            format!("{b}_{dim}")
+        } else {
+            b.to_owned()
+        }
+    };
+    let (lon, lat, area) = (name("lon"), name("lat"), name("cell_area"));
+    let attrs = |std: &str, units: &str| {
+        Attrs(vec![
+            ("standard_name".into(), text(std)),
+            ("units".into(), text(units)),
+        ])
+    };
+    let vars = vec![
+        variable(
+            &lon,
+            DType::F64,
+            &[(dim, n)],
+            attrs("longitude", "degrees_east"),
+        ),
+        variable(
+            &lat,
+            DType::F64,
+            &[(dim, n)],
+            attrs("latitude", "degrees_north"),
+        ),
+        variable(&area, DType::F64, &[(dim, n)], attrs("cell_area", "m2")),
+        variable(
+            "const",
+            DType::F32,
+            &[(dim, n)],
+            Attrs(vec![
+                ("coordinates".into(), text(&format!("{lon} {lat}"))),
+                ("cell_measures".into(), text(&format!("area: {area}"))),
+            ]),
+        ),
+    ];
+    let values = HashMap::from([
+        (lon, place.lon.clone()),
+        (lat, place.lat.clone()),
+        (area, place.area.clone()),
+    ]);
+    finish(origin, vec![(dim.to_owned(), n)], vars, values)
+}
+
 /// A grid known by its shape only (no coordinates): `const(y, x)` or `const(ncells)`.
 fn shape_only(origin: &str, xsize: usize, ysize: usize) -> Result<GridSource> {
     let vdims: Vec<(&str, usize)> = if ysize > 0 {

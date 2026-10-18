@@ -28,6 +28,8 @@ pub enum ErrorCode {
     NoCoordinates,
     /// The grid kind is not supported by the operator.
     UnsupportedGrid,
+    /// The data does not fit the grid or mesh given to it (`-setgrid`: number of points).
+    GridMismatch,
     /// A dimension (or its role) is not supported by the operator.
     UnsupportedDimension,
     /// The planned read exceeds `--max-read`.
@@ -68,6 +70,7 @@ impl ErrorCode {
             Self::OutputExists => "output_exists",
             Self::NoCoordinates => "no_coordinates",
             Self::UnsupportedGrid => "unsupported_grid",
+            Self::GridMismatch => "grid_mismatch",
             Self::UnsupportedDimension => "unsupported_dimension",
             Self::ReadLimit => "read_limit",
             Self::TooManyValues => "too_many_values",
@@ -95,6 +98,7 @@ impl ErrorCode {
             | Self::CdoNotFound => 1,
             Self::NoCoordinates
             | Self::UnsupportedGrid
+            | Self::GridMismatch
             | Self::UnsupportedDimension
             | Self::IntermediateTooLarge
             | Self::MemoryLimit

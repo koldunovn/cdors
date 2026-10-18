@@ -13,6 +13,7 @@
 
 pub mod grib;
 pub mod kerchunk;
+pub mod mesh_reader;
 pub mod multifile;
 pub mod netcdf4;
 pub mod netcdf4_index;

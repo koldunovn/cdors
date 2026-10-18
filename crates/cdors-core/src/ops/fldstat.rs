@@ -64,6 +64,10 @@ pub fn operators() -> Vec<(String, String)> {
         }
     }
     out.push((
+        "fldint".into(),
+        "Field integral (sum of cell area times value, m2 times the unit)".into(),
+    ));
+    out.push((
         "vertint".into(),
         "Vertical integral (sum of layer thickness times value)".into(),
     ));
@@ -94,6 +98,8 @@ enum Stat {
     Var1,
     Std,
     Std1,
+    /// Σ area·value (`fldint`).
+    Int,
 }
 
 impl Stat {
@@ -103,7 +109,7 @@ impl Stat {
             Self::Min => "minimum",
             Self::Max => "maximum",
             Self::Range => "range",
-            Self::Sum => "sum",
+            Self::Sum | Self::Int => "sum",
             Self::Var | Self::Var1 => "variance",
             Self::Std | Self::Std1 => "standard_deviation",
         }
@@ -113,6 +119,9 @@ impl Stat {
 fn parse(name: &str) -> Option<(Family, Stat)> {
     if name == "vertint" {
         return Some((Family::Vert, Stat::Sum));
+    }
+    if name == "fldint" {
+        return Some((Family::Fld, Stat::Int));
     }
     let (fam, rest) = if let Some(r) = name.strip_prefix("fld") {
         (Family::Fld, r)
@@ -355,7 +364,7 @@ impl FoldKernel for SpaceKernel {
         match self.stat {
             Stat::Mean => Box::new(State::<MeanAcc>::new(var, p, self.stat, lane)),
             Stat::Avg => Box::new(State::<AvgAcc>::new(var, p, self.stat, lane)),
-            Stat::Sum => Box::new(State::<SumAcc>::new(var, p, self.stat, lane)),
+            Stat::Sum | Stat::Int => Box::new(State::<SumAcc>::new(var, p, self.stat, lane)),
             Stat::Min | Stat::Max | Stat::Range => {
                 Box::new(State::<MinMaxAcc>::new(var, p, self.stat, lane))
             }
@@ -802,14 +811,16 @@ fn selected_cells(g: &GridDesc) -> Vec<usize> {
 
 /// Cell weights of the `fld*` operators for the (selected) grid: cdo's weights of the whole
 /// grid, or for a subset the stored-grid weights of the selected cells renormalised to sum 1;
-/// with where they come from (`None`: a single cell).
+/// with where they come from (`None`: a single cell). `fldint` (`areas`): the cell areas (m²,
+/// `gridarea`) of the selected cells, not normalised.
 fn fld_weights(
     g: &GridDesc,
     var: &VarDesc,
     srcs: &Sources,
+    areas: bool,
 ) -> Result<(Weights, Option<area::AreaSource>)> {
     let n = g.size();
-    if n <= 1 {
+    if n <= 1 && !areas {
         return Ok((Weights::Const(1.0), None));
     }
     let leaf = var
@@ -824,6 +835,11 @@ fn fld_weights(
         .var(&leaf.var)
         .ok_or_else(|| Error::internal(format!("variable '{}' not found", leaf.var)))?;
     let read = |name: &str| g.src.read_var(name);
+    if areas {
+        let a = area::cell_areas(g.src.dataset(), dvar, &g.base, &read)?;
+        let w: Vec<f64> = selected_cells(g).iter().map(|&c| a.values[c]).collect();
+        return Ok((Weights::Each(Arc::new(w)), Some(a.source)));
+    }
     let cw = area::cell_weights(g.src.dataset(), dvar, &g.base, &read)?;
     let source = cw.source.clone();
     let mut w = cw.values;
@@ -937,19 +953,55 @@ fn block_of(v: &VarDesc, role: DimRole) -> Result<(usize, usize)> {
     }
 }
 
+/// Space statistics of variables with levels on a mesh with a vertical are refused: each level
+/// needs its own areas and the dry levels below each cell's bottom (stored as 0 by FESOM2) must
+/// be left out, which these operators do not do yet. 2-D variables are fine.
+fn refuse_mesh_levels(op: &str, input: &Desc) -> Result<()> {
+    for v in &input.vars {
+        let Some(m) = v.grid.and_then(|g| input.grids[g].base.mesh.as_ref()) else {
+            continue;
+        };
+        if m.vertical.is_some()
+            && let Some(z) = v.dims.iter().find(|d| d.role == DimRole::Vertical)
+        {
+            return Err(Error::new(
+                ErrorCode::NotImplemented,
+                format!(
+                    "{op} of '{}' on the mesh {}: variables with levels ('{}') need per-level \
+                     areas and dry-level masking, which are not implemented yet",
+                    v.name, m.name, z.name
+                ),
+            )
+            .with("variable", v.name.clone())
+            .with_hint(
+                "2-D variables on the mesh (e.g. a_ice) work; for one level of a 3-D variable \
+                 this is not available yet either, since dry cells would enter as 0",
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Output description of a space statistic.
 pub fn describe(node: &OpNode, mut inputs: Vec<Desc>, srcs: &Sources) -> Result<Desc> {
     let name = node.name.as_str();
     let (fam, stat) =
         parse(name).ok_or_else(|| Error::internal(format!("'{name}' is not a space statistic")))?;
     let input = inputs.remove(0);
+    refuse_mesh_levels(name, &input)?;
     let mut out = input.clone();
     let mut plans = Vec::with_capacity(out.vars.len());
     let mut info = None;
     match fam {
         Family::Fld | Family::Zon => {
-            let weighted = fam == Family::Fld
-                && area::fldstat_weighting(name) == Some(SpaceWeighting::Weights);
+            let weighting = (fam == Family::Fld)
+                .then(|| area::fldstat_weighting(name))
+                .flatten();
+            let weighted = matches!(
+                weighting,
+                Some(SpaceWeighting::Weights | SpaceWeighting::Areas)
+            );
+            let by_area = weighting == Some(SpaceWeighting::Areas);
             // per grid: the grid made, its dimensions, rows; weights per (grid, area variable)
             let mut made: HashMap<usize, (GridDesc, Vec<VarDim>, RowMap, usize)> = HashMap::new();
             type Cached = (Weights, Option<area::AreaSource>);
@@ -1003,7 +1055,7 @@ pub fn describe(node: &OpNode, mut inputs: Vec<Desc>, srcs: &Sources) -> Result<
                     let (w, source) = match wcache.get(&key) {
                         Some(c) => c.clone(),
                         None => {
-                            let c = fld_weights(g, v, srcs)?;
+                            let c = fld_weights(g, v, srcs, by_area)?;
                             wcache.insert(key, c.clone());
                             c
                         }

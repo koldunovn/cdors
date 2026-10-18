@@ -527,6 +527,7 @@ pub fn subcommand(args: &[String]) -> Option<(&'static str, Vec<String>)> {
     match toks.first().map(String::as_str) {
         Some("ops") => Some(("ops", toks[1..].to_vec())),
         Some("guide") => Some(("guide", toks[1..].to_vec())),
+        Some("mesh") => Some(("mesh", toks[1..].to_vec())),
         Some("help" | "-h") => Some(("help", toks[1..].to_vec())),
         _ => None,
     }

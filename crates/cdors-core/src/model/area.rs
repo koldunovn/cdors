@@ -58,6 +58,8 @@ pub enum AreaSource {
     PseudoBounds,
     /// Reduced grid: lon-lat rectangles of its rows.
     ReducedRows,
+    /// The 2-D areas of a mesh place (`-setgrid,<mesh spec>`): "<place> of <mesh>".
+    Mesh(String),
     /// No areas: constant weights 1/N.
     Constant,
 }
@@ -99,6 +101,7 @@ impl AreaSource {
             Self::Healpix => "healpix",
             Self::PseudoBounds => "pseudo_bounds",
             Self::ReducedRows => "reduced_rows",
+            Self::Mesh(_) => "mesh",
             Self::Constant => "equal",
         }
     }
@@ -113,6 +116,7 @@ impl AreaSource {
             Self::Healpix => "equal cell areas (HEALPix)".into(),
             Self::PseudoBounds => "cell areas of a single row or column".into(),
             Self::ReducedRows => "cell areas from the rows of the reduced grid".into(),
+            Self::Mesh(m) => format!("2-D cell areas of the {m}"),
             Self::Constant => "EQUAL WEIGHTS: no cell areas, no cell bounds".into(),
         }
     }
@@ -264,6 +268,15 @@ fn file_area(
     grid: &Grid,
     read: ReadVar<'_>,
 ) -> Result<Option<CellAreas>> {
+    // a grid on a mesh: the mesh's areas, whatever the data file says
+    if let (Some(m), Some(p)) = (&grid.mesh, grid.mesh_place())
+        && p.size == grid.size
+    {
+        return Ok(Some(CellAreas {
+            values: p.area.clone(),
+            source: AreaSource::Mesh(format!("place '{}' of the mesh {}", p.name, m.name)),
+        }));
+    }
     let Some(name) = area_variable(ds, var) else {
         return Ok(None);
     };

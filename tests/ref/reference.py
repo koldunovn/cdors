@@ -109,7 +109,41 @@ def fldmean_wrong(args, inputs, out):
 
 
 # the functions a row can name (ref:<lib>.<fn>)
-REFERENCES = {"fldmean": fldmean, "fldmean_wrong": fldmean_wrong}
+# 2-D field statistics on a FESOM2 mesh, weighted by the surface row of nod_area (nodes) or
+# elem_area (elements).
+def mesh_dir(args):
+    """The mesh directory of the row's -setgrid,fesom:<dir>[,...] argument."""
+    for a in args:
+        if a.startswith("-setgrid,fesom:"):
+            return a[len("-setgrid,fesom:"):].split(",")[0]
+    raise SystemExit("reference: no -setgrid,fesom:<dir> in the arguments")
+
+
+def mesh_fld(args, inputs, out, integral=False):
+    """fldmean (or fldint) of every 2-D (time, nod2|elem) variable of IN1 on the mesh of the row."""
+    with netCDF4.Dataset(os.path.join(mesh_dir(args), "fesom.mesh.diag.nc")) as m:
+        areas = {m["nod_area"].shape[1]: m["nod_area"][0].astype("f8"),
+                 m["elem_area"].shape[0]: m["elem_area"][:].astype("f8")}
+    with netCDF4.Dataset(inputs[0]) as src, netCDF4.Dataset(out, "w") as dst:
+        copy_time(src, dst)
+        for n in data_vars(src):
+            v = src[n]
+            if v.ndim != 2:
+                continue
+            x = masked(v[:])
+            w = np.broadcast_to(areas[v.shape[1]], x.shape)
+            s = (x * w).sum(axis=1)
+            res = s if integral else s / np.ma.array(w, mask=np.ma.getmaskarray(x)).sum(axis=1)
+            o = dst.createVariable(n, "f8", ("time",), fill_value=netCDF4.default_fillvals["f8"])
+            o[:] = res
+
+
+def mesh_fldint(args, inputs, out):
+    mesh_fld(args, inputs, out, integral=True)
+
+
+REFERENCES = {"fldmean": fldmean, "fldmean_wrong": fldmean_wrong,
+              "mesh_fldmean": mesh_fld, "mesh_fldint": mesh_fldint}
 
 
 # ---------------------------------------------------------------- commands

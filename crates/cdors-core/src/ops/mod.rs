@@ -130,6 +130,7 @@ impl OpSpec {
                 .args
                 .iter()
                 .map(|a| match (a.default, a.repeated) {
+                    (Some(_), true) => format!("[{}...]", a.name),
                     (Some(d), _) => format!("[{}={d}]", a.name),
                     (None, true) => format!("{}...", a.name),
                     (None, false) => a.name.to_owned(),
@@ -490,7 +491,16 @@ fn build_registry() -> Vec<OpSpec> {
             "setgrid",
             one,
             1,
-            vec![arg("grid", Str)],
+            // a mesh spec may carry options: setgrid,fesom:<dir>,units=deg
+            vec![
+                arg("grid", Str),
+                ArgSpec {
+                    name: "mesh_option",
+                    ty: Str,
+                    default: Some(""),
+                    repeated: true,
+                },
+            ],
             Pointwise,
             "Set the horizontal grid (grid file or mesh)",
             false,

@@ -381,17 +381,17 @@ The harness gains three capabilities (Task 2), so that every check in this plan 
 - Create: `crates/cdors/src/mesh_cmd.rs`.
 - Modify: `crates/cdors/src/main.rs`.
 
-- [ ] **Cache entry** = UGRID-Zarr at `$CDORS_CACHE/meshes/<key>.zarr`.
+- [x] **Cache entry** = UGRID-Zarr at `$CDORS_CACHE/meshes/<key>.zarr`.
   - The key comes from the realpath, size and mtime of each source file plus a loader-version salt; contents are not
     hashed on every run.
   - The entry stores a content fingerprint, the sha of the first and last MiB of each source file, which is checked
     on load.
-- [ ] **Concurrency.**
+- [x] **Concurrency.**
   - Build into `<key>.zarr.tmp-<pid>-<rand>`, write a completion marker, then rename; the first rename wins.
   - A loser removes only its own uniquely named temp directory.
   - An entry without its marker, or with the wrong fingerprint, is renamed aside to `<key>.zarr.bad-<time>` and
     rebuilt. It is never deleted.
-- [ ] `cdors mesh info <spec> [--json]` reports:
+- [x] `cdors mesh info <spec> [--json]` reports:
   - places, sizes and the area sum;
   - the vertical: levels, plus min and max wet levels;
   - topology tables;
@@ -399,11 +399,28 @@ The harness gains three capabilities (Task 2), so that every check in this plan 
   - source files and the cache path.
 
   The cache entry is itself a UGRID store, and its path is printed.
-- [ ] Write tests:
+- [x] Write tests:
   - UGRID round trip (unit);
   - `json:` rows for `mesh info` on hpz2 and r36x18;
   - two concurrent `mesh info` runs on a fresh cache both succeed and leave one entry.
-- [ ] Run tests.
+- [x] Run tests.
+- ⚠️ The content fingerprint is FNV-128 (the hash cdors already uses for its weight cache keys), not a
+  sha: no new dependency, and it guards against changed files, not against an adversary.
+- ⚠️ Temporary names carry the host as well: `<key>.zarr.tmp-<host>-<pid>-<random>` (a pid alone is
+  not unique on a shared file system). Unusable entries go to `<key>.zarr.bad-<unix time>-<pid>`, with
+  a `mesh_cache_rebuilt` warning.
+- ➕ `crates/cdors-mesh/src/ugrid.rs`: `write(mesh, extra_attrs, &mut dyn UgridSink)` / `read(Arc<dyn
+  ArrayReader>)`; cdors-core's `ZarrSink` (in `mesh_cache.rs`) writes Zarr v3 (blosc zstd 1). Lazy
+  components are streamed through once without being kept (`Lazy::get_uncached`,
+  `Levels::level_uncached`): building the ng5 entry holds one level of `nod_area` at a time.
+- ➕ `io/mesh_reader.rs`: one `SourceReader` over any `ChunkSource` (both NetCDF paths, Zarr);
+  hyperslabs are assembled from the chunks they touch (contiguous NetCDF: one record per chunk).
+- ➕ Concurrency and set-aside are tested in `crates/cdors/tests/mesh_cache.rs` (two `cdors mesh info`
+  processes on a fresh cache; a wrong fingerprint; per-level areas and `elem_nodes` read back lazily
+  equal the source). Each test leaves its cache directory under the cargo target directory.
+- ➕ ng5 (7.4M nodes, 69 levels) on the login node: cold `mesh info` (builds the entry, 2.9 GB) 37 s,
+  peak RSS 1.6 GB; warm 1.6 s, 0.9 GB; without `CDORS_CACHE` 4.2 s, 1.0 GB. Per-level areas
+  (4.1 GB) and `elem_nodes` (295 MB) stay unloaded.
 
 ### Task 5: FESOM2 loader, `-setgrid,fesom:`, per-level weights, FESOM dimension order, `tonodes`/`toelems`
 
@@ -419,20 +436,38 @@ The harness gains three capabilities (Task 2), so that every check in this plan 
 - Create: `crates/cdors-core/src/ops/places.rs`.
 - Modify: `crates/cdors-core/src/ops/mod.rs`, `tests/ref/reference.py`, `tests/cases.txt`.
 
-- [ ] **Loader from `fesom.mesh.diag.nc`:**
+- [x] **Loader from `fesom.mesh.diag.nc`:**
   - **Units:** radians if both |lat| ≤ π/2 + ε and |lon| ≤ 2π + ε, otherwise degrees. An override is available
     (`fesom:<dir>,units=deg|rad`), and the decision is shown in `mesh info`.
   - **Names:** both `nod_n` and `nod2` are accepted.
   - **Top levels:** `ulevels_nod2D` is optional; without it the top level is 1.
   - **Areas:** per-level `nod_area`.
   - **Layers:** full layers (FESOM2 default `use_partial_cell=.false.`).
-- [ ] **Rules:**
+- [x] **Rules:**
   - dimensions: `nod2`/`nod_n` → nodes, `elem`/`elem_n` → elements, `nz` → interfaces, `nz1` → mid-levels;
   - levels below a cell's bottom (or above its top) are missing, whatever value the file stores (0 in FESOM output).
 - [ ] **`-setgrid,fesom:<dir>`.** Sizes are checked against the data; a mismatch is error `grid_mismatch`, and its
       hint names both sizes and the mesh. Area-weighted operators (`fldmean`, `fldint`, `fldstd`, …) then use the mesh
       areas, at level k `nod_area[k]`, through `Weights::PerLevel`. A deviation from cdo's 2-D area goes into
       `docs/deviations.md`.
+- ⚠️ Loader half done (Task 4 agent): loader, rules, registry, `-setgrid,fesom:<dir>[,units=deg|rad]`
+  with `grid_mismatch`, 2-D field statistics with the mesh's 2-D areas (`AreaSource::Mesh`), and
+  `fldint` (cdo's Σ area·value; it was not implemented). Open for the other half: the
+  `Weights::PerLevel` part of the setgrid item, dry-level masking, the executor, `from_csr`,
+  `tonodes`/`toelems`. Until then `fld*`/`zon*`/`vert*` refuse variables with levels on a mesh
+  (`not_implemented`), whatever their dimension order.
+- ⚠️ Both mesh.diag layouts are read: old (`nod_n`, `elem_n`, `nl`, `zbar`, `Z`, `elem(n3, elem_n)`)
+  and new (`nod2`, `elem`, `nz`/`nz1` as variables, `elements` or `face_nodes` with `start_index`,
+  `gradient_sca_*` as `(elem, n3)`). No mesh on /pool has `ulevels_nod2D`; it is read when present.
+- ➕ What the other half needs: `Grid::mesh` + `Grid::mesh_place` (the place of the grid's cells);
+  `cdors_mesh::models::dim_rule(&mesh, dim)` → `DimRule::{Place, Mid, Interfaces}`;
+  `mesh.vertical.wet(place)` (0-based half-open mid-levels, `top..bottom` from `ulevels-1`,
+  `nlevels-1`) and `models::wet_range(wet, rule, cell)` for interfaces; per-level node areas
+  `place.area_per_level.level(k)` = `nod_area[k]` (the layer's top interface; FESOM2 `nod_area` has
+  `nl` rows, the last one is zero). Elements have one area for all levels (`elem_area`).
+- ➕ Element centres: normalised mean of the unit vectors of the three nodes. The grid's coordinates
+  are `lon`/`lat` for the first place (nodes) and `lon_<dim>`/`lat_<dim>` for the others, so outputs
+  with node and element variables keep both.
 - [ ] **Executor for FESOM 2.0's `(time, nod2, nz1)` order** (current FESOM2 writes `(time, nz1, nod2)`, which the
       executor already handles; both orders must give identical results, fixture `fesom_pi_data_v20`). `FieldKernel` lanes accept horizontal dimensions that are
       not last: they gather to `(…, nz1, nod2)` on input and scatter back on output. The output keeps the input's
@@ -445,8 +480,8 @@ The harness gains three capabilities (Task 2), so that every check in this plan 
   - NaN as in remap.
 - [ ] Write tests:
   - `fldmean`/`fldint` per level on `fesom_pi_data` vs `ref:nereus.surface_mean` (and a NumPy per-level reference);
-  - the degrees and radians meshes give identical `mesh info` (`json:`);
-  - an `err:grid_mismatch` row;
+  - the degrees and radians meshes give identical `mesh info` (`json:`); ✓ (loader half)
+  - an `err:grid_mismatch` row; ✓ (loader half)
   - dry levels stored as 0 do not enter `fldmin`/`fldstd`;
   - `tonodes`/`toelems` vs NumPy;
   - all rows on `fesom_pi_data`, so the planner variant runs;
