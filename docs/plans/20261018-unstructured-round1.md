@@ -834,18 +834,43 @@ The harness gains three capabilities (Task 2), so that every check in this plan 
 - Modify: `crates/cdors-core/src/ops/output.rs` (region, bin and station tables in `outputtab`)
 - Modify: `docs/agent-guide.md`
 
-- [ ] **`ops --json` shows `"origin": "cdo" | "cdors"`.** `help <op>` for cdors operators prints their own help text.
-- [ ] **`outputtab`** gains keys for the new dimensions (`region`, `bin`, `station`, `distance`); the meaning of the
+- [x] **`ops --json` shows `"origin": "cdo" | "cdors"`.** `help <op>` for cdors operators prints their own help text.
+- [x] **`outputtab`** gains keys for the new dimensions (`region`, `bin`, `station`, `distance`); the meaning of the
       existing keys does not change.
-- [ ] **Recipes in `cdors guide`** (≤ 1.5 kB added):
+- [x] **Recipes in `cdors guide`** (≤ 1.5 kB added):
   - OHC: `-mulc,4.09e6 -volint,0/700 -setgrid,fesom:<dir>`;
   - ice area: `-regint`, or `fldint` with a hemisphere region;
   - ice extent via `fldhist`;
   - ice volume;
   - an Atlantic basin series;
   - a Drake transect of temperature.
-- [ ] Write tests: `json:` rows for `ops`, `help regmean` and each new warning.
-- [ ] Run tests.
+- [x] Write tests: `json:` rows for `ops`, `help regmean` and each new warning.
+- [x] Run tests.
+- ➕ **Origin in one place:** `ops::build_registry` sets `origin = "cdors"` for every name that is not in cdo
+  2.6.5's catalogue (`catalog::cdo_operator`, aliases included), `"cdo"` otherwise; the scattered settings
+  (vertint, `vertical::operators`' third field, the regmask/reg*/selpoints/transect/fldhist list) are gone.
+  This fixed `tonodes` and `toelems` (were `cdo`). `ops --json` gains `extensions` for cdo operators with cdors
+  additions (`setgrid,fesom:`, `maskregion,regions=`, `zon*,zonal_<DY>` on meshes, `fld*`, `vert*`, `intlevel`,
+  `bottomvalue` on meshes; `ops_cmd::extensions`) and `synopsis` for the cdors operators.
+- ➕ **Help texts** of the 15 cdors operators in `crates/cdors/src/cdors_help.txt` (`%%% <op> [<op>...]`, cdo's
+  NAME/SYNOPSIS/PARAMETERS/OUTPUT/WARNINGS/EXAMPLE layout, ≤ 25 lines each, one text for reg* and for
+  volint/volmean and tonodes/toelems); `help <op>` prints it instead of the one-line description, `--json help`
+  adds `origin`, `synopsis`, `help`, `extensions`. A unit test (`ops_cmd::tests`) checks that every cdors operator
+  has one. Every EXAMPLE was run on the pi fixtures. The long "a cdors operator: …" notes of reg*, regmask,
+  selpoints and transect moved into these texts (the region-set list stays in the notes).
+- ➕ **`outputtab` keys** `region`, `region_name`, `region_abbrev`, `bin_lo`, `bin_hi`, `station` (1-based),
+  `station_name`, `distance`; `bin` is the bin centre where a variable has a dimension `bin` (fldhist), else
+  cdo's meaning (the level; text row vs cdo). A key is looked up on the variable's horizontal dimension (reg*,
+  fldhist, selpoints, transect) or its vertical one (`regmask`); variables without it print `-` (JSON null), a key
+  no variable has is `bad_arguments`.
+- ⚠️ Names (`region_name`, `region_abbrev`, `station_name`) come from the chain that makes them; cdors reads no
+  string variables from stored files, so on a stored file they fail with `no_coordinates` and a hint (numbers,
+  bins and distances are read from the file's coordinates).
+- ➕ Guide: a "Model meshes (FESOM2)" section (1.43 kB added) with the six recipes and the mesh/dry-level/units
+  lines, and the new outputtab keys. Each recipe ran on `fesom_pi_data` + `fesom_pi` (the Atlantic one with `a_ice`
+  in place of `sst`, which the fixture lacks).
+- ➕ Warning rows: `regions_empty` and `points_outside` in `--plan` `warnings[]`, `linear_as_nn` on stderr (the
+  other combinations had rows); `mesh_cache_rebuilt` is covered by `crates/cdors/tests/mesh_cache.rs`.
 
 ### Task 12: Verify acceptance criteria (local)
 

@@ -50,9 +50,29 @@ std, ...); `zonmean`, `vertmean`; `remapcon`, `remapdis`, `hpdegrade`. Remapping
 `global_<deg>`, `hpz<zoom>`, `lon=<x>_lat=<y>`, a grid description file, or another dataset. The first remapping
 between two grids runs cdo once to make the weights (cached in `$CDORS_CACHE`).
 
+## Model meshes (FESOM2)
+
+`-setgrid,fesom:<dir>` (the directory with `fesom.mesh.diag.nc`) gives the data the mesh: cell areas per level,
+layers and each cell's wet levels. Put it right above the input or its selections. Levels below the sea floor
+(stored as 0) become missing, so `fld*`, `vert*`, `reg*` and sections skip them. `cdors mesh info fesom:<dir>`
+describes the mesh. Operators cdo lacks have `"origin": "cdors"` in `ops --json`; `cdors help <op>` explains them.
+
+```sh
+cdors -mulc,4.09e6 -volint,0/700 -setgrid,fesom:mesh -selname,temp in.nc ohc.nc   # OHC 0-700 m, J (rho*cp = 4.09e6 J m-3 K-1)
+cdors -fldint -sellonlatbox,-180,180,0,90 -setgrid,fesom:mesh -selname,a_ice in.nc area.nc  # NH ice area, m2
+cdors -fldhist,edges=0.15/1 -sellonlatbox,-180,180,0,90 -setgrid,fesom:mesh -selname,a_ice in.nc ext.nc  # NH extent: a_ice(time,bin), m2
+cdors -fldint -setgrid,fesom:mesh -selname,m_ice in.nc vol.nc  # ice volume, m3
+cdors --json outputtab,date,value -regmean,regions=basins,select=Atlantic_Basin -setgrid,fesom:mesh -selname,sst in.nc  # Atlantic
+cdors -transect,-65,-55,-60,-65 -setgrid,fesom:mesh -selname,temp in.nc drake.nc  # temp(time,nz1,distance)
+```
+
+The `units` attribute stays the input's: multiply it by m (`vertint`), m2 (`fldint`, `regint`) or m3 (`volint`).
+
 ## Output shapes
 
-- `outputtab,<keys>` keys: `date`, `time`, `value`, `name`, `lon`, `lat`, `lev`, `timestep`, `year`, `month`, `day`.
+- `outputtab,<keys>` keys: `date`, `time`, `value`, `name`, `lon`, `lat`, `lev`, `timestep`, `year`, `month`, `day`;
+  on cdors outputs also `region`, `region_name`, `region_abbrev`, `bin`, `bin_lo`, `bin_hi`, `station`,
+  `station_name`, `distance`.
   With `--json`: `records[]` with these keys; dates are ISO strings, missing values `null`.
 - `infon` with `--json`: one record per field with `date`, `name`, `level`, `min`, `mean`, `max`, `missing`.
 

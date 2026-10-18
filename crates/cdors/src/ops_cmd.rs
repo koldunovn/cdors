@@ -3,16 +3,99 @@
 //! - `ops` lists the implemented operators with arity, arguments (name, type, default), access
 //!   class and a one-line description, then every other operator of cdo's catalog by name, with
 //!   its section and description, marked `"implemented": false`.
-//! - `help <op>` prints cdo's own help text for an implemented operator, followed by the cdors
-//!   usage line and short notes where cdors deliberately deviates (`docs/deviations.md`). For a
-//!   cdo operator that cdors does not implement it fails with `not_implemented` (exit 1); for an
-//!   unknown name with `unknown_operator` and did-you-mean candidates.
+//! - `help <op>` prints cdo's own help text for an implemented cdo operator, or the cdors text
+//!   of an operator cdo does not have (`cdors_help.txt`, origin `cdors`), followed by the cdors
+//!   usage line, the cdors extensions of a cdo operator and short notes where cdors deliberately
+//!   deviates (`docs/deviations.md`). For a cdo operator that cdors does not implement it fails
+//!   with `not_implemented` (exit 1); for an unknown name with `unknown_operator` and
+//!   did-you-mean candidates.
 
 use cdors_core::error::{Error, ErrorCode, Result};
 use cdors_core::ops::{self, AccessClass, Inputs, OpSpec, catalog};
 use serde_json::{Value, json};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
+use std::sync::LazyLock;
+
+/// Help texts of the cdors operators, each after a line `%%% <op> [<op>...]`.
+const CDORS_HELP_TXT: &str = include_str!("cdors_help.txt");
+
+static CDORS_HELP: LazyLock<HashMap<&'static str, &'static str>> = LazyLock::new(|| {
+    let mut m = HashMap::new();
+    for part in CDORS_HELP_TXT.split("\n%%% ").skip(1) {
+        let (names, body) = part.split_once('\n').expect("cdors_help.txt: names line");
+        for n in names.split_whitespace() {
+            m.insert(n, body);
+        }
+    }
+    m
+});
+
+/// The help text of a cdors operator (origin `cdors`).
+fn cdors_help(name: &str) -> Option<&'static str> {
+    CDORS_HELP.get(name).copied()
+}
+
+/// The SYNOPSIS lines of operator `name` in a cdors help text, without the leading `cdors `
+/// (`<operator>` replaced by the name; a text for several operators keeps the lines of `name`).
+fn synopsis(name: &str, help: &str) -> Vec<String> {
+    help.lines()
+        .skip_while(|l| *l != "SYNOPSIS")
+        .skip(1)
+        .take_while(|l| l.starts_with("    cdors "))
+        .map(|l| {
+            l.trim()
+                .trim_start_matches("cdors ")
+                .replace("<operator>", name)
+        })
+        .filter(|l| {
+            l.strip_prefix('-')
+                .and_then(|r| r.strip_prefix(name))
+                .is_some_and(|r| r.starts_with([',', ' ', '[']))
+        })
+        .collect()
+}
+
+/// What cdors adds to a cdo operator (it keeps cdo's name and semantics otherwise).
+pub fn extensions(name: &str) -> Vec<&'static str> {
+    let mut e = Vec::new();
+    let is = |p: &str| name.starts_with(p) && ops::lookup(name).is_some_and(|s| s.origin == "cdo");
+    if name == "setgrid" {
+        e.push(
+            "setgrid,fesom:<dir>[,units=deg|rad]: a FESOM2 mesh (fesom.mesh.diag.nc in <dir>): \
+             nodes and elements with their areas per level and wet levels; dry levels become \
+             missing; `cdors mesh info fesom:<dir>` describes it",
+        );
+    }
+    if name == "maskregion" {
+        e.push(
+            "maskregion,regions=<set>[,select=<abbrev,...>][,fill=nearest]: the union of \
+             catalog regions (regmask's sets and rules) as the mask",
+        );
+    }
+    if matches!(name, "zonmean" | "zonsum" | "zonint") {
+        e.push(
+            "zonal_<DY> on a model mesh: each cell in the band of its centre, with its (per-level) \
+             area",
+        );
+    }
+    if is("fld") {
+        e.push(
+            "on a model mesh (-setgrid,fesom:): the mesh's cell areas, per level for variables \
+             with the mesh's levels; dry levels left out",
+        );
+    }
+    if is("vert") {
+        e.push("on a model mesh: the mesh's layer thicknesses over each cell's wet levels");
+    }
+    if name == "intlevel" {
+        e.push("on a model mesh: missing above each cell's top and below its bottom");
+    }
+    if name == "bottomvalue" {
+        e.push("on a model mesh: the value at each cell's own deepest wet level");
+    }
+    e
+}
 
 fn class_name(c: AccessClass) -> &'static str {
     match c {
@@ -71,7 +154,7 @@ pub fn ops(json: bool) -> String {
         let mut list: Vec<Value> = imp
             .iter()
             .map(|o| {
-                json!({
+                let mut v = json!({
                     "name": o.name,
                     "implemented": true,
                     "origin": o.origin,
@@ -89,7 +172,15 @@ pub fn ops(json: bool) -> String {
                     "description": o.description,
                     "section": catalog::cdo_operator(&o.name).map(|c| c.section),
                     "notes": notes(&o.name),
-                })
+                });
+                if let Some(h) = cdors_help(&o.name) {
+                    v["synopsis"] = json!(synopsis(&o.name, h));
+                }
+                let ext = extensions(&o.name);
+                if !ext.is_empty() {
+                    v["extensions"] = json!(ext);
+                }
+                v
             })
             .collect();
         list.extend(others.iter().map(|c| {
@@ -132,7 +223,14 @@ pub fn ops(json: bool) -> String {
                 Inputs::Variadic => " [1 or more inputs]".to_owned(),
                 Inputs::OneOrThree => " [1 input, or cdo's 3: data min max]".to_owned(),
             };
-            let _ = writeln!(s, "  {:<28} {}{inputs}", usage(o), o.description);
+            // a cdors operator: the first line of its synopsis, without the files
+            let u = cdors_help(&o.name)
+                .and_then(|h| synopsis(&o.name, h).into_iter().next())
+                .map_or_else(
+                    || usage(o),
+                    |l| l[1..].split(' ').next().unwrap_or_default().to_owned(),
+                );
+            let _ = writeln!(s, "  {u:<28} {}{inputs}", o.description);
         }
     }
     let _ = writeln!(
@@ -263,25 +361,6 @@ pub fn notes(name: &str) -> Vec<String> {
              (regionmask's rules), a cdors extension [Regions: maskregion,regions=]",
         );
     }
-    if matches!(name, "selpoints" | "transect") {
-        n.push(
-            "a cdors operator: nn takes the nearest cell (ties: the smallest index); linear the \
-             barycentric weights in the mesh's own triangles (FESOM2 nodes) or, on built-in \
-             grids, in the local spherical Delaunay triangle of the nearest cells; a mesh place \
-             without triangles (FESOM2 elements) is sampled by nn (warning linear_as_nn), a \
-             point in no triangle is missing (warning points_outside); a value is missing if any \
-             cell of its point is missing or dry there; levels are kept, no vertical \
-             interpolation",
-        );
-    }
-    if name == "transect" {
-        n.push(
-            "great-circle segments through the waypoints, each cut into equal arcs of at most \
-             step km (default: the median cell spacing along the path), both ends included; \
-             distance (km, sphere of 6371 km), lon in (-180, 180], lat; on a model mesh \
-             bottom_depth (m) of the levels wet at every cell of the point; one path per call",
-        );
-    }
     if name == "hpdegrade" {
         n.push("zoom=0 degrades to nside 1, as cdo 2.6.5 [Remapping: hpdegrade,zoom=0]");
     }
@@ -312,23 +391,15 @@ pub fn notes(name: &str) -> Vec<String> {
         );
     }
     let mut n: Vec<String> = n.into_iter().map(str::to_owned).collect();
-    if ops::regstat::handles(name) {
+    if name == "maskregion" {
         n.push(
-            "a cdors operator: the fld* statistic over the cells of each region (membership as \
-             regmask; sum, min and max unweighted; int, mean and std by cell area, per level on a \
-             mesh); output dimension region with region_name and region_abbrev; a region without \
-             valid cells is missing [Regions: region statistics]"
+            "regions=: membership by regmask's rules (overlapping sets list a cell under every \
+             region; others under the last one), fill=nearest reported as regions_filled \
+             [Regions: regmask]"
                 .to_owned(),
         );
     }
     if matches!(name, "regmask" | "maskregion") || ops::regstat::handles(name) {
-        n.push(
-            "regmask is a cdors operator: membership by regionmask's rules (overlapping sets list \
-             a cell under every region; others under the last one), all regions kept (an empty \
-             one: zero row and warning regions_empty), fill=nearest reported as regions_filled \
-             [Regions: regmask]"
-                .to_owned(),
-        );
         n.extend(
             ops::regions::catalog_text()
                 .into_iter()
@@ -372,13 +443,19 @@ pub fn help(name: &str, json: bool) -> Result<String> {
         return Err(e);
     };
     let cdo_help = catalog::cdo_help(&spec.name);
+    let own = cdors_help(&spec.name);
     let notes = notes(&spec.name);
+    let ext = extensions(&spec.name);
     if json {
         return Ok(format!(
             "{}\n",
             json!({
                 "operator": spec.name,
+                "origin": spec.origin,
                 "usage": usage(spec),
+                "synopsis": own.map(|h| synopsis(&spec.name, h)),
+                "help": own,
+                "extensions": ext,
                 "inputs": n_inputs(spec),
                 "outputs": spec.outputs,
                 "class": class_name(spec.class),
@@ -389,7 +466,7 @@ pub fn help(name: &str, json: bool) -> Result<String> {
         ));
     }
     let mut s = String::new();
-    match cdo_help {
+    match own.or(cdo_help) {
         Some(h) => {
             s.push_str(h.trim_end());
             s.push('\n');
@@ -404,14 +481,29 @@ pub fn help(name: &str, json: bool) -> Result<String> {
         Inputs::Variadic => "1 or more".to_owned(),
         Inputs::OneOrThree => "1 or 3 (data min max; min and max are not read)".to_owned(),
     };
-    let _ = writeln!(
-        s,
-        "    usage: cdors -{} <{} input(s)>{}   (access class: {})",
-        usage(spec),
-        inputs,
-        if spec.outputs == 1 { " <output>" } else { "" },
-        class_name(spec.class)
-    );
+    if own.is_some() {
+        // the synopsis above has the usage
+        let _ = writeln!(
+            s,
+            "    {inputs} input(s), access class: {}",
+            class_name(spec.class)
+        );
+    } else {
+        let _ = writeln!(
+            s,
+            "    usage: cdors -{} <{} input(s)>{}   (access class: {})",
+            usage(spec),
+            inputs,
+            if spec.outputs == 1 { " <output>" } else { "" },
+            class_name(spec.class)
+        );
+    }
+    if !ext.is_empty() {
+        let _ = writeln!(s, "    cdors extensions:");
+        for e in &ext {
+            let _ = writeln!(s, "    - {e}");
+        }
+    }
     if !notes.is_empty() {
         let _ = writeln!(s, "    notes (docs/deviations.md, [section: entry]):");
         for n in &notes {
@@ -419,4 +511,29 @@ pub fn help(name: &str, json: bool) -> Result<String> {
         }
     }
     Ok(s)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every operator cdo does not have prints its own help text, short, with a synopsis.
+    #[test]
+    fn cdors_operators_have_help() {
+        for o in implemented().iter().filter(|o| o.origin == "cdors") {
+            let h = cdors_help(&o.name).unwrap_or_else(|| panic!("no help text for {}", o.name));
+            assert!(h.lines().count() <= 25, "help of {} is too long", o.name);
+            assert!(
+                h.contains("EXAMPLE") && !synopsis(&o.name, h).is_empty(),
+                "{}",
+                o.name
+            );
+        }
+        for name in CDORS_HELP.keys() {
+            assert!(
+                ops::lookup(name).is_some_and(|o| o.origin == "cdors"),
+                "{name}"
+            );
+        }
+    }
 }

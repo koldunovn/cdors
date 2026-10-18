@@ -36,27 +36,24 @@ use cdors_mesh::models::DimRule;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-/// Operators of this module: (name, description, origin).
-pub fn operators() -> Vec<(&'static str, &'static str, &'static str)> {
+/// Operators of this module: (name, description).
+pub fn operators() -> Vec<(&'static str, &'static str)> {
     vec![
         (
             "volint",
             "Volume integral per timestep: sum of area times layer thickness times value over all \
              cells and levels (the unit times m3); volint,<z0>/<z1>: the layers cut at depths z0 \
              and z1; on a model mesh the area of each level and each cell's wet levels",
-            "cdors",
         ),
         (
             "volmean",
             "Volume mean per timestep: volint divided by the volume of the cells and levels with \
              values (not fldmean of vertmean); volmean,<z0>/<z1>: the layers cut at z0 and z1",
-            "cdors",
         ),
         (
             "intlevel",
             "Linear interpolation to the target levels (intlevel,<l1>,<l2>,... or \
              level=<l1>,...[,extrapolate=true]); on a model mesh missing below each cell's bottom",
-            "cdo",
         ),
     ]
 }

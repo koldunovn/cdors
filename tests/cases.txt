@@ -454,3 +454,24 @@ ref:numpy.mesh_level_mean | -fldmean -setgrid,fesom:{fix}/fesom_pi -sellevel,2.5
 ref:numpy.mesh_level_std  | -fldstd -setgrid,fesom:{fix}/fesom_pi -yearmean -sellevel,25,975,6125 -selname,temp {in} | fesom_pi_data fesom_pi_data_v20
 ref:numpy.mesh_level_int  | -fldint -setgrid,fesom:{fix}/fesom_pi -setgrid,fesom:{fix}/fesom_pi_deg -addc,1 -mulc,0 -selname,salt {in} | fesom_pi_data
 ref:numpy.mesh_level_int  | -fldint -timmean -sellevel,2.5,975,6125 -setgrid,fesom:{fix}/fesom_pi -addc,1 -mulc,0 -selname,temp {in} | fesom_pi_data fesom_pi_data_v20
+# Task 11: agent surface. origin from cdo 2.6.5's catalogue (one place: ops::build_registry);
+# cdo operators with cdors additions list them as extensions; every cdors operator has its own
+# help text with a synopsis
+json:(.out.operators | map(select(.implemented) | {(.name): .origin}) | add) as $o | [$o.tonodes, $o.toelems, $o.regmask, $o.regmean, $o.fldhist, $o.selpoints, $o.transect, $o.vertint, $o.volint, $o.volmean, $o.zonint, $o.zonmean, $o.maskregion, $o.intlevel, $o.bottomvalue, $o.setgrid, $o.fldint] == ["cdors", "cdors", "cdors", "cdors", "cdors", "cdors", "cdors", "cdors", "cdors", "cdors", "cdo", "cdo", "cdo", "cdo", "cdo", "cdo", "cdo"] | --json ops | r36x18_std
+json:all(.out.operators[] | select(.implemented and .origin == "cdors"); (.synopsis | length) > 0) and ([.out.operators[] | select(.extensions) | .name] | index("maskregion", "setgrid", "zonmean", "vertmean") | . != null) | --json ops | r36x18_std
+json:.out.origin == "cdors" and .out.synopsis == ["-regmean,regions=<set>[,select=<abbrev>,...][,fill=nearest] <in> <out>"] and (.out.help | contains("region_name") and contains("regions_empty") and contains("EXAMPLE")) and .out.cdo_help == null | --json help regmean | r36x18_std
+json:.out.origin == "cdo" and (.out.cdo_help | startswith("NAME")) and (.out.extensions[0] | startswith("maskregion,regions=")) and .out.help == null | --json help maskregion | r36x18_std
+# outputtab keys for the cdors dimensions (cdo's keys unchanged: bin is the level where no
+# variable has a dimension bin, as cdo prints it)
+text     | outputtab,name,lev,bin,value -fldmean -seltimestep,1/2 {in} | r36x18_2lev
+json:(.out.records | map([.region, .region_name, .region_abbrev])) == [[0, "Atlantic_Basin", "Atlantic_Basin"], [3, "Arctic_Basin", "Arctic_Basin"]] | --json outputtab,region,region_name,region_abbrev,value -seltimestep,1 -regmean,regions=basins,select=Atlantic_Basin,Arctic_Basin -setgrid,fesom:{fix}/fesom_pi -selname,a_ice {in} | fesom_pi_data
+json:(.out.records | map([.lev, .region, .region_abbrev]) | unique) == [[0, 0, "nino12"], [1, 1, "nino3"], [2, 2, "nino34"], [3, 3, "nino4"]] | --json outputtab,lev,region,region_abbrev,value -regmask,regions=nino {in} | hpz2_noleap   # region on the vertical axis
+json:(.out.records | map([.name, .bin, .bin_lo, .bin_hi])) == [["a_ice", 0.075, 0, 0.15], ["a_ice", 0.325, 0.15, 0.5], ["a_ice", 0.75, 0.5, 1], ["a_ice_below", null, null, null], ["a_ice_above", null, null, null]] | --json outputtab,name,bin,bin_lo,bin_hi,value -seltimestep,1 -fldhist,edges=0/0.15/0.5/1 -setgrid,fesom:{fix}/fesom_pi -selname,a_ice {in} | fesom_pi_data
+json:(.out.records | map([.station, .station_name])) == [[1, "Drake"], [2, "South Atlantic"], [3, "Fram Strait"], [4, "Near pole"], [5, "Date line"]] | --json outputtab,station,station_name,value -seltimestep,1 -sellevel,2.5 -selpoints,file={fix}/samples/stations.csv -setgrid,fesom:{fix}/fesom_pi -selname,temp {in} | fesom_pi_data
+json:(.out.records | map(.distance * 1000 | round)) == [0, 229059, 458119, 687178, 916238, 1145297] and (.out.records | map(.lev) | unique) == [2.5] | --json outputtab,lev,distance,lon,lat,value -seltimestep,1 -sellevel,2.5 -transect,-65,-55,-60,-65 -setgrid,fesom:{fix}/fesom_pi -selname,temp {in} | fesom_pi_data
+err:bad_arguments | outputtab,distance,value -fldmean {in} {noout} | r36x18_std
+# round-1 warnings on stderr and in --plan warnings[] (the rows above cover regions_filled on
+# both, regions_empty and points_outside on stderr, linear_as_nn in --plan)
+json:any(.out.warnings[]; .warning == "regions_empty" and .regions == ["SWS", "MDG", "CAU", "EAU"]) | --plan --json -regmask,regions=ar6.all {in} | hpz2_noleap
+json:any(.out.warnings[]; .warning == "points_outside" and .points == 12 and .of == 18) | --plan --json -transect,-30,0,20,40,method=linear -selname,temp -setgrid,fesom:{fix}/fesom_pi {in} | fesom_pi_data
+json:any(.stderr[]; .warning == "linear_as_nn" and .place == "elements") | --json -selpoints,lon=-63_lat=-58,method=linear -selname,u -setgrid,fesom:{fix}/fesom_pi {in} {out} | fesom_pi_data

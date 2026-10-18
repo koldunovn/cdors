@@ -124,8 +124,8 @@ pub struct OpSpec {
     pub class: AccessClass,
     pub description: String,
     pub implemented: bool,
-    /// `cdo` for operators with cdo's name and semantics, `cdors` for operators cdo does not
-    /// have (Task 11 of the round-1 plan extends this to the agent surface).
+    /// `cdo` for operators of cdo's catalogue (cdo's name and semantics, possibly with cdors
+    /// extensions), `cdors` for operators cdo does not have; set in [`build_registry`] only.
     pub origin: &'static str,
 }
 
@@ -692,21 +692,15 @@ fn build_registry() -> Vec<OpSpec> {
             vec![]
         };
         r.push(op(&name, one, 1, args, Reduction, &d, true));
-        if name == "vertint" {
-            // cdo has no vertint
-            r.last_mut().expect("pushed").origin = "cdors";
-        }
     }
     // vertical geometry
-    for (name, d, origin) in vertical::operators() {
+    for (name, d) in vertical::operators() {
         let (args, class) = if name == "intlevel" {
             (vec![args_of("levels", Str)], WholeExtent)
         } else {
             (vec![opt("z0/z1", Str, "none")], Reduction)
         };
-        let mut o = op(name, one, 1, args, class, d, true);
-        o.origin = origin;
-        r.push(o);
+        r.push(op(name, one, 1, args, class, d, true));
     }
     for (name, d) in fldhist::operators() {
         r.push(op(
@@ -775,10 +769,8 @@ fn build_registry() -> Vec<OpSpec> {
         if o.name == "outputtab" {
             o.aliases.push("outputkey");
         }
-        if o.name == "regmask"
-            || regstat::handles(&o.name)
-            || matches!(o.name.as_str(), "selpoints" | "transect" | "fldhist")
-        {
+        // the one place that decides the origin: cdo 2.6.5's catalogue (names and aliases)
+        if catalog::cdo_operator(&o.name).is_none() {
             o.origin = "cdors";
         }
     }

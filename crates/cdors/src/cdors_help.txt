@@ -1,0 +1,172 @@
+# Help texts of the cdors operators (origin "cdors": not in cdo's catalogue), printed by
+# `cdors help <op>` in place of cdo's text. Each text follows a line `%%% <op> [<op>...]`.
+# Keep each short: purpose, synopsis with every parameter, output, warnings, one example.
+%%% regmask
+NAME
+    regmask - Region membership mask of the input's grid
+SYNOPSIS
+    cdors -regmask,regions=<set>[,select=<abbrev>,...][,fill=nearest] <in> <out>
+PARAMETERS
+    regions=  a catalog set (ar6.all, ar6.land, ar6.ocean, srex, giorgi, prudence, nino,
+              basins, moc, ne.countries_50, ne.countries_110, ne.land_50, ne.land_110,
+              ne.ocean_basins_50) or a GeoJSON file of polygons
+    select=   only these regions (abbreviations, names or numbers; the set's order is kept)
+    fill=nearest  cells outside every region go to the region of the nearest member cell
+              (on a model mesh only wet cells)
+RULES
+    regionmask's: a cell belongs to a region if its centre is inside (straight edges in
+    lon/lat; a centre on an outline goes to the region west or south of it). Overlapping
+    sets (prudence, nino, basins, moc) list a cell under every region holding it.
+OUTPUT
+    mask(region, <the grid's dims>) int8 (1 inside, 0 outside); coordinate region (the region
+    numbers), string variables region_name, region_abbrev; attributes regions,
+    regions_options, regions_overlap, regions_rules, regions_source, regions_license,
+    regions_attribution, regions_filled (fill=nearest).
+WARNINGS
+    regions_filled (cells, fill=nearest), regions_empty (regions without any cell centre: a
+    zero row); both on stderr and in --plan warnings[].
+EXAMPLE
+    cdors -regmask,regions=ar6.ocean -setgrid,fesom:<meshdir> in.nc mask.nc
+%%% regmin regmax regsum regint regmean regstd
+NAME
+    regmin, regmax, regsum, regint, regmean, regstd - Field statistics over each region
+SYNOPSIS
+    cdors -<operator>,regions=<set>[,select=<abbrev>,...][,fill=nearest] <in> <out>
+    Parameters and membership as regmask (cdors help regmask lists the sets).
+OPERATORS
+    regmin, regmax  minimum, maximum (unweighted)
+    regsum          sum (unweighted, as fldsum)
+    regint          sum of area times value (the unit times m2, as fldint)
+    regmean         area-weighted mean (as fldmean)
+    regstd          area-weighted standard deviation (as fldstd)
+    On a model mesh a variable with the mesh's levels is weighted at each level by that
+    level's areas; dry levels (missing after -setgrid) are left out.
+OUTPUT
+    <var>(time, [level,] region): the horizontal dimensions become region, with the
+    coordinate region (region numbers) and region_name, region_abbrev; attributes as regmask;
+    cell_methods "area: <stat> where region". A region without valid cells is missing.
+    Print with: outputtab,date,region_name,value
+WARNINGS
+    regions_filled, regions_empty (as regmask; stderr and --plan warnings[]).
+EXAMPLE
+    cdors --json outputtab,date,region_name,value -regmean,regions=basins,select=Atlantic_Basin \
+          -setgrid,fesom:<meshdir> -selname,a_ice in.nc
+%%% fldhist
+NAME
+    fldhist - Area-weighted histogram over all cells of each field
+SYNOPSIS
+    cdors -fldhist,bins=<lo>/<hi>/<step>[,out=area|fraction] <in> <out>
+    cdors -fldhist,edges=<e0>/<e1>/.../<en>[,out=area|fraction] <in> <out>
+PARAMETERS
+    bins=   edges lo, lo+step, ..., hi (hi-lo a whole number of steps)
+    edges=  explicit edges, increasing; bins are [e_i, e_i+1), the last one closed
+    out=    area (default): m2 with fldint's cell areas (a grid without areas is an error);
+            fraction: share of the valid area (fldmean's weights), below and above included
+OUTPUT
+    <var>(time, [level,] bin) per bin; <var>_below(time, [level]) and <var>_above(...) hold
+    the area below e0 and above en (nothing is dropped). Coordinate bin (bin centres, the
+    variable's units) with bounds bin_bnds (the edges). Missing values are left out; on a
+    model mesh one histogram per level with that level's areas, dry levels left out.
+    Print with: outputtab,date,bin,bin_lo,bin_hi,value
+WARNINGS
+    equal_weights (out=fraction on a grid without cell areas).
+EXAMPLE
+    ice extent (area with concentration >= 0.15) of the northern hemisphere:
+    cdors -fldhist,edges=0.15/1 -sellonlatbox,-180,180,0,90 -setgrid,fesom:<meshdir> \
+          -selname,a_ice in.nc extent.nc        # result: a_ice(time, bin) in m2
+%%% vertint
+NAME
+    vertint - Vertical integral: sum of layer thickness times value
+SYNOPSIS
+    cdors -vertint[,<z0>/<z1>] <in> <out>
+PARAMETERS
+    z0/z1  depth range (positive down, 0 <= z0 < z1; metres on a model mesh, else the units of
+           the vertical axis): the layers cut at z0 and z1
+OUTPUT
+    <var>(time, <cells>): the vertical dimension is folded (cell_methods "<zdim>: sum"); the
+    value is the unit times m, the units attribute stays the input's. On a model mesh the
+    mesh's layers (|zbar| differences) over each cell's wet levels; off a mesh the layers come
+    from the level bounds (no bounds: no_coordinates).
+EXAMPLE
+    cdors -vertint,0/700 -setgrid,fesom:<meshdir> -selname,temp in.nc t0_700.nc
+%%% volint volmean
+NAME
+    volint, volmean - Volume integral and volume mean per timestep
+SYNOPSIS
+    cdors -volint[,<z0>/<z1>] <in> <out>
+    cdors -volmean[,<z0>/<z1>] <in> <out>
+OPERATORS
+    volint   sum of area(level) times layer thickness times value over all cells and levels
+             (the unit times m3)
+    volmean  volint divided by the volume of the cells and levels with values (not fldmean of
+             vertmean)
+PARAMETERS
+    z0/z1  depth range as vertint: the layers cut at z0 and z1
+OUTPUT
+    <var>(time, <one cell>) as fldmean (cell_methods "area: <zdim>: sum|mean"); the units
+    attribute stays the input's. On a model mesh each level's areas and each cell's wet
+    levels; off a mesh the grid's cell areas and the level bounds. Variables without levels
+    are refused (unsupported_dimension).
+EXAMPLE
+    ocean heat content 0-700 m in J (rho*cp = 4.09e6 J m-3 K-1):
+    cdors -mulc,4.09e6 -volint,0/700 -setgrid,fesom:<meshdir> -selname,temp in.nc ohc.nc
+%%% selpoints
+NAME
+    selpoints - Values at stations
+SYNOPSIS
+    cdors -selpoints,file=<csv>[,method=nn|linear] <in> <out>
+    cdors -selpoints,lon=<x>_lat=<y>[,lon=<x>_lat=<y>...][,method=nn|linear] <in> <out>
+PARAMETERS
+    file=    CSV, one name,lon,lat per line (degrees; optional header, # comments)
+    method=  nn (default): the nearest cell; linear: barycentric weights in the mesh's own
+             triangles (FESOM2 nodes) or, on built-in grids, the local spherical Delaunay
+             triangle of the nearest cells
+OUTPUT
+    <var>(time, [level,] station): coordinates lon(station), lat(station), station_name; on a
+    model mesh bottom_depth(station) (m). Levels are kept (no vertical interpolation); a value
+    is missing if any cell of its point is missing or dry. Attributes sampling,
+    sampling_method, points_outside. Print with: outputtab,date,station_name,lev,value
+WARNINGS
+    linear_as_nn (a mesh place without triangles, FESOM2 elements, is sampled by nn),
+    points_outside (method=linear: points in no triangle are missing); stderr and --plan.
+EXAMPLE
+    cdors --json outputtab,date,station_name,value -selpoints,file=stations.csv -selname,tas in.zarr
+%%% transect
+NAME
+    transect - Values along a great-circle path
+SYNOPSIS
+    cdors -transect,<lon0>,<lat0>,<lon1>,<lat1>[,<lon>,<lat>...][,step=<km>][,method=nn|linear] <in> <out>
+    cdors -transect,file=<GeoJSON LineString>[,step=<km>][,method=nn|linear] <in> <out>
+PARAMETERS
+    waypoints  great-circle segments through them, each cut into equal arcs; one path per call
+    step=      at most this many km between points (default: the median cell spacing along
+               the path); both ends included
+    method=    nn (default) or linear, as selpoints
+OUTPUT
+    <var>(time, [level,] distance): coordinate distance (km along the path, sphere of
+    6371 km), lon(distance), lat(distance) and, on a model mesh, bottom_depth(distance) (m).
+    Model levels are kept; values below each point's bottom are missing. Attributes sampling,
+    sampling_method, transect_path, transect_step_km, transect_step_source, points_outside.
+    Print with: outputtab,distance,lev,value
+WARNINGS
+    linear_as_nn, points_outside (as selpoints).
+EXAMPLE
+    Drake Passage section of temperature:
+    cdors -transect,-65,-55,-60,-65 -seltimestep,1 -setgrid,fesom:<meshdir> -selname,temp in.nc drake.nc
+%%% tonodes toelems
+NAME
+    tonodes, toelems - Map a variable between the places of a model mesh
+SYNOPSIS
+    cdors -tonodes -setgrid,<mesh spec> <in> <out>
+    cdors -toelems -setgrid,<mesh spec> <in> <out>
+OPERATORS
+    tonodes  element values to nodes: the area-weighted (FESOM2 elem_area) mean of the
+             elements around each node
+    toelems  node values to elements: the mean of each element's three nodes
+OUTPUT
+    The same variables on the target place of the same mesh (FESOM2: nod2 or elem), levels
+    kept; missing values are left out (weights renormalised; missing without any valid one);
+    levels outside a target cell's wet range are missing. Field statistics and the other mesh
+    operators can follow.
+EXAMPLE
+    cdors -fldmean -sellevel,25 -tonodes -selname,u -setgrid,fesom:<meshdir> in.nc u25.nc

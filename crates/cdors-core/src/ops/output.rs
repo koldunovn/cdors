@@ -158,7 +158,7 @@ fn pad(s: &str, width: i32) -> String {
 
 // ------------------------------------------------------------------ operators and keys
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum Key {
     Value,
     Param,
@@ -178,6 +178,15 @@ enum Key {
     Year,
     Month,
     Day,
+    // cdors keys: the dimensions made by the cdors operators (see [`DimCol`])
+    Region,
+    RegionName,
+    RegionAbbrev,
+    BinLo,
+    BinHi,
+    Station,
+    StationName,
+    Distance,
 }
 
 /// cdo's keys of `outputtab` with their default column widths (`Output.cc`, `keyMap`).
@@ -201,6 +210,16 @@ const KEYS: &[(&str, Option<Key>, i32)] = &[
     ("year", Some(Key::Year), 5),
     ("month", Some(Key::Month), 2),
     ("day", Some(Key::Day), 2),
+    // cdors: region (regmask, reg*), bin bounds (fldhist), station (selpoints), distance
+    // (transect); `bin` prints the bin centre where the variable has a dimension bin
+    ("region", Some(Key::Region), 6),
+    ("region_name", Some(Key::RegionName), 14),
+    ("region_abbrev", Some(Key::RegionAbbrev), 8),
+    ("bin_lo", Some(Key::BinLo), 6),
+    ("bin_hi", Some(Key::BinHi), 6),
+    ("station", Some(Key::Station), 4),
+    ("station_name", Some(Key::StationName), 14),
+    ("distance", Some(Key::Distance), 8),
 ];
 
 enum Kind {
@@ -443,6 +462,222 @@ fn grid_points(g: &GridDesc) -> Result<Option<Points>> {
         xind: (0..n).collect(),
         yind: vec![0; n],
     }))
+}
+
+// ------------------------------------------------------------------ cdors dimensions
+
+/// The values of one cdors key for one variable: numbers or names along its horizontal
+/// dimension (one per printed point) or along its vertical dimension (one per level: `regmask`
+/// puts `region` there).
+struct DimCol {
+    vertical: bool,
+    nums: Vec<f64>,
+    names: Vec<String>,
+}
+
+impl DimCol {
+    fn at(&self, i: usize, z: usize) -> usize {
+        if self.vertical { z } else { i }
+    }
+
+    fn num(&self, i: usize, z: usize) -> f64 {
+        self.nums.get(self.at(i, z)).copied().unwrap_or(f64::NAN)
+    }
+
+    fn name(&self, i: usize, z: usize) -> Option<&str> {
+        self.names.get(self.at(i, z)).map(String::as_str)
+    }
+}
+
+/// The dimension a cdors key belongs to.
+fn key_dim(k: Key) -> Option<&'static str> {
+    Some(match k {
+        Key::Region | Key::RegionName | Key::RegionAbbrev => "region",
+        Key::Bin | Key::BinLo | Key::BinHi => "bin",
+        Key::Station | Key::StationName => "station",
+        Key::Distance => "distance",
+        _ => return None,
+    })
+}
+
+/// The columns of the cdors keys of `keys`, per variable. A variable without the key's
+/// dimension gets none (printed as `-`, JSON null; `bin` without any dimension bin keeps cdo's
+/// meaning, the level). A key that matches no variable at all is refused, as are names that a
+/// stored file does not give (cdors reads no string variables).
+fn dim_columns(
+    desc: &Desc,
+    keys: &[(&'static str, Key, i32)],
+) -> Result<Vec<HashMap<Key, DimCol>>> {
+    let mut out: Vec<HashMap<Key, DimCol>> = desc.vars.iter().map(|_| HashMap::new()).collect();
+    for &(kname, key, _) in keys {
+        let Some(dim) = key_dim(key) else { continue };
+        let mut found = false;
+        for (vi, v) in desc.vars.iter().enumerate() {
+            let hd = v.hdims();
+            let horizontal = hd.len() == 1 && v.dims[hd[0]].name == dim;
+            let vertical = v
+                .dim_of(DimRole::Vertical)
+                .is_some_and(|z| v.dims[z].name == dim);
+            if !horizontal && !vertical {
+                continue;
+            }
+            found = true;
+            let names = |labels: &[plan::Labels], lname: &str| -> Result<Vec<String>> {
+                labels
+                    .iter()
+                    .find(|l| l.name == lname)
+                    .map(|l| l.values.clone())
+                    .ok_or_else(|| {
+                        Error::new(
+                            ErrorCode::NoCoordinates,
+                            format!("'{lname}' of variable '{}' is not known here", v.name),
+                        )
+                        .with("variable", v.name.clone())
+                        .with_hint(format!(
+                            "cdors reads no string variables from stored files: print {kname} \
+                             from the chain that makes it (cdors outputtab,{kname},value \
+                             -regmean,... or -selpoints,... <input>)"
+                        ))
+                    })
+            };
+            let col = if vertical {
+                let za = v.zaxis.and_then(|zi| desc.zaxes.get(zi));
+                let labels = za.map_or(&[][..], |z| &z.labels[..]);
+                match key {
+                    Key::RegionName => DimCol {
+                        vertical,
+                        nums: Vec::new(),
+                        names: names(labels, "region_name")?,
+                    },
+                    Key::RegionAbbrev => DimCol {
+                        vertical,
+                        nums: Vec::new(),
+                        names: names(labels, "region_abbrev")?,
+                    },
+                    Key::BinLo | Key::BinHi => {
+                        let b = za.and_then(|z| z.axis.bounds.clone()).unwrap_or_default();
+                        let lo = usize::from(key == Key::BinHi);
+                        DimCol {
+                            vertical,
+                            nums: b.iter().map(|p| p[lo]).collect(),
+                            names: Vec::new(),
+                        }
+                    }
+                    _ => DimCol {
+                        vertical,
+                        nums: za.map(|z| z.axis.values.clone()).unwrap_or_default(),
+                        names: Vec::new(),
+                    },
+                }
+            } else {
+                let g = &desc.grids[v.grid.expect("horizontal variable has a grid")];
+                let fixed = g.fixed.as_deref();
+                let stored = |name: &str| -> Result<Vec<f64>> {
+                    let all = g.src.read_var(name)?;
+                    Ok(g.sel[0]
+                        .to_vec()
+                        .iter()
+                        .map(|&k| all.get(k).copied().unwrap_or(f64::NAN))
+                        .collect())
+                };
+                let num = |nums: Vec<f64>| DimCol {
+                    vertical,
+                    nums,
+                    names: Vec::new(),
+                };
+                let text = |names: Vec<String>| DimCol {
+                    vertical,
+                    nums: Vec::new(),
+                    names,
+                };
+                let label = |lname: &str| names(fixed.map_or(&[][..], |f| &f.labels[..]), lname);
+                match key {
+                    Key::RegionName => text(label("region_name")?),
+                    Key::RegionAbbrev => text(label("region_abbrev")?),
+                    Key::StationName => text(label("station_name")?),
+                    Key::Station => {
+                        num(g.sel[0].to_vec().iter().map(|&k| (k + 1) as f64).collect())
+                    }
+                    Key::BinLo | Key::BinHi => {
+                        let lo = usize::from(key == Key::BinHi);
+                        let b = match fixed {
+                            Some(f) => f.coords.xbounds.clone().unwrap_or_default(),
+                            None => {
+                                let bv = g
+                                    .src
+                                    .dataset()
+                                    .var("bin")
+                                    .and_then(|x| x.attrs.get_str("bounds"))
+                                    .unwrap_or("bin_bnds")
+                                    .to_owned();
+                                let all = g.src.read_var(&bv)?;
+                                g.sel[0]
+                                    .to_vec()
+                                    .iter()
+                                    .flat_map(|&k| {
+                                        all.get(2 * k..2 * k + 2)
+                                            .map_or([f64::NAN; 2], |b| [b[0], b[1]])
+                                    })
+                                    .collect()
+                            }
+                        };
+                        num(b
+                            .chunks(2)
+                            .map(|p| p.get(lo).copied().unwrap_or(f64::NAN))
+                            .collect())
+                    }
+                    Key::Distance => num(match fixed {
+                        Some(f) => f
+                            .aux
+                            .iter()
+                            .find(|a| a.0 == "distance")
+                            .map(|a| a.1.clone())
+                            .unwrap_or_default(),
+                        None => stored("distance")?,
+                    }),
+                    // region, bin: the coordinate of the dimension
+                    _ => num(match fixed {
+                        Some(f) => f.coords.xvals.clone(),
+                        None => stored(dim)?,
+                    }),
+                }
+            };
+            out[vi].insert(key, col);
+        }
+        // `bin` keeps cdo's meaning (the level) unless a variable has a dimension bin; then
+        // the others (fldhist's <var>_below, <var>_above) have none
+        if found && key == Key::Bin {
+            for o in out.iter_mut() {
+                o.entry(key).or_insert(DimCol {
+                    vertical: false,
+                    nums: Vec::new(),
+                    names: Vec::new(),
+                });
+            }
+        }
+        if !found && key != Key::Bin {
+            let dims: Vec<String> = desc
+                .vars
+                .iter()
+                .flat_map(|v| v.dims.iter().map(|d| d.name.clone()))
+                .fold(Vec::new(), |mut a, d| {
+                    if !a.contains(&d) {
+                        a.push(d);
+                    }
+                    a
+                });
+            return Err(Error::bad_arguments(format!(
+                "outputtab: key '{kname}' needs a dimension {dim}, the variables have {}",
+                dims.join(", ")
+            ))
+            .with("key", kname)
+            .with_hint(
+                "region comes from regmask/reg* (regions=), bin from fldhist, station from \
+                 selpoints, distance from transect",
+            ));
+        }
+    }
+    Ok(out)
 }
 
 // ------------------------------------------------------------------ running
@@ -740,6 +975,10 @@ pub fn run(cmd: &Command) -> Result<String> {
             points.insert(gi, p);
         }
     }
+    let dimcols = match &kind {
+        Kind::Tab { keys, .. } => dim_columns(&plan.desc, keys)?,
+        _ => Vec::new(),
+    };
     let lay: Vec<OutVar> = plan
         .desc
         .vars
@@ -781,6 +1020,7 @@ pub fn run(cmd: &Command) -> Result<String> {
         params: param_ids(&plan),
         fields,
         points,
+        dimcols,
         name: &root.name,
     };
     if cmd.options.json {
@@ -795,6 +1035,8 @@ struct Ctx<'a> {
     params: Vec<ParamId>,
     fields: HashMap<(usize, usize, usize), Field>,
     points: HashMap<usize, Points>,
+    /// Per variable: the columns of the cdors keys (`dim_columns`).
+    dimcols: Vec<HashMap<Key, DimCol>>,
     name: &'a str,
 }
 
@@ -986,7 +1228,7 @@ impl Ctx<'_> {
                                 Key::Y => f.fmt(p(|p| &p.y)),
                                 Key::Lon => f.fmt(p(|p| &p.lon)),
                                 Key::Lat => f.fmt(p(|p| &p.lat)),
-                                Key::Lev | Key::Bin => f.fmt(level),
+                                Key::Lev => f.fmt(level),
                                 Key::Param => pad(&param, *wd),
                                 Key::Code => pad(&self.params[v].code.to_string(), *wd),
                                 Key::Name => pad(&var.name, *wd),
@@ -1006,6 +1248,18 @@ impl Ctx<'_> {
                                 Key::Year => pad(&w.ymd.0.to_string(), *wd),
                                 Key::Month => pad(&w.ymd.1.to_string(), *wd),
                                 Key::Day => pad(&w.ymd.2.to_string(), *wd),
+                                k => match self.dimcols[v].get(k) {
+                                    Some(c) if !c.names.is_empty() => {
+                                        pad(c.name(i, z).unwrap_or("-"), *wd)
+                                    }
+                                    Some(c) if *k == Key::Station => {
+                                        pad(&format!("{}", c.num(i, z)), *wd)
+                                    }
+                                    Some(c) if c.num(i, z).is_nan() => pad("-", *wd),
+                                    Some(c) => f.fmt(c.num(i, z)),
+                                    None if *k == Key::Bin => f.fmt(level),
+                                    None => pad("-", *wd),
+                                },
                             };
                             out.push_str(&s);
                             out.push(' ');
@@ -1106,7 +1360,7 @@ impl Ctx<'_> {
                                 Key::Y => coord(|p| &p.y, i),
                                 Key::Lon => coord(|p| &p.lon, i),
                                 Key::Lat => coord(|p| &p.lat, i),
-                                Key::Lev | Key::Bin => json!(level),
+                                Key::Lev => json!(level),
                                 Key::Param => json!(self.params[v].text()),
                                 Key::Code => json!(self.params[v].code),
                                 Key::Name => json!(var.name),
@@ -1122,6 +1376,24 @@ impl Ctx<'_> {
                                 Key::Year => json!(w.iso.as_ref().map(|_| w.ymd.0)),
                                 Key::Month => json!(w.iso.as_ref().map(|_| w.ymd.1)),
                                 Key::Day => json!(w.iso.as_ref().map(|_| w.ymd.2)),
+                                k => match self.dimcols[v].get(k) {
+                                    Some(c) if !c.names.is_empty() => json!(c.name(i, z)),
+                                    Some(c) => {
+                                        let x = c.num(i, z);
+                                        match x.is_finite() {
+                                            false => Value::Null,
+                                            // numbers of stations and regions
+                                            true if matches!(k, Key::Station | Key::Region)
+                                                && x.fract() == 0.0 =>
+                                            {
+                                                json!(x as i64)
+                                            }
+                                            true => json!(x),
+                                        }
+                                    }
+                                    None if *k == Key::Bin => json!(level),
+                                    None => Value::Null,
+                                },
                             };
                             r.insert((*name).to_owned(), val);
                         }
