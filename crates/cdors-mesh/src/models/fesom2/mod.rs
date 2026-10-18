@@ -17,7 +17,7 @@ pub static MODEL: Model = Model {
     files: &["fesom.mesh.diag.nc"],
     options: &[("units", &["deg", "degrees", "rad", "radians"])],
     load: loader::load,
-    version: 1,
+    version: 2,
     dims: rules::DIMS,
     native: &["per_level_area", "elem_nodes", "wet_levels"],
 };

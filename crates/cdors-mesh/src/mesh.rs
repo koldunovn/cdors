@@ -365,7 +365,8 @@ pub struct Place {
     pub lat: Vec<f64>,
     /// 2-D cell areas (m², or as the source stores them).
     pub area: Vec<f64>,
-    /// Areas per level (levels × size), where the model has them (FESOM2 `nod_area`).
+    /// Areas per level (levels × size), where the model has them (FESOM2 `nod_area`: one row per
+    /// interface; layer k uses row k, its top interface).
     pub area_per_level: Option<Levels>,
     pub polygons: Option<Lazy<Polygons>>,
 }

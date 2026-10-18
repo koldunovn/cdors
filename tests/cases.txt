@@ -216,8 +216,8 @@ json:.out.places | length == 1 and .[0].size == 648 and .[0].lat_range == [-85, 
 # Task 5 (loader half): FESOM2 pi in its old layout (radians, nod_n/elem_n/nl) and in ng5's layout
 # with degrees (fesom_pi_deg): the same places, areas, centres (to 1e-6 degrees) and wet levels,
 # per-level areas and elem_nodes lazy (nothing loaded), the units decision shown, a cache entry.
-json:(.out.places | map([.name, .size, (.area_sum | . * 1e-3 | round), (.lon_range + .lat_range | map(. * 1e6 | round)), .wet_levels.min, .wet_levels.max])) == [["nodes", 3140, 339720478580, [-179963006, 179958769, -78516841, 89404840], 4, 45], ["elements", 5839, 339720478580, [-179936944, 179935174, -77865513, 89319950], 4, 45]] and .out.places[0].area_per_level.levels == 47 and .out.memory.lazy_loaded_bytes == 0 and .out.vertical.levels == 47 and .out.vertical.interfaces == [-6250, 0] and .out.topology[0].name == "elem_nodes" and (.out.cache.path | endswith(".zarr")) and (.out.units | startswith("radians")) | --json mesh info fesom:{fix}/fesom_pi | r36x18_std
-json:(.out.places | map([.name, .size, (.area_sum | . * 1e-3 | round), (.lon_range + .lat_range | map(. * 1e6 | round)), .wet_levels.min, .wet_levels.max])) == [["nodes", 3140, 339720478580, [-179963006, 179958769, -78516841, 89404840], 4, 45], ["elements", 5839, 339720478580, [-179936944, 179935174, -77865513, 89319950], 4, 45]] and .out.places[0].area_per_level.levels == 47 and .out.memory.lazy_loaded_bytes == 0 and .out.vertical.levels == 47 and .out.vertical.interfaces == [-6250, 0] and .out.topology[0].name == "elem_nodes" and (.out.cache.path | endswith(".zarr")) and (.out.units | startswith("degrees")) | --json mesh info fesom:{fix}/fesom_pi_deg | r36x18_std
+json:(.out.places | map([.name, .size, (.area_sum | . * 1e-3 | round), (.lon_range + .lat_range | map(. * 1e6 | round)), .wet_levels.min, .wet_levels.max])) == [["nodes", 3140, 339720478580, [-179963006, 179958769, -78516841, 89404840], 4, 45], ["elements", 5839, 339720478580, [-179936944, 179935174, -77865513, 89319950], 4, 45]] and .out.places[0].area_per_level.levels == 48 and .out.memory.lazy_loaded_bytes == 0 and .out.vertical.levels == 47 and .out.vertical.interfaces == [-6250, 0] and .out.topology[0].name == "elem_nodes" and (.out.cache.path | endswith(".zarr")) and (.out.units | startswith("radians")) | --json mesh info fesom:{fix}/fesom_pi | r36x18_std
+json:(.out.places | map([.name, .size, (.area_sum | . * 1e-3 | round), (.lon_range + .lat_range | map(. * 1e6 | round)), .wet_levels.min, .wet_levels.max])) == [["nodes", 3140, 339720478580, [-179963006, 179958769, -78516841, 89404840], 4, 45], ["elements", 5839, 339720478580, [-179936944, 179935174, -77865513, 89319950], 4, 45]] and .out.places[0].area_per_level.levels == 48 and .out.memory.lazy_loaded_bytes == 0 and .out.vertical.levels == 47 and .out.vertical.interfaces == [-6250, 0] and .out.topology[0].name == "elem_nodes" and (.out.cache.path | endswith(".zarr")) and (.out.units | startswith("degrees")) | --json mesh info fesom:{fix}/fesom_pi_deg | r36x18_std
 json:.out.units | startswith("radians (given: units=rad)") | --json mesh info fesom:{fix}/fesom_pi,units=rad | r36x18_std
 # -setgrid,fesom: the 2-D variables use the mesh's node areas (--plan says so); a grid that fits no
 # place is grid_mismatch; zon* without latitude bands on 3-D variables of a mesh are refused
@@ -521,3 +521,29 @@ ref:numpy.sampled_vert | -transect,10,80,-170,80 -vertint,0/700 -selname,temp -s
 ref:numpy.sampled_vert | -vertmean -selpoints,file={fix}/samples/stations.csv -selname,temp,salt -seltimestep,1/6 -setgrid,fesom:{fix}/fesom_pi {in} | fesom_pi_data fesom_pi_data_v20
 ref:numpy.sampled_vert | -selpoints,file={fix}/samples/stations.csv -vertmean -selname,temp,salt -seltimestep,1/6 -setgrid,fesom:{fix}/fesom_pi {in} | fesom_pi_data fesom_pi_data_v20
 json:all(.stderr[]; .warning != "equal_vertical_weights") and (.stderr | length) == 0 | --json -vertmean -timmean -transect,-65,-55,-60,-65 -selname,temp -setgrid,fesom:{fix}/fesom_pi {in} {out} | fesom_pi_data
+#
+# Task 5 review fixes. Interface variables (w on nz: FESOM2's nl interfaces; fixture fesom_pi_w, w
+# in (time, nz, nod2) and w20 in (time, nod2, nz)): fld*, fldhist, zonmean,zonal_<DY> and regmean
+# use nod_area[k] at interface k (all nl rows of nod_area; a node's area is 0 at its sea floor) vs
+# NumPy
+ref:numpy.mesh_level_mean | -fldmean -setgrid,fesom:{fix}/fesom_pi {in}                          | fesom_pi_w
+ref:numpy.mesh_level_int  | -fldint -setgrid,fesom:{fix}/fesom_pi_deg {in}                       | fesom_pi_w
+ref:numpy.mesh_level_std  | -fldstd -setgrid,fesom:{fix}/fesom_pi {in}                           | fesom_pi_w
+ref:numpy.mesh_fldhist    | -fldhist,bins=-2e-5/2e-5/1e-5 -setgrid,fesom:{fix}/fesom_pi -selname,w {in} | fesom_pi_w
+ref:numpy.mesh_zonmean    | -zonmean,zonal_30 -setgrid,fesom:{fix}/fesom_pi -selname,w {in}      | fesom_pi_w
+ref:regionmask.regmean    | -regmean,regions=ar6.ocean -setgrid,fesom:{fix}/fesom_pi -selname,w {in} | fesom_pi_w
+# after intlevel on a mesh each target depth is in the layer that contains it: its nod_area[k] and
+# its dry cells (intlevel has already set the cells without water at that depth missing). On
+# fesom_pi_data two depths of temp only: the intermediate (float64) must stay below half of the
+# planner variant's --mem 3M
+ref:numpy.mesh_level_mean | -fldmean -intlevel,100,1000,3000 -setgrid,fesom:{fix}/fesom_pi -selname,temp,u {in} | fesom_pi_data_v20
+ref:numpy.mesh_level_mean | -fldmean -intlevel,100,1000 -setgrid,fesom:{fix}/fesom_pi -selname,temp {in} | fesom_pi_data
+ref:numpy.mesh_level_int  | -fldint -intlevel,5,3000 -setgrid,fesom:{fix}/fesom_pi -selname,temp {in} | fesom_pi_data
+ref:regionmask.regmean    | -regmean,regions=ar6.ocean -intlevel,100,1000 -setgrid,fesom:{fix}/fesom_pi -selname,temp {in} | fesom_pi_data
+# --plan: regmean's per-level areas on a subset count the mesh's rows and the gathered copy
+json:(.out.stages[0].kernel.mesh_weights | map(select(.weights == "per_level"))[0].bytes) == 8 * 47 * (3140 + .out.stages[0].variables[0].shape[2]) | --json --plan -regmean,regions=ar6.ocean -sellonlatbox,-80,20,0,70 -setgrid,fesom:{fix}/fesom_pi -selname,temp {in} | fesom_pi_data
+# regmin and regsum on the mesh (planner variant), regint vs nereus.ice_area (nereus's basin masks,
+# the mesh's nod_area[0], so nereus's earth radius does not enter)
+ref:regionmask.regmin     | -regmin,regions=ar6.ocean -setgrid,fesom:{fix}/fesom_pi -selname,temp,a_ice {in} | fesom_pi_data
+ref:regionmask.regsum     | -regsum,regions=ar6.ocean -setgrid,fesom:{fix}/fesom_pi -selname,temp,a_ice {in} | fesom_pi_data
+ref:nereus.nereus_regint  | -regint,regions=basins,select=Atlantic_Basin,Pacific_Basin,Indian_Basin,Arctic_Basin,Southern_Ocean_Basin -setgrid,fesom:{fix}/fesom_pi -selname,a_ice {in} | fesom_pi_data

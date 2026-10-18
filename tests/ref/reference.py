@@ -921,19 +921,43 @@ def to_tlc(v, args):
     last = v.dimensions[2].startswith("nz")
     x = np.swapaxes(x, 1, 2) if last else x
     lev = np.arange(x.shape[1])
+    zdim = v.dimensions[2] if last else v.dimensions[1]
     for a in args:
         if a.startswith("-sellevel,"):
             want = [float(z) for z in a.split(",")[1:]]
-            lev = np.array([k for k, z in enumerate(v.group()["nz1"][:]) if z in want])
+            lev = np.array([k for k, z in enumerate(v.group()[zdim][:]) if z in want])
     return x[:, lev, :], lev, last
 
 
-def wet(mesh, ncell, lev, surface):
-    """(levels, ncell) wet mask at the mesh levels lev; 2-D variables are wet everywhere."""
+def wet(mesh, ncell, lev, surface, interfaces=False):
+    """(levels, ncell) wet mask at the mesh levels lev (layers, or interfaces: one more at the
+    bottom); 2-D variables are wet everywhere."""
     nodes = ncell == len(mesh["wet_nod"])
-    w = mesh["wet_nod"] if nodes else mesh["wet_elem"]
+    w = (mesh["wet_nod"] if nodes else mesh["wet_elem"]) + (1 if interfaces else 0)
     t = mesh["top_nod"] if nodes else mesh["top_elem"]
     return np.ones((1, ncell), bool) if surface else (lev[:, None] < w[None, :]) & (lev[:, None] >= t[None, :])
+
+
+def is_interfaces(v):
+    """Whether v's levels are the interfaces (FESOM2 dimension nz)."""
+    return "nz" in v.dimensions
+
+
+def mesh_field(args, v, mesh):
+    """Values (time, level, cell) of v as the operator after the chain sees them: to_tlc, dry
+    levels missing, and an -intlevel,<depths> applied (intlevel_values); with the mesh level of
+    each level, whose areas weigh it (after intlevel: the layer that contains the depth)."""
+    x, lev, last = to_tlc(v, args)
+    nc = x.shape[2]
+    x = np.where(wet(mesh, nc, lev, v.ndim == 2, is_interfaces(v))[None], x, np.nan)
+    il = next((a for a in args if a.startswith("-intlevel,")), None)
+    if il is not None and v.ndim == 3:
+        t = [float(z) for z in il.split(",")[1:]]
+        x = intlevel_values(x, lev, t, mesh, nc, np.abs(v.group()["nz1"][:].astype("f8")))
+        z = mesh["zbar"]
+        lev = np.array([min(np.searchsorted(z, d, side="right") - 1, len(z) - 2) for d in t])
+        x = np.where(wet(mesh, nc, lev, False)[None], x, np.nan)
+    return x, lev, last
 
 
 def mesh_level_stat(args, inputs, out, stat):
@@ -945,11 +969,10 @@ def mesh_level_stat(args, inputs, out, stat):
         copy_time(src, dst, args)
         for n in selected(args, data_vars(src)):
             v = src[n]
-            x, lev, _ = to_tlc(v, args)
+            x, lev, _ = mesh_field(args, v, mesh)
             nt, nl, nc = x.shape
             nodes = nc == mesh["nod_area"].shape[1]
             a = mesh["nod_area"][lev] if nodes else np.broadcast_to(mesh["elem_area"], (nl, nc))
-            x = np.where(wet(mesh, nc, lev, v.ndim == 2)[None], x, np.nan)
             ok = ~np.isnan(x)
             w = np.where(ok, a[None], 0.0)
             xs = np.where(ok, x, 0.0)
@@ -1186,6 +1209,32 @@ def analytic_vertint(args, inputs, out):
     write_time_series(inputs, out, res)
 
 
+def intlevel_values(x, lev, t, mesh, ncell, zc):
+    """intlevel of x (time, level, cell; dry levels missing) at the depths t: cdo's rule (see
+    mesh_intlevel), then missing where the depth is outside the cell's wet column. Returns
+    (time, len(t), cell)."""
+    nodes = ncell == mesh["nod_area"].shape[1]
+    top = mesh["zbar"][mesh["top_nod" if nodes else "top_elem"]]
+    bot = mesh["zbar"][mesh["wet_nod" if nodes else "wet_elem"]]
+    z = zc[lev]
+    ys = []
+    for tz in t:
+        if tz == z[0]:
+            y = x[:, 0]
+        elif tz < z[0] or tz > z[-1]:
+            y = np.full_like(x[:, 0], np.nan)
+        else:
+            k = np.searchsorted(z, tz) - 1          # z[k] < tz <= z[k + 1]
+            w1 = np.float32((z[k + 1] - tz) / (z[k + 1] - z[k]))
+            w2 = np.float32(1) - w1
+            p, q = x[:, k], x[:, k + 1]
+            y = np.where(np.isnan(p), np.where(w2 >= 0.5, q, np.nan),
+                         np.where(np.isnan(q), np.where(w1 >= 0.5, p, np.nan),
+                                  p * np.float64(w1) + q * np.float64(w2)))
+        ys.append(np.where((top <= tz) & (tz <= bot), y, np.nan))
+    return np.stack(ys, axis=1)
+
+
 @reference()
 def mesh_intlevel(args, inputs, out):
     """intlevel,<depths> with cdo's rule (float32 weights between the two levels around the
@@ -1199,29 +1248,10 @@ def mesh_intlevel(args, inputs, out):
         copy_time(src, dst)
         dst.createDimension("lev", len(t))
         for n, x, lev, a, mesh in mesh_columns(args, inputs):
-            nodes = x.shape[2] == mesh["nod_area"].shape[1]
-            top = mesh["zbar"][mesh["top_nod" if nodes else "top_elem"]]
-            bot = mesh["zbar"][mesh["wet_nod" if nodes else "wet_elem"]]
-            z = zc[lev]
-            ys = []
-            for tz in t:
-                if tz == z[0]:
-                    y = x[:, 0]
-                elif tz < z[0] or tz > z[-1]:
-                    y = np.full_like(x[:, 0], np.nan)
-                else:
-                    k = np.searchsorted(z, tz) - 1          # z[k] < tz <= z[k + 1]
-                    w1 = np.float32((z[k + 1] - tz) / (z[k + 1] - z[k]))
-                    w2 = np.float32(1) - w1
-                    p, q = x[:, k], x[:, k + 1]
-                    y = np.where(np.isnan(p), np.where(w2 >= 0.5, q, np.nan),
-                                 np.where(np.isnan(q), np.where(w1 >= 0.5, p, np.nan),
-                                          p * np.float64(w1) + q * np.float64(w2)))
-                ys.append(np.where((top <= tz) & (tz <= bot), y, np.nan))
+            y = intlevel_values(x, lev, t, mesh, x.shape[2], zc)
             cell = f"cell{x.shape[2]}"
             if cell not in dst.dimensions:
                 dst.createDimension(cell, x.shape[2])
-            y = np.stack(ys, axis=1)
             last = src[n].dimensions[2].startswith("nz")       # FESOM 2.0: (time, cell, level)
             dims = ("time", cell, "lev") if last else ("time", "lev", cell)
             o = dst.createVariable(n, "f8", dims, fill_value=netCDF4.default_fillvals["f8"])
@@ -1251,8 +1281,7 @@ def regstat(args, inputs, out, stat):
         for n in selected(args, data_vars(src)):
             v = src[n]
             if mesh is not None:
-                x, lev, last = to_tlc(v, args)
-                x = np.where(wet(mesh, x.shape[2], lev, v.ndim == 2)[None], x, np.nan)
+                x, lev, last = mesh_field(args, v, mesh)
                 a = mesh["nod_area"][lev] if v.ndim == 3 else mesh["nod_area"][:1]
             else:
                 x = np.ma.filled(masked(v[:]), np.nan).reshape(v.shape[0], 1, -1)
@@ -1293,13 +1322,15 @@ REFERENCES.update({f"reg{s}": (lambda s: lambda a, i, o: regstat(a, i, o, s))(s)
 
 
 @reference()
-def nereus_regmean(args, inputs, out):
+def nereus_regmean(args, inputs, out, stat="mean"):
     """regmean,regions=basins,select=<names> of the 2-D node variables on a FESOM2 mesh with
     nereus: its own basin masks (nereus.diag.regions.get_region_mask on oceanBasins, shapely's
-    contains) and nereus.surface_mean with the mesh's nod_area[0]."""
+    contains) and nereus.surface_mean with the mesh's nod_area[0]; regint (stat="int") of an ice
+    concentration: nereus.ice_area (sum of concentration times nod_area[0])."""
     from nereus.diag.regions import get_region_mask
     import nereus
-    op = next(a for a in args if a.lstrip("-").startswith("regmean,"))
+    fn = nereus.surface_mean if stat == "mean" else nereus.ice_area
+    op = next(a for a in args if a.lstrip("-").startswith(f"reg{stat},"))
     names = [p for p in op.split(",")[1:] if "=" not in p or p.startswith("select=")]
     names = [p.split("=", 1)[-1] for p in names]
     lon, lat = fesom_nodes(args)
@@ -1310,11 +1341,15 @@ def nereus_regmean(args, inputs, out):
         for n in selected(args, data_vars(src)):
             v = src[n]
             x = np.ma.filled(masked(v[:]), np.nan)
-            res = np.stack([nereus.surface_mean(x, mesh["nod_area"][0],
-                                                mask=get_region_mask(lon, lat, b, "oceanBasins"))
+            res = np.stack([fn(x, mesh["nod_area"][0], mask=get_region_mask(lon, lat, b, "oceanBasins"))
                             for b in names], axis=1)
             o = dst.createVariable(n, "f8", ("time", "region"), fill_value=netCDF4.default_fillvals["f8"])
             o[:] = np.ma.masked_invalid(res)
+
+
+@reference()
+def nereus_regint(args, inputs, out):
+    nereus_regmean(args, inputs, out, "int")
 
 
 def hist_edges(args):

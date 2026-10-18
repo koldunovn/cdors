@@ -180,7 +180,11 @@ valid). After `-setgrid,<mesh spec>` cdors uses the mesh:
 - **Field statistics use the mesh's areas, per level.** `fldmean`, `fldavg`, `fldstd`, `fldvar`
   (and their `1` forms) and `fldint` weight node `i` at layer `k` by `nod_area[k, i]` (the area at
   the layer's top interface; FESOM2 `nod_area` shrinks with depth along the coasts), elements by
-  `elem_area` at every level, and 2-D variables by the surface row. cdo, given the same file with
+  `elem_area` at every level, and 2-D variables by the surface row. Variables on the interfaces
+  (`nz`, e.g. `w`) weight interface `k` by `nod_area[k]`; a node's area there is 0 at its sea floor
+  (its deepest wet interface), which is right for an area at the floor, so a level where every
+  wet node is at its floor has no area (mean missing, integral 0). After `intlevel` each target
+  depth is weighted by the layer that contains it, `nod_area[k]`, with that layer's dry cells. cdo, given the same file with
   a grid description, would weight every level by one 2-D area. `--plan` names the weights
   (`area_weights: "mesh_per_level"`) and counts the per-level areas in its memory estimate
   (`memory.parts.mesh_weights`).

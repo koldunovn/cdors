@@ -522,6 +522,16 @@ The harness gains three capabilities (Task 2), so that every check in this plan 
   (also on a cell subset); `intlevel` drops it (`Expr::unmask`). Rows for each shape vs NumPy
   (`reference.py` applies the arithmetic under `setgrid` and the time means, with cdo's group
   timestamps).
+- ⚠️ Review fixes: (1) the FESOM2 loader exposes all `nl` rows of `nod_area` (interface k → row
+  k, layer k → row k, its top), so interface variables (`nz`, e.g. `w`) work in `fld*`, `fldhist`,
+  `zon*,zonal_<DY>` and `reg*`; loader version 2 (new cache entries); `mesh info` shows 48 levels
+  on pi; a node's area is 0 at its sea floor (in deviations). New fixture `fesom_pi_w.nc`
+  (`make_fesom_fixtures.py`: `w (time, nz, nod2)`, `w20 (time, nod2, nz)`). (2) `intlevel` on a
+  mesh maps each target depth to the layer that contains it (`|z_k| <= d < |z_k+1|`): its
+  `nod_area[k]` and dry cells, so `-fldmean -intlevel,100 -setgrid,fesom:…` is the mean at 100 m
+  (cells without water at 100 m are already missing). (3) `reg*` per-level memory counts the
+  gathered copy on a subset. (4) Rows for `regmin`/`regsum` on the mesh and `regint` vs
+  `nereus.ice_area`.
 - ⚠️ The plan's "one membership CSR scaled by `area[k][col]`" is not needed for `fld*`: their
   per-level weights are the area rows themselves (no matrix). `tonodes`/`toelems` weights do not
   depend on the level (1/3; `elem_area` share). The scaled-membership form is left to the region

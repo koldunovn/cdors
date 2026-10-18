@@ -282,7 +282,9 @@ fn weights(
             let cells = reg::selected_cells(g);
             let whole = cells.len() == place.size && cells.iter().enumerate().all(|(k, &c)| k == c);
             let n = levels.len();
-            let bytes = 8 * (n * place.size) as u64;
+            // the mesh's rows of the levels, and for a subset the gathered copy of each
+            let copy = if whole { 0 } else { n * cells.len() };
+            let bytes = 8 * (n * place.size + copy) as u64;
             return Ok((
                 CellWeights::PerLevel {
                     dim,

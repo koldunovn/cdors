@@ -1142,14 +1142,53 @@ fn intlevel(node: &OpNode, input: Desc) -> Result<Desc> {
         });
         v.zaxis = Some(nz);
         v.dims[zd].size = targets.len();
-        // the levels are no longer the mesh's: no dry-level mask follows the result
+        // the levels are no longer the mesh's: each target depth is in the layer that contains
+        // it, whose areas and dry cells the result's statistics use (intlevel has set the cells
+        // without water at that depth missing already)
         v.expr.unmask();
+        if let Some(m) = &ml {
+            let layers = containing_layers(m.interfaces(), &targets);
+            let mask = WetMask {
+                mesh: m.mask.mesh.clone(),
+                place: m.mask.place.clone(),
+                rule: DimRule::Mid,
+                level: (zd, IndexMap::from_list(layers)),
+                cell: m.mask.cell.clone(),
+            };
+            let e = std::mem::replace(
+                &mut v.expr,
+                crate::plan::Expr::Leaf(crate::plan::Leaf {
+                    src: 0,
+                    var: String::new(),
+                    maps: Vec::new(),
+                }),
+            );
+            v.expr = crate::plan::Expr::Mask(Arc::new(mask), Box::new(e));
+        }
     }
     out.fold = Some(Fold {
         input: Box::new(input),
         kernel: Arc::new(IntKernel { vars: plans }),
     });
     Ok(out)
+}
+
+/// The layer that contains each depth: `k` with `|z[k]| <= d < |z[k + 1]|` for the interfaces
+/// `z` (a depth on an interface is in the layer below it; above the surface the first layer,
+/// below the deepest interface the last one).
+fn containing_layers(interfaces: &[f64], depths: &[f64]) -> Vec<usize> {
+    let nlev = interfaces.len().saturating_sub(1).max(1);
+    depths
+        .iter()
+        .map(|&d| {
+            let d = d.abs();
+            interfaces
+                .iter()
+                .skip(1)
+                .position(|z| d < z.abs())
+                .unwrap_or(nlev - 1)
+        })
+        .collect()
 }
 
 /// Output description of `volint`, `volmean`, `intlevel`.
@@ -1164,6 +1203,16 @@ pub fn describe(node: &OpNode, mut inputs: Vec<Desc>, srcs: &mut Sources) -> Res
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn layer_of_depth() {
+        // interfaces 0, 10, 30, 60: 100 m is below the bottom (last layer)
+        let z = [0.0, -10.0, -30.0, -60.0];
+        assert_eq!(
+            containing_layers(&z, &[0.0, 5.0, 10.0, 59.9, 100.0]),
+            vec![0, 0, 1, 2, 2]
+        );
+    }
 
     #[test]
     fn cut_layers() {

@@ -12,9 +12,10 @@
 //! `units=deg|rad` overrides the test. The decision is recorded in [`Source::units`].
 //!
 //! **Areas.** `nod_area(nl, nod)` is the area of each node's control volume at each interface;
-//! layer k (0-based) uses the area of its top interface, `nod_area[k]`, so the per-level areas of
-//! the `nl - 1` layers are its first `nl - 1` rows, read lazily one row at a time. The 2-D node
-//! area is the surface row. Elements have one area for all levels (`elem_area`).
+//! all `nl` rows are the per-level areas, read lazily one row at a time: interface k uses row k,
+//! layer k (0-based) the row of its top interface, `nod_area[k]`. A node's area is 0 at and below
+//! its bottom interface (the sea floor). The 2-D node area is the surface row. Elements have one
+//! area for all levels (`elem_area`).
 //!
 //! **Levels.** `nlevels_nod2D` / `nlevels` count the interfaces down to the bottom of each
 //! node / element; `ulevels_nod2D` / `ulevels` (newer meshes with cavities) give the first wet
@@ -124,7 +125,8 @@ pub fn load(readers: &[Arc<dyn ArrayReader>], spec: &MeshSpec) -> Result<Mesh> {
     }
     let node_area = r.read_range("nod_area", &[0..1, 0..nn])?;
     let ra = r.clone();
-    let per_level = Levels::deferred(nlev, nn, move |k| {
+    // all interfaces: mid-level k reads row k (its top), interface k row k
+    let per_level = Levels::deferred(nlev + 1, nn, move |k| {
         ra.read_range("nod_area", &[k..k + 1, 0..nn])
     });
 

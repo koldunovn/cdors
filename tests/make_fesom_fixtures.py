@@ -23,6 +23,9 @@ writes into OUTDIR, each atomically (temporary name, then rename) and never over
                  1 elsewhere (synthetic: no pi mesh has cavities);
 - fesom_pi_cav_data.nc  fesom_pi_data's fields on fesom_pi_cav, (time, nz1, nod2) layout, 0 above
                  each cell's top as well as below its bottom;
+- fesom_pi_w.nc  a vertical velocity on the interfaces: w (time, nz, nod2) and the same values as
+                 w20 in FESOM 2.0's (time, nod2, nz), 4 months, 0 below each node's bottom
+                 interface (FESOM2 writes w on the nl interfaces, the sea floor included);
 - r1x1_edges.nc  a 1 deg lon-lat grid with centres on integer degrees (lon -180..179, lat -90..90),
                  so cell centres fall exactly on AR6 outlines, at -180 and at the poles; 2 steps.
 The Zarr copies of fesom_pi_data (.zarr2, .zarr3 and _tiny.zarr2, whose chunks split nod2/elem
@@ -262,6 +265,39 @@ def fesom_data(tmp, order_node=ORDER_NODE, order_elem=ORDER_ELEM, cavities=False
     ds.close()
 
 
+def w_vel(lon, lat, z, m):
+    lo, la = np.deg2rad(lon), np.deg2rad(lat)
+    return 1e-5 * (1 + z / 2000) * np.cos(la) * np.sin(lo + 0.7) + 2e-6 * season(m) * np.sin(la)
+
+
+def fesom_w(tmp, nt=4):
+    with netCDF4.Dataset(os.path.join(MESH, "fesom.mesh.diag.nc")) as m:
+        lon, lat = np.rad2deg(m["nodes"][:])
+        zbar = np.abs(np.asarray(m["zbar"][:], dtype="f8"))   # interface depths, positive down
+        nlev_n = np.asarray(m["nlevels_nod2D"][:])   # interfaces 0 .. nlevels - 1 are wet
+    k = np.arange(len(zbar))
+    wet = k[None, :] < nlev_n[:, None]               # (nod2, nz)
+    with netCDF4.Dataset(tmp, "w", format="NETCDF4_CLASSIC") as ds:
+        ds.setncatts({"title": "FESOM2 output", "FESOM_model": "FESOM2",
+                      "comment": "cdors test fixture: w on the interfaces of the pi mesh (tests/make_fesom_fixtures.py)"})
+        for d, n in (("nz", len(zbar)), ("nod2", len(lon)), ("time", None)):
+            ds.createDimension(d, n)
+        v = ds.createVariable("nz", "f8", ("nz",))
+        v.setncatts({"long_name": "depth at layer interface", "units": "m", "positive": "down", "axis": "Z"})
+        v[:] = zbar
+        v = ds.createVariable("time", "f8", ("time",))
+        v.setncatts({"long_name": "time", "standard_name": "time", "units": "seconds since 2000-01-01 0:0:0",
+                     "axis": "T", "stored_direction": "increasing"})
+        v[:] = month_ends()[:nt]
+        for name, dims in (("w", ("time", "nz", "nod2")), ("w20", ("time", "nod2", "nz"))):
+            out = ds.createVariable(name, DTYPE, dims, zlib=True, complevel=1, fill_value=FILL)
+            out.setncatts({"description": "vertical velocity", "long_name": "vertical velocity",
+                           "units": "m/s", "location": "node", "mesh": "fesom_mesh"})
+            for mo in range(nt):
+                a = np.where(wet, w_vel(lon[:, None], lat[:, None], zbar[None, :], mo), DRY).astype(DTYPE)
+                out[mo] = a.T if dims[1] == "nz" else a
+
+
 def edges_grid(tmp):
     lon = np.arange(-180.0, 180.0)
     lat = np.arange(-90.0, 91.0)
@@ -288,5 +324,6 @@ atomic_dir("fesom_pi_deg", deg_mesh)
 atomic_file("fesom_pi_data.nc", fesom_data)
 atomic_file("fesom_pi_data_v20.nc", lambda tmp: fesom_data(tmp, ORDER_NODE_V20, ORDER_ELEM_V20))
 atomic_file("r1x1_edges.nc", edges_grid)
+atomic_file("fesom_pi_w.nc", fesom_w)
 atomic_dir("fesom_pi_cav", cav_mesh)
 atomic_file("fesom_pi_cav_data.nc", lambda tmp: fesom_data(tmp, cavities=True))
