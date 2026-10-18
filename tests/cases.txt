@@ -486,3 +486,15 @@ json:(.out.variables | map([.name, .units, .dtype])) == [["a_ice", "%", "float32
 json:(.out.variables | map([.name, .units, .dtype])) == [["tas", "m2", "float64"]] | --json outputtab,value -seltimestep,1 -regint,regions=srex -selname,tas {in} | r36x18_std
 json:(.out.variables | map([.name, .units, .dtype])) == [["tas", "m", "float64"]] | --json -w outputtab,value -seltimestep,1 -vertint {in} | r36x18_2lev
 json:(.out.variables | map([.name, .units, .dtype])) == [["tas", null, "float32"]] | --json outputtab,value -seltimestep,1 -fldint -selname,tas {in} | r36x18_std
+# vert* after transect/selpoints: setgrid gives the level axis the mesh's layers as bounds
+# (nz1_bnds from zbar), so the sampled columns keep their thicknesses; with nn both orders are
+# the same numbers (with linear they differ where the cells' bottoms differ: the sampled column
+# is the shallowest), in both dimension orders; no equal_vertical_weights warning. 6 steps:
+# the planner variant's --mem 1M holds the intermediate of vert* before the sampling
+ref:numpy.sampled_vert | -vertint -transect,-65,-55,-60,-65,step=50 -selname,temp,salt -seltimestep,1/6 -setgrid,fesom:{fix}/fesom_pi {in} | fesom_pi_data fesom_pi_data_v20
+ref:numpy.sampled_vert | -transect,-65,-55,-60,-65,step=50 -vertint -selname,temp,salt -seltimestep,1/6 -setgrid,fesom:{fix}/fesom_pi {in} | fesom_pi_data fesom_pi_data_v20
+ref:numpy.sampled_vert | -vertint,0/700 -transect,10,80,-170,80 -selname,temp -seltimestep,1/6 -setgrid,fesom:{fix}/fesom_pi_deg {in} | fesom_pi_data
+ref:numpy.sampled_vert | -transect,10,80,-170,80 -vertint,0/700 -selname,temp -seltimestep,1/6 -setgrid,fesom:{fix}/fesom_pi_deg {in} | fesom_pi_data
+ref:numpy.sampled_vert | -vertmean -selpoints,file={fix}/samples/stations.csv -selname,temp,salt -seltimestep,1/6 -setgrid,fesom:{fix}/fesom_pi {in} | fesom_pi_data fesom_pi_data_v20
+ref:numpy.sampled_vert | -selpoints,file={fix}/samples/stations.csv -vertmean -selname,temp,salt -seltimestep,1/6 -setgrid,fesom:{fix}/fesom_pi {in} | fesom_pi_data fesom_pi_data_v20
+json:all(.stderr[]; .warning != "equal_vertical_weights") and (.stderr | length) == 0 | --json -vertmean -timmean -transect,-65,-55,-60,-65 -selname,temp -setgrid,fesom:{fix}/fesom_pi {in} {out} | fesom_pi_data

@@ -221,6 +221,39 @@ fn mask_dry_levels(
     v.expr = Expr::Mask(Arc::new(mask), Box::new(e));
 }
 
+/// Gives the level axis of every variable on the mesh's mid-levels the mesh's layers as bounds
+/// (interfaces `k`, `k + 1` of mesh level `k`, in the sign of the axis values), unless it has
+/// bounds already: operators that leave the mesh (`transect`, `selpoints`, ...) and written files
+/// keep the layer thicknesses, so `vert*` after them weigh as on the mesh. Levels on the mesh's
+/// interfaces get no bounds.
+fn layer_bounds(d: &mut Desc) {
+    for v in &d.vars {
+        let (Some(zi), Some((m, zd, levels))) = (v.zaxis, v.expr.wet_mask()) else {
+            continue;
+        };
+        let (Some(vert), DimRule::Mid) = (m.mesh.vertical.as_ref(), m.rule) else {
+            continue;
+        };
+        let Some(z) = d.zaxes.get_mut(zi) else {
+            continue;
+        };
+        let n = v.dims[zd].size;
+        if z.axis.bounds.is_some() || z.axis.len() != n {
+            continue;
+        }
+        let zb = &vert.interfaces;
+        let down = z.axis.values.iter().all(|&x| x >= 0.0);
+        let sign = |x: f64| if down { x.abs() } else { -x.abs() };
+        let b: Option<Vec<[f64; 2]>> = (0..n)
+            .map(|i| {
+                let k = levels.get(i);
+                Some([sign(*zb.get(k)?), sign(*zb.get(k + 1)?)])
+            })
+            .collect();
+        z.axis.bounds = b;
+    }
+}
+
 /// `setgrid,<mesh spec>`: each input grid whose dimension the model's rules name (`nod2` →
 /// `nodes`), or else whose size one place has, becomes that place of the mesh: its centres,
 /// its 2-D areas, and the mesh itself on the grid (`Grid::mesh`); the dry levels of variables
@@ -288,6 +321,7 @@ fn setgrid_mesh(spec: &MeshSpec, mut d: Desc, srcs: &Sources) -> Result<Desc> {
             }
         }
     }
+    layer_bounds(&mut d);
     if !replaced {
         return Err(Error::new(
             ErrorCode::GridMismatch,

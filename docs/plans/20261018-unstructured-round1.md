@@ -810,6 +810,13 @@ The harness gains three capabilities (Task 2), so that every check in this plan 
   attributes `sampling`, `sampling_method`, `transect_path`, `transect_step_km`,
   `transect_step_source`, `points_outside`. Fixtures `samples/stations.csv` and
   `samples/drake.geojson` (`make_fixtures.sh`). 17 rows (46 cases with their fixtures) in `cases.txt`.
+- ⚠️ Fixed (Task 14 prep): `vert*` after `transect`/`selpoints` weighed all levels by 1 (the
+  sampled grid is off the mesh and the level axis had no bounds). `-setgrid,<mesh>` now gives the
+  level axis of mid-level variables the mesh's layers as bounds (`nz1_bnds` from `zbar`, in the
+  sign of the axis values; interface variables get none), so every operator after it and written
+  files keep them (`cdo zaxisdes` shows them). With `nn` both orders give the same numbers; with
+  `linear` they differ where the sampled cells' bottoms differ (the sampled column is the
+  shallowest of them). Rows: `ref:numpy.sampled_vert` for both orders.
 - ⚠️ "A linear analytic field is reproduced exactly": on a sphere no weights of three cells that
   sum to 1 reproduce a field linear in x, y, z at the point itself. `linear` is barycentric in
   the plane of the triangle (as FESOM2's P1 elements) and exact there, at the point's central

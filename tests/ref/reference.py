@@ -782,6 +782,67 @@ def selpoints(args, inputs, out):
 
 
 @reference()
+def sampled_vert(args, inputs, out):
+    """vertint[,<z0>/<z1>] or vertmean of transect or selpoints on a FESOM2 mesh, in either order
+    (-vert* -transect ... or -transect ... -vert* ...; with nn the same numbers): the sampled
+    columns of transect()/selpoints(), each level weighted by its layer of the mesh's zbar (cut to
+    the depth range), missing levels left out; a point without valid levels is missing. Variables
+    without levels are left out (rows select those with levels). A -seltimestep,<a>/<b> in the
+    chain (keeping the planner variant's intermediate small) selects those steps."""
+    import tempfile
+    steps = None
+    for a in args:
+        if a.startswith("-seltimestep,"):
+            lo, _, hi = a.split(",", 1)[1].partition("/")
+            steps = np.arange(int(lo) - 1, int(hi or lo))
+    vop = next(a.lstrip("-") for a in args if a.lstrip("-").split(",")[0] in ("vertint", "vertmean"))
+    name, _, rng = vop.partition(",")
+    sampler = transect if any(a.lstrip("-").startswith("transect,") for a in args) else selpoints
+    with netCDF4.Dataset(os.path.join(mesh_dir(args), "fesom.mesh.diag.nc")) as m:
+        zbar = np.abs(m["zbar"][:] if "zbar" in m.variables else m["nz"][:]).astype("f8")
+    top, bot = zbar[:-1], zbar[1:]
+    if rng:
+        z0, z1 = (abs(float(x)) for x in rng.split("/"))
+        dz = np.clip(np.minimum(bot, z1) - np.maximum(top, z0), 0, None)
+    else:
+        dz = bot - top
+    with tempfile.TemporaryDirectory() as tmp:
+        mid = os.path.join(tmp, "sampled.nc")
+        sampler(args, inputs, mid)
+        with netCDF4.Dataset(mid) as src, netCDF4.Dataset(out, "w") as dst:
+            tsel = steps if steps is not None else np.arange(src.dimensions["time"].size)
+            dst.createDimension("time", None)
+            t = dst.createVariable("time", "f8", ("time",))
+            t.setncatts({a: src["time"].getncattr(a) for a in src["time"].ncattrs()})
+            t[:] = src["time"][tsel]
+            for d in ("distance", "station"):
+                if d in src.dimensions:
+                    dst.createDimension(d, src.dimensions[d].size)
+            for n, v in src.variables.items():
+                if n.startswith("bottom_depth"):
+                    o = dst.createVariable(n, "f8", v.dimensions, fill_value=netCDF4.default_fillvals["f8"])
+                    o.coordinates = "lat lon"
+                    o[:] = v[:]
+                elif n in ("lon", "lat", "distance"):
+                    o = dst.createVariable(n, "f8", v.dimensions)
+                    o.setncatts({a: v.getncattr(a) for a in v.ncattrs()})
+                    o[:] = v[:]
+            for n in data_vars(src):
+                v = src[n]
+                if "nz1" not in v.dimensions:
+                    continue
+                x = np.moveaxis(masked(v[:])[tsel], v.dimensions.index("nz1"), -1)
+                ok = ~np.ma.getmaskarray(x)
+                s = (x.filled(0) * dz).sum(axis=-1)
+                w = (ok * dz).sum(axis=-1)
+                res = s if name == "vertint" else s / np.where(w > 0, w, 1)
+                dims = tuple(d for d in v.dimensions if d != "nz1")
+                o = dst.createVariable(n, "f8", dims, fill_value=netCDF4.default_fillvals["f8"])
+                o.coordinates = "lat lon"
+                o[:] = np.ma.masked_where(~ok.any(axis=-1), res)
+
+
+@reference()
 def selpoints_cdo(args, inputs, out):
     """cdo's remapnn,lon=<x>_lat=<y> ($CDO) for each station of the row's selpoints, the station
     replacing cdo's 1 x 1 grid: (time, [level,] station). cdo's outputs stay in OUT.d/."""
