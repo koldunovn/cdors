@@ -439,3 +439,18 @@ json:[.out.operators[] | select(.name == "vertint" or .name == "volint" or .name
 err:unsupported_dimension | -volmean -setgrid,fesom:{fix}/fesom_pi {in} | fesom_pi_data
 err:no_coordinates | -vertint,0/700 -selname,temp {in}  | fesom_pi_data
 err:bad_arguments  | -volint,700/0 -selname,temp -setgrid,fesom:{fix}/fesom_pi {in} | fesom_pi_data
+#
+# Task 5 fix: -setgrid,fesom: masks the VALUE it receives, not the leaves below it: arithmetic
+# (-addc,1 -mulc,0 makes the dry zeros 1; they must still drop out), intermediates (-timmean;
+# -yearmean of a -sellevel, whose levels are matched to the mesh by depth), a -sellevel below it,
+# setgrid twice, and a chain through an intermediate above it (the mask carried). The references
+# apply the same arithmetic and time means (group timestamps from cdo), then the dry-level mask.
+# -timmean of all 47 levels only on fesom_pi_data_v20: its intermediate (590 kB) is more than half
+# of the planner variant's --mem 1M
+ref:numpy.mesh_level_int  | -fldint -setgrid,fesom:{fix}/fesom_pi -addc,1 -mulc,0 -selname,temp,u {in} | fesom_pi_data fesom_pi_data_v20
+ref:numpy.mesh_vert       | -vertint -setgrid,fesom:{fix}/fesom_pi -addc,1 -mulc,0 -selname,temp {in} | fesom_pi_data
+ref:numpy.mesh_level_mean | -fldmean -setgrid,fesom:{fix}/fesom_pi -timmean -selname,temp,u {in}       | fesom_pi_data_v20
+ref:numpy.mesh_level_mean | -fldmean -setgrid,fesom:{fix}/fesom_pi -sellevel,2.5,975,6125 -selname,temp,u {in} | fesom_pi_data fesom_pi_data_v20
+ref:numpy.mesh_level_std  | -fldstd -setgrid,fesom:{fix}/fesom_pi -yearmean -sellevel,25,975,6125 -selname,temp {in} | fesom_pi_data fesom_pi_data_v20
+ref:numpy.mesh_level_int  | -fldint -setgrid,fesom:{fix}/fesom_pi -setgrid,fesom:{fix}/fesom_pi_deg -addc,1 -mulc,0 -selname,salt {in} | fesom_pi_data
+ref:numpy.mesh_level_int  | -fldint -timmean -sellevel,2.5,975,6125 -setgrid,fesom:{fix}/fesom_pi -addc,1 -mulc,0 -selname,temp {in} | fesom_pi_data fesom_pi_data_v20

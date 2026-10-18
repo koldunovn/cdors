@@ -17,7 +17,7 @@ use crate::io::ChunkSource;
 use crate::io::multifile::{MultiFileSource, expand_glob, is_glob};
 use crate::model::mesh_cache;
 use crate::model::{DimRole, GridKind};
-use crate::plan::{Desc, GridDesc, IndexMap, Sources, VarDesc, WetMask};
+use crate::plan::{Desc, Expr, GridDesc, IndexMap, Sources, VarDesc, WetMask, ZDesc};
 use cdors_mesh::models::{self, DimRule, MeshSpec};
 use cdors_mesh::{Mesh, Place};
 use std::sync::Arc;
@@ -113,56 +113,112 @@ pub(crate) fn mesh_grid(
     })
 }
 
-/// Masks the dry levels of `v` on `place` of `mesh`: every leaf with a vertical stored dimension
-/// (by the model's rules: FESOM2 `nz1` mid-levels, `nz` interfaces; otherwise a vertical
-/// dimension with as many levels as the mesh has layers or interfaces) and the horizontal one
-/// gets a [`WetMask`]. 2-D variables and leaves without levels are left as they are.
-fn mask_dry_levels(v: &mut VarDesc, mesh: &Arc<Mesh>, place: &str, srcs: &Sources) {
-    let Some(vert) = mesh.vertical.as_ref().filter(|z| z.wet(place).is_some()) else {
+/// Masks the dry levels of `v` on `place` of `mesh`: the value `setgrid` receives (a stored
+/// variable, arithmetic on it, an intermediate result) is wrapped in an [`Expr::Mask`] when it has
+/// a vertical dimension whose levels are known on the mesh. The mesh level of each index along it
+/// comes from, in this order:
+/// - a mask the value already has on that dimension (`setgrid` twice, a result of mesh operators);
+/// - a stored dimension the model's rules name (FESOM2 `nz1` mid-levels, `nz` interfaces), or a
+///   vertical one with as many levels as the mesh has layers (interfaces), followed by a leaf: the
+///   stored index is the mesh level (selections before `setgrid` included);
+/// - the depths of the level axis matched to the mesh's mid-levels (interfaces), for results whose
+///   stored levels are a selection (`-setgrid -yearmean -sellevel,...`).
+///
+/// 2-D variables and levels the mesh does not know are left as they are.
+fn mask_dry_levels(
+    v: &mut VarDesc,
+    zaxes: &[ZDesc],
+    mesh: &Arc<Mesh>,
+    place: &Place,
+    srcs: &Sources,
+) {
+    let Some(vert) = mesh
+        .vertical
+        .as_ref()
+        .filter(|z| z.wet(&place.name).is_some())
+    else {
         return;
     };
-    let Some(hd) = v.hdims().first().copied() else {
+    let Some(&hd) = v.hdims().first() else {
         return;
     };
-    let roles: Vec<DimRole> = v.dims.iter().map(|d| d.role).collect();
+    let named = |name: &str| match models::dim_rule(mesh, name) {
+        Some(r @ (DimRule::Mid | DimRule::Interfaces)) => Some(r),
+        _ => None,
+    };
+    let Some(zd) = (0..v.dims.len()).find(|&i| {
+        i != hd && (v.dims[i].role == DimRole::Vertical || named(&v.dims[i].name).is_some())
+    }) else {
+        return;
+    };
     let nlev = vert.nlev();
-    for leaf in v.expr.leaves_mut() {
-        let Some(dvar) = srcs
-            .srcs
-            .get(leaf.src)
-            .and_then(|s| s.dataset().var(&leaf.var))
-        else {
-            continue;
-        };
-        let stored = &dvar.dims;
-        let cell = leaf.maps.iter().position(|(d, _)| *d == hd);
-        let level = leaf.maps.iter().enumerate().find_map(|(p, (d, _))| {
-            let sd = stored.get(p)?;
-            let rule = match models::dim_rule(mesh, &sd.name) {
-                Some(r @ (DimRule::Mid | DimRule::Interfaces)) => r,
-                Some(DimRule::Place(_)) => return None,
-                None if roles.get(*d) == Some(&DimRole::Vertical) && sd.size == nlev => {
-                    DimRule::Mid
-                }
-                None if roles.get(*d) == Some(&DimRole::Vertical) && sd.size == nlev + 1 => {
-                    DimRule::Interfaces
-                }
-                None => return None,
-            };
-            let n = if rule == DimRule::Mid { nlev } else { nlev + 1 };
-            (sd.size == n).then_some((p, rule, n))
-        });
-        if let (Some(cell), Some((level, rule, n))) = (cell, level) {
-            leaf.mask = Some(Arc::new(WetMask {
-                mesh: mesh.clone(),
-                place: place.to_owned(),
-                rule,
-                levels: IndexMap::identity(n),
-                level,
-                cell,
-            }));
+    let count = |r: DimRule| if r == DimRule::Mid { nlev } else { nlev + 1 };
+    let by_size = |n: usize| {
+        (n == nlev)
+            .then_some(DimRule::Mid)
+            .or((n == nlev + 1).then_some(DimRule::Interfaces))
+    };
+    // (a) a mask the value already has
+    let known = v
+        .expr
+        .wet_mask()
+        .filter(|(m, dl, _)| *dl == zd && Arc::ptr_eq(&m.mesh, mesh))
+        .map(|(m, _, levels)| (m.rule, levels));
+    // (b) a leaf whose stored dimension is the mesh's levels
+    let stored = || {
+        v.expr.leaves().into_iter().find_map(|leaf| {
+            let dvar = srcs.srcs.get(leaf.src)?.dataset().var(&leaf.var)?;
+            let p = leaf.maps.iter().position(|(od, _)| *od == zd)?;
+            let sd = dvar.dims.get(p)?;
+            let rule = named(&sd.name).or_else(|| by_size(sd.size))?;
+            (sd.size == count(rule)).then(|| (rule, leaf.maps[p].1.clone()))
+        })
+    };
+    // (c) the depths of the level axis
+    let depths = || {
+        let values = &zaxes.get(v.zaxis?)?.axis.values;
+        if values.len() != v.dims[zd].size {
+            return None;
         }
-    }
+        let rules = match named(&v.dims[zd].name) {
+            Some(r) => vec![r],
+            None => vec![DimRule::Mid, DimRule::Interfaces],
+        };
+        rules.into_iter().find_map(|r| {
+            let z = if r == DimRule::Mid {
+                &vert.mid
+            } else {
+                &vert.interfaces
+            };
+            let idx: Option<Vec<usize>> = values
+                .iter()
+                .map(|&x| {
+                    z.iter()
+                        .position(|&m| (m.abs() - x.abs()).abs() <= 1e-6 * x.abs().max(1.0))
+                })
+                .collect();
+            idx.map(|i| (r, IndexMap::from_list(i)))
+        })
+    };
+    let Some((rule, levels)) = known.or_else(stored).or_else(depths) else {
+        return;
+    };
+    let mask = WetMask {
+        mesh: mesh.clone(),
+        place: place.name.clone(),
+        rule,
+        level: (zd, levels),
+        cell: (hd, IndexMap::identity(place.size)),
+    };
+    let e = std::mem::replace(
+        &mut v.expr,
+        Expr::Leaf(crate::plan::Leaf {
+            src: 0,
+            var: String::new(),
+            maps: Vec::new(),
+        }),
+    );
+    v.expr = Expr::Mask(Arc::new(mask), Box::new(e));
 }
 
 /// `setgrid,<mesh spec>`: each input grid whose dimension the model's rules name (`nod2` →
@@ -221,7 +277,6 @@ fn setgrid_mesh(spec: &MeshSpec, mut d: Desc, srcs: &Sources) -> Result<Desc> {
                 places()
             )));
         }
-        let pname = place.name.clone();
         d.grids[gi] = mesh_grid(&loaded.spec, &mesh, place, &dim)?;
         replaced = true;
         for v in &mut d.vars {
@@ -229,7 +284,7 @@ fn setgrid_mesh(spec: &MeshSpec, mut d: Desc, srcs: &Sources) -> Result<Desc> {
                 for i in v.hdims() {
                     v.dims[i].role = DimRole::Horizontal;
                 }
-                mask_dry_levels(v, &mesh, &pname, srcs);
+                mask_dry_levels(v, &d.zaxes, &mesh, place, srcs);
             }
         }
     }

@@ -180,7 +180,6 @@ pub fn materialize(d: Desc, consumer: &str, srcs: &mut Sources) -> Result<Desc> 
         v.expr = Expr::Leaf(Leaf {
             src: si,
             var: v.name.clone(),
-            mask,
             maps: v
                 .dims
                 .iter()
@@ -188,6 +187,17 @@ pub fn materialize(d: Desc, consumer: &str, srcs: &mut Sources) -> Result<Desc> 
                 .map(|(i, x)| (i, IndexMap::identity(x.size)))
                 .collect(),
         });
+        if let Some(m) = mask {
+            let e = std::mem::replace(
+                &mut v.expr,
+                Expr::Leaf(Leaf {
+                    src: si,
+                    var: String::new(),
+                    maps: Vec::new(),
+                }),
+            );
+            v.expr = Expr::Mask(m, Box::new(e));
+        }
     }
     srcs.intermediates.push(Intermediate {
         name,
@@ -215,8 +225,10 @@ fn carried_mask(v: &crate::plan::VarDesc, grids: &[super::GridDesc]) -> Option<A
     let hd = v.hdims();
     let dim = v.dims.get(d)?;
     if hd.len() != 1
+        || hd[0] == d
         || dim.role != DimRole::Vertical
         || dim.size != levels.len()
+        || g.sel.len() != 1
         || !g
             .base
             .mesh
@@ -229,9 +241,8 @@ fn carried_mask(v: &crate::plan::VarDesc, grids: &[super::GridDesc]) -> Option<A
         mesh: m.mesh.clone(),
         place: place.name.clone(),
         rule: m.rule,
-        levels,
-        level: d,
-        cell: hd[0],
+        level: (d, levels),
+        cell: (hd[0], g.sel[0].clone()),
     }))
 }
 

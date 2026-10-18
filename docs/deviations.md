@@ -169,7 +169,8 @@ valid). After `-setgrid,<mesh spec>` cdors uses the mesh:
 
 - **Dry levels are missing.** A value at a level outside its cell's wet levels (below the bottom
   from `nlevels_nod2D`/`nlevels`, above `ulevels` under cavities) is missing for every operator
-  that follows, whatever the file stores there. FESOM2 writes 0 there, so outputs carry the
+  that follows, whatever the value `setgrid` receives holds there (the file's 0, or what
+  arithmetic before `setgrid` made of it). FESOM2 writes 0 there, so outputs carry the
   missing value where the input had 0, and `fldmin`, `fldmean`, `timmean`, ... leave those cells
   out instead of counting zeros. 2-D variables are unchanged.
 - **Field statistics use the mesh's areas, per level.** `fldmean`, `fldavg`, `fldstd`, `fldvar`

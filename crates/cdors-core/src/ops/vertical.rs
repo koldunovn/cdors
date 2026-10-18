@@ -955,10 +955,7 @@ fn intlevel(node: &OpNode, input: Desc) -> Result<Desc> {
         })?;
         let cols = match &ml {
             Some(m) => {
-                let leaf = v.expr.leaves().into_iter().find(|l| l.mask.is_some());
-                let (dim, cells) = leaf
-                    .map(|l| l.maps[m.mask.cell].clone())
-                    .ok_or_else(|| Error::internal("masked leaf without cell map"))?;
+                let (dim, cells) = m.mask.cell.clone();
                 let depth = columns
                     .entry(format!("{}/{}", m.mask.mesh.name, m.mask.place))
                     .or_insert_with(|| Arc::new(m.columns()))
@@ -992,9 +989,7 @@ fn intlevel(node: &OpNode, input: Desc) -> Result<Desc> {
         v.zaxis = Some(nz);
         v.dims[zd].size = targets.len();
         // the levels are no longer the mesh's: no dry-level mask follows the result
-        for l in v.expr.leaves_mut() {
-            l.mask = None;
-        }
+        v.expr.unmask();
     }
     out.fold = Some(Fold {
         input: Box::new(input),

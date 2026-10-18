@@ -491,7 +491,6 @@ fn write_grid_file(
         expr: Expr::Leaf(Leaf {
             src: 0,
             var: String::new(),
-            mask: None,
             maps: Vec::new(),
         }),
     };

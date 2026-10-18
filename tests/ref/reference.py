@@ -48,13 +48,57 @@ def data_vars(ds):
     return [n for n, v in ds.variables.items() if n not in ds.dimensions and n not in aux and v.ndim > 0]
 
 
-def copy_time(src, dst):
-    """Unlimited time dimension and the time variable of src, values and attributes unchanged."""
+def copy_time(src, dst, args=()):
+    """Unlimited time dimension and the time variable of src, attributes unchanged; values
+    unchanged, or those of the -timmean/-yearmean in args (time_groups)."""
     dst.createDimension("time", None)
     t = src["time"]
     out = dst.createVariable("time", "f8", ("time",))
     out.setncatts({a: t.getncattr(a) for a in t.ncattrs()})
-    out[:] = t[:]
+    groups = time_groups(args, t)
+    out[:] = t[:] if groups is None else cdo_group_times(args, src, t)
+
+
+def cdo_group_times(args, src, t):
+    """The times cdo stamps the groups of the -timmean/-yearmean in args with (cdo's own date
+    averaging, read from `cdo showtimestamp`; $CDO as the harness sets it)."""
+    import datetime
+    import subprocess
+    op = next(a for a in args if a in ("-timmean", "-yearmean"))
+    two_d = next(n for n in data_vars(src) if src[n].ndim == 2)
+    r = subprocess.run([os.environ.get("CDO", "cdo"), "-s", "showtimestamp", op, f"-selname,{two_d}",
+                        src.filepath()], capture_output=True, text=True, check=True)
+    dates = [datetime.datetime.fromisoformat(x) for x in r.stdout.split()]
+    return netCDF4.date2num(dates, t.units, getattr(t, "calendar", "standard"))
+
+
+def time_groups(args, t):
+    """The timesteps of each group of a -timmean (all) or -yearmean (per year) in args, None
+    without."""
+    ops = [a for a in args if a in ("-timmean", "-yearmean")]
+    if not ops:
+        return None
+    if ops[0] == "-timmean":
+        return [np.arange(len(t))]
+    years = np.array([d.year for d in netCDF4.num2date(t[:], t.units, getattr(t, "calendar", "standard"))])
+    return [np.flatnonzero(years == y) for y in np.unique(years)]
+
+
+def under_setgrid(args, x, t):
+    """x (time, ...) after what the chain does to it besides selections: -addc/-mulc below the
+    first -setgrid (innermost first, cdo's rule: 0 times anything is 0), and a -timmean or
+    -yearmean anywhere (they commute with the static dry-level mask)."""
+    first = next((i for i, a in enumerate(args) if a.startswith("-setgrid,")), len(args))
+    for a in reversed(args[first + 1:]):
+        op, _, c = a.lstrip("-").partition(",")
+        if op == "mulc":
+            x = np.where((float(c) == 0) | (x == 0), 0.0, x * float(c))
+        elif op == "addc":
+            x = x + float(c)
+    groups = time_groups(args, t)
+    if groups is not None:
+        x = np.stack([x[g].mean(axis=0) for g in groups])
+    return x
 
 
 def axis_bounds(c, lat):
@@ -803,7 +847,7 @@ def to_tlc(v, args):
     """Values of variable v as (time, level, cell), the levels kept by -sellevel,<values> (by
     the values of nz1; all without), and whether its levels come last (FESOM 2.0); 2-D variables
     get one level."""
-    x = np.ma.filled(masked(v[:]), np.nan)
+    x = under_setgrid(args, np.ma.filled(masked(v[:]), np.nan), v.group()["time"])
     if v.ndim == 2:
         return x[:, None, :], np.arange(1), False
     last = v.dimensions[2].startswith("nz")
@@ -830,7 +874,7 @@ def mesh_level_stat(args, inputs, out, stat):
     mean of nereus.surface_mean per level with these areas."""
     mesh = read_mesh(args)
     with netCDF4.Dataset(inputs[0]) as src, netCDF4.Dataset(out, "w") as dst:
-        copy_time(src, dst)
+        copy_time(src, dst, args)
         for n in selected(args, data_vars(src)):
             v = src[n]
             x, lev, _ = to_tlc(v, args)
@@ -869,7 +913,7 @@ def mesh_place_map(args, inputs, out, to):
     el, ea = mesh["elem"], mesh["elem_area"]
     nn, ne = mesh["nod_area"].shape[1], len(ea)
     with netCDF4.Dataset(inputs[0]) as src, netCDF4.Dataset(out, "w") as dst:
-        copy_time(src, dst)
+        copy_time(src, dst, args)
         for n in selected(args, data_vars(src)):
             v = src[n]
             x, lev, last = to_tlc(v, args)

@@ -495,6 +495,18 @@ The harness gains three capabilities (Task 2), so that every check in this plan 
   lane on first use, so `--plan` loads nothing; normalised to sum 1 per level except for
   `fldint`, as cdo's 2-D weights) and `elem_area` for elements; `--plan` lists them in
   `kernel.mesh_weights` and `memory.parts.mesh_weights`. `zon*`/`vert*` on levels stay refused.
+- ⚠️ Fix (after the merge; found by the Task 9 agent): the dry-level mask sat on the stored leaves
+  below `-setgrid`, so arithmetic between them and `setgrid` undid it (`-setgrid,fesom:… -addc,1
+  -mulc,0` gave 1 at dry levels: cdo's `mulc,0` turns missing into 0). The mask is now an
+  expression node, `Expr::Mask(WetMask, …)`, wrapped around the value `setgrid` receives (stored
+  variable, arithmetic, intermediate), with its own level and cell maps that follow selections and
+  renumbering like a leaf's; `Leaf::mask` is gone. The mesh level of each index comes from a mask
+  the value already has (setgrid twice), else from a leaf's stored level dimension (a `-sellevel`
+  below `setgrid`), else from the depths of the level axis matched to the mesh's mid-levels or
+  interfaces (`-setgrid -yearmean -sellevel,…`). Intermediates above a masked value keep the mask
+  (also on a cell subset); `intlevel` drops it (`Expr::unmask`). Rows for each shape vs NumPy
+  (`reference.py` applies the arithmetic under `setgrid` and the time means, with cdo's group
+  timestamps).
 - ⚠️ The plan's "one membership CSR scaled by `area[k][col]`" is not needed for `fld*`: their
   per-level weights are the area rows themselves (no matrix). `tonodes`/`toelems` weights do not
   depend on the level (1/3; `elem_area` share). The scaled-membership form is left to the region
