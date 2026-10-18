@@ -24,6 +24,9 @@ FESOM2 is the first model.
       existing remap executor. It is parallel, renormalises around NaN, and prunes chunks that no weight touches.
     - Non-linear ones (min, max, std, histograms) use a row reducer over the same matrix.
     - Weights are cached per mesh and target.
+      ⚠️ Not in round 1 (orchestrator, 2026-10-19, after the Task 12 review): region membership, sampling and
+      node/element weights are computed in seconds or less on dart/HEALPix z10 (Tasks 6, 10, 13), so no weight
+      cache was built; it returns when a generator is slow enough to need it (plotting pixels in R2).
   - **Naming.** Operators with cdo names keep cdo semantics. New operators get new names and are marked
     `origin: "cdors"`.
 - **Scope.** Round 1 covers:
@@ -998,6 +1001,7 @@ round implements them; they are not stubbed now.
 - Per-level areas scale the membership weights at apply time.
 - Non-linear reductions (min, max, std, histograms) walk the same CSR rows with fldstat's accumulators.
 - The cache key is listed in Task 6. Files go to `$CDORS_CACHE/weights/gen-<key>.bin`.
+- ⚠️ Not built in round 1 (see Overview): generated weights are recomputed on each run.
 
 **Output conventions.**
 - New dimensions `region`, `bin`, `station` and `distance`, with CF-style coordinate variables and string variables
