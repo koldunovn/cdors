@@ -167,6 +167,7 @@ fn membership(
     op: &str,
     spec: &Spec,
     set: &RegionSet,
+    g: &GridDesc,
     lon: &[f64],
     lat: &[f64],
     srcs: &mut Sources,
@@ -174,7 +175,8 @@ fn membership(
     let mut m = set.members(lon, lat);
     let mut filled = None;
     if spec.fill {
-        let (f, k) = regions::fill_nearest(&m, lon, lat, None);
+        let wet = wet_cells(g);
+        let (f, k) = regions::fill_nearest(&m, lon, lat, wet.as_deref());
         m = f;
         filled = Some(k);
         let msg = format!(
@@ -264,6 +266,19 @@ fn centres(op: &str, g: &GridDesc) -> Result<(Vec<f64>, Vec<f64>)> {
         cells.iter().map(|&c| lon[c]).collect(),
         cells.iter().map(|&c| lat[c]).collect(),
     ))
+}
+
+/// The cells `fill=nearest` may fill: on a mesh with a vertical, those with at least one wet
+/// level (FESOM2: every node); `None` (every cell) without one.
+fn wet_cells(g: &GridDesc) -> Option<Vec<bool>> {
+    let place = g.base.mesh_place()?;
+    let wet = g.base.mesh.as_ref()?.vertical.as_ref()?.wet(&place.name)?;
+    Some(
+        selected_cells(g)
+            .into_iter()
+            .map(|c| !wet.range(c).is_empty())
+            .collect(),
+    )
 }
 
 /// Grids used by data variables (index), skipping single points.
@@ -427,7 +442,7 @@ fn regmask(node: &OpNode, d: Desc, srcs: &mut Sources) -> Result<Desc> {
         .ok_or_else(|| bad(op, "regmask: no variable on a grid of more than one cell"))?;
     let gi = v0.grid.expect("grid");
     let (lon, lat) = centres(op, &d.grids[gi])?;
-    let (m, filled) = membership(op, &spec, &set, &lon, &lat, srcs);
+    let (m, filled) = membership(op, &spec, &set, &d.grids[gi], &lon, &lat, srcs);
     let hd: Vec<VarDim> = v0.hdims().iter().map(|&i| v0.dims[i].clone()).collect();
     let nr = set.len();
     let mut dims = vec![VarDim {
@@ -842,7 +857,7 @@ fn maskregion(node: &OpNode, mut d: Desc, srcs: &mut Sources) -> Result<Desc> {
         let inside: Vec<bool> = match (&spec, &set) {
             (Some(spec), Some(set)) => {
                 let (lon, lat) = centres(op, g)?;
-                let (m, _) = membership(op, spec, set, &lon, &lat, srcs);
+                let (m, _) = membership(op, spec, set, g, &lon, &lat, srcs);
                 let mut inside = vec![false; lon.len()];
                 m.col.iter().for_each(|&c| inside[c as usize] = true);
                 inside

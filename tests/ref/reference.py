@@ -136,10 +136,34 @@ def regionmask_set(name):
     return getattr(dr, name)
 
 
-def cell_centres(ds, name):
+def fesom_nodes(args):
+    """Node centres (degrees) of the mesh of a `-setgrid,fesom:<dir>[,units=deg|rad]` argument,
+    None without one: `nodes` of fesom.mesh.diag.nc, radians if |lat| <= pi/2 and |lon| <= 2 pi
+    (as cdors' loader decides)."""
+    spec = next((a.split("fesom:", 1)[1] for a in args if "-setgrid,fesom:" in a), None)
+    if spec is None:
+        return None
+    d, *opts = spec.split(",")
+    with netCDF4.Dataset(os.path.join(d, "fesom.mesh.diag.nc")) as m:
+        nodes = m["nodes"][:].astype("f8")
+    lon, lat = (nodes[0], nodes[1]) if nodes.shape[0] == 2 else (nodes[:, 0], nodes[:, 1])
+    eps = 1e-6
+    rad = np.abs(lat).max() <= np.pi / 2 + eps and np.abs(lon).max() <= 2 * np.pi + eps
+    if "units=deg" in opts or "units=rad" in opts:
+        rad = "units=rad" in opts
+    return (np.degrees(lon), np.degrees(lat)) if rad else (lon, lat)
+
+
+def cell_centres(ds, name, args=()):
     """Cell centres (degrees, float64) of the grid of variable `name`, and its horizontal
-    dimensions: lon-lat axes (2-D grid), unstructured lon/lat, or HEALPix (healpy, nested)."""
+    dimensions: FESOM2 mesh nodes (`-setgrid,fesom:<dir>` in args; the variable is on nodes),
+    lon-lat axes (2-D grid), unstructured lon/lat, or HEALPix (healpy, nested)."""
     v = ds[name]
+    fes = fesom_nodes(args)
+    if fes is not None:
+        if v.shape[-1] != len(fes[0]):
+            raise SystemExit(f"reference: {name} is not on the mesh nodes")
+        return fes[0], fes[1], v.dimensions[-1:]
     if getattr(v, "grid_mapping", "") and "healpix" in ds[v.grid_mapping].grid_mapping_name:
         import healpy
         gm = ds[v.grid_mapping]
@@ -178,7 +202,7 @@ def _mask_3D(args, inputs, opname):
         rs = rs[sel]
     with netCDF4.Dataset(inputs[0]) as src:
         var = data_vars(src)[0]
-        lon, lat, hdims = cell_centres(src, var)
+        lon, lat, hdims = cell_centres(src, var, args)
     if len(hdims) == 2:
         m = rs.mask_3D(np.asarray(lon), np.asarray(lat), drop=False)   # 1-D axes: a lon-lat grid
         m = m.transpose("region", "lat", "lon")

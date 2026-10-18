@@ -249,6 +249,16 @@ json:any(.out.warnings[]; .warning == "regions_filled" and .cells == 314) | --pl
 json:any(.stderr[]; .warning == "regions_empty" and .regions == ["SWS", "MDG", "CAU", "EAU"]) | --json -regmask,regions=ar6.all {in} {out} | hpz2_noleap
 err:bad_arguments | -regmask,regions=ar6.ocean,select=XYZ {in}         | r36x18_std
 err:bad_arguments | -regmask,regions=nosuchset {in}                    | r36x18_std
+# on the FESOM2 pi mesh: the nodes of -setgrid,fesom: (radians in fesom.mesh.diag.nc), against
+# regionmask on the same node coordinates; fill=nearest fills wet nodes (all nodes of FESOM2): the
+# 1396 nodes outside the AR6 ocean regions, and the 22 coastal nodes outside nereus' five basins
+ref:regionmask.mask_3D:exact | -regmask,regions=ar6.ocean -setgrid,fesom:{fix}/fesom_pi {in}  | fesom_pi_data
+ref:regionmask.mask_3D:exact | -regmask,regions=ar6.land -setgrid,fesom:{fix}/fesom_pi {in}   | fesom_pi_data
+ref:regionmask.mask_3D:exact | -regmask,regions=srex -setgrid,fesom:{fix}/fesom_pi {in}       | fesom_pi_data
+ref:regionmask.mask_3D:exact | -regmask,regions=prudence -setgrid,fesom:{fix}/fesom_pi {in}   | fesom_pi_data
+ref:regionmask.mask_3D:exact | -regmask,regions=ne.ocean_basins_50 -setgrid,fesom:{fix}/fesom_pi {in} | fesom_pi_data
+json:any(.stderr[]; .warning == "regions_filled" and .cells == 1396) | --json -regmask,regions=ar6.ocean,fill=nearest -setgrid,fesom:{fix}/fesom_pi {in} {out} | fesom_pi_data
+json:any(.stderr[]; .warning == "regions_filled" and .cells == 22) | --json -regmask,regions=basins,select=Atlantic_Basin,Pacific_Basin,Indian_Basin,Arctic_Basin,Southern_Ocean_Basin,fill=nearest -setgrid,fesom:{fix}/fesom_pi {in} {out} | fesom_pi_data
 # selregion and maskregion with cdo region files, against cdo 2.6.0 (one polygon, two polygons);
 # selregion with two polygons against cdo run polygon by polygon (cdo 2.6.0 repeats the cells of
 # the first polygon, docs/deviations.md)

@@ -300,44 +300,44 @@ impl RegionSet {
 /// index). Returns the new table (cells ascending in every row) and the number of cells filled;
 /// a table without members is returned unchanged.
 pub fn fill_nearest(m: &Csr, lon: &[f64], lat: &[f64], candidate: Option<&[bool]>) -> (Csr, usize) {
+    use rayon::prelude::*;
     let n = m.ncols;
-    let mut rows_of: Vec<Vec<u32>> = vec![Vec::new(); n];
-    for r in 0..m.rows() {
-        for &c in m.row(r) {
-            rows_of[c as usize].push(r as u32);
-        }
-    }
-    let members: Vec<usize> = (0..n).filter(|&i| !rows_of[i].is_empty()).collect();
-    if members.is_empty() {
+    // regions of each cell (cells x regions), and one tree over all member cells
+    let t = m.transpose();
+    let pts: Vec<([f64; 3], u32)> = (0..n)
+        .into_par_iter()
+        .filter(|&i| !t.row(i).is_empty())
+        .map(|i| (crate::geom::unit_vector(lon[i], lat[i]), i as u32))
+        .collect();
+    if pts.is_empty() {
         return (m.clone(), 0);
     }
-    let pts = members
-        .iter()
-        .map(|&i| (crate::geom::unit_vector(lon[i], lat[i]), i as u32))
-        .collect();
     let tree = KdTree::from_points(pts);
-    let todo: Vec<usize> = (0..n)
-        .filter(|&i| {
-            rows_of[i].is_empty()
-                && candidate.is_none_or(|c| c[i])
-                && lon[i].is_finite()
-                && lat[i].is_finite()
+    // the cell whose regions each cell takes: itself, its nearest member, or none
+    const NONE: u32 = u32::MAX;
+    let from: Vec<u32> = (0..n)
+        .into_par_iter()
+        .with_min_len(1 << 12)
+        .map(|i| {
+            if !t.row(i).is_empty() {
+                i as u32
+            } else if candidate.is_none_or(|c| c[i]) && lon[i].is_finite() && lat[i].is_finite() {
+                tree.nearest(lon[i], lat[i]).map_or(NONE, |(c, _)| c as u32)
+            } else {
+                NONE
+            }
         })
         .collect();
-    let (tl, ta): (Vec<f64>, Vec<f64>) = todo.iter().map(|&i| (lon[i], lat[i])).unzip();
-    let near = tree.nearest_many(&tl, &ta);
-    let mut filled = 0;
-    for (&i, nb) in todo.iter().zip(near) {
-        if let Some((c, _)) = nb {
-            rows_of[i] = rows_of[c].clone();
-            filled += 1;
-        }
-    }
-    // rebuild by rows, cells ascending
+    let filled = (0..n)
+        .filter(|&i| from[i] != NONE && from[i] as usize != i)
+        .count();
+    // rows by counting, cells ascending
     let mut row_ptr = vec![0usize; m.rows() + 1];
-    for rs in &rows_of {
-        for &r in rs {
-            row_ptr[r as usize + 1] += 1;
+    for &f in &from {
+        if f != NONE {
+            for &r in t.row(f as usize) {
+                row_ptr[r as usize + 1] += 1;
+            }
         }
     }
     for r in 0..m.rows() {
@@ -345,10 +345,12 @@ pub fn fill_nearest(m: &Csr, lon: &[f64], lat: &[f64], candidate: Option<&[bool]
     }
     let mut next = row_ptr.clone();
     let mut col = vec![0u32; row_ptr[m.rows()]];
-    for (i, rs) in rows_of.iter().enumerate() {
-        for &r in rs {
-            col[next[r as usize]] = i as u32;
-            next[r as usize] += 1;
+    for (i, &f) in from.iter().enumerate() {
+        if f != NONE {
+            for &r in t.row(f as usize) {
+                col[next[r as usize]] = i as u32;
+                next[r as usize] += 1;
+            }
         }
     }
     (

@@ -539,8 +539,7 @@ The harness gains three capabilities (Task 2), so that every check in this plan 
   - Key: `regions=<set>[,fill=nearest][,select=<abbrev,…>]`.
   - Output dimension `region`, with `region_name` and `region_abbrev`.
   - An empty region gives an all-NaN row plus a warning.
-- [ ] Write tests (the regmask rows, `regions_filled`, the empty region and the planner variant are done; the
-      fesom_pi_data rows and regmean/regint wait, see below):
+- [ ] Write tests (all done except `regmean`/`regint`, which wait for the statistics operators, see below):
   - `regmask` vs `ref:regionmask.mask_3D`, cell for cell, on r36x18_std, hpz2, unst_360, `fesom_pi_data` and
     r1x1_edges, for ar6.ocean, ar6.land, srex, prudence (overlap) and ne.ocean_basins_50;
   - `regmean` and `regint` vs `ref:nereus` (basins) and NumPy;
@@ -569,20 +568,27 @@ The harness gains three capabilities (Task 2), so that every check in this plan 
   `region_abbrev`; cdo reads the file as a field with one level per region. A region without cells is an all-zero row
   plus the warning `regions_empty` (regionmask's `drop=False`); `select=` masks with the selected regions only, as
   regionmask's `regions[[...]]`.
-- ⚠️ **`fill=nearest` has no wet mask on grids without a mesh:** every cell of the grid counts as wet, so on a grid
-  with land the land cells are filled too (r36x18 with ar6.ocean: 314 cells). With a FESOM mesh all nodes are wet.
+- ⚠️ **`fill=nearest` candidates:** on a grid with a mesh, the cells with at least one wet level (FESOM2: every
+  node; pi: 1396 nodes outside the AR6 ocean regions, 22 coastal nodes outside nereus' five basins). A grid without a
+  mesh has no wet mask: every cell counts, so on a grid with land the land is filled too (r36x18 with ar6.ocean: 314).
 - ⚠️ **Membership cache not implemented:** membership is fast without it. HEALPix z10 (12.6M cells, built in memory,
   16 threads on a login node): ar6.ocean 0.09 s, ar6.all 0.09 s, srex 0.05 s, prudence 0.02 s, ne.ocean_basins_50
   0.15 s, basins 0.25 s (36.6M memberships); parsing ≤ 0.02 s. On hpz2 a whole `cdors regmask` run takes
-  0.15–0.17 s. `fill_nearest` is the slow part when most cells are outside the set: 1.9 s for 207 filled cells
-  (ar6.all), 5 s / 23 s / 75 s for 3.7M / 5.1M / 6.6M filled cells (ne.ocean_basins_50, ar6.ocean, srex), 384 s for
-  prudence (12.4M cells filled from 207k members in Europe: far queries visit most of the tree). Meant for ocean sets
-  on ocean grids (few cells to fill).
+  0.15–0.17 s. `fill_nearest` (one KD-tree over all member cells, queries in parallel, no per-cell allocations) on z10
+  with 16 threads: 1.0 s for 207 filled cells (ar6.all; mostly the tree over 12.6M members), 1.0 / 1.4 / 1.5 s for
+  3.7M / 5.1M / 6.6M filled cells (ne.ocean_basins_50, ar6.ocean, srex), 3.2 s for prudence (12.4M cells filled from
+  207k members in Europe; 8.0 s on 6 threads). Before: 1.9 s, 5 / 23 / 75 s and 384 s.
+- ➕ KD-tree (`locate.rs`): the far side of a split was pruned by the split plane only, so a query far from a cluster
+  of points visited most of the tree. Now each sub-range is pruned by its distance to the query: the bounding box of
+  its points for sub-ranges of more than 32 points (heap-numbered, 48 bytes each: 1.5–3 MB per million points), the
+  cell cut out by the splits above (tracked per axis, Arya and Mount) below them. Same answers (the brute-force unit
+  test gained a clustered case), tie rule unchanged (bounds compared with a 1e-12 relative slack).
 - ⚠️ GeoJSON numbers are parsed with serde_json's `float_roundtrip` (enabled from cdors-mesh, so for the whole
   workspace): coordinates are read correctly rounded. The full harness passes unchanged with it.
-- ⚠️ **Skipped: the `fesom_pi_data` rows** (`regmask` vs `ref:regionmask.mask_3D` on the pi mesh nodes) need
-  `-setgrid,fesom:` (Task 5); add them as `ref:regionmask.mask_3D:exact | -regmask,regions=<set> -setgrid,fesom:{fix}/fesom_pi
-  {in}` once Task 5 is merged (`reference.py`'s `cell_centres` then needs the node coordinates of the mesh).
+- ➕ `fesom_pi_data` rows: `regmask` after `-setgrid,fesom:{fix}/fesom_pi` vs `ref:regionmask.mask_3D:exact` for
+  ar6.ocean, ar6.land, srex, prudence and ne.ocean_basins_50 (identical; `reference.py` reads the nodes of
+  fesom.mesh.diag.nc with the loader's radians rule), and two `json:` rows with the filled counts (ar6.ocean 1396,
+  basins with five basins 22); all with the Zarr and planner variants.
 
 ### Task 7: `selregion` and `maskregion` (cdo semantics)
 

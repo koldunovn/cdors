@@ -5,12 +5,21 @@
 //! range. Ranges of at most [`LEAF`] points are scanned. Nearest by chord length, which orders
 //! points like the great-circle distance; on equal distances the smallest cell index wins, so
 //! the answer does not depend on how the tree was built.
+//!
+//! A sub-range is searched only if the query's distance to it is within the best distance so
+//! far: the distance to the bounding box of its points for the upper nodes (sub-ranges of more
+//! than [`BOX_MIN`] points, heap-numbered), and below them the distance to the cell cut out by
+//! the splits above, tracked incrementally per axis (Arya and Mount). Pruning by the split plane
+//! alone visits almost the whole tree for a query far from all points (a cell outside a cluster
+//! of points, as `fill=nearest` asks).
 
 use crate::geom::unit_vector;
 use rayon::prelude::*;
 
 /// Points per leaf range.
 const LEAF: usize = 8;
+/// Sub-ranges of more than this many points get a bounding box.
+const BOX_MIN: usize = 32;
 /// Sub-ranges larger than this are built on two threads.
 const PAR_BUILD: usize = 1 << 15;
 
@@ -21,6 +30,9 @@ pub struct KdTree {
     idx: Vec<u32>,
     /// Split axis of the node at the middle of each sub-range.
     axis: Vec<u8>,
+    /// Bounding boxes (min xyz, max xyz) of the upper nodes, by heap number (root 0, children
+    /// of h: 2h + 1 and 2h + 2).
+    boxes: Vec<[f64; 6]>,
 }
 
 impl KdTree {
@@ -39,8 +51,71 @@ impl KdTree {
     pub fn from_points(mut pts: Vec<([f64; 3], u32)>) -> Self {
         let mut axis = vec![0u8; pts.len()];
         build(&mut pts, &mut axis);
-        let (pts, idx) = pts.into_iter().unzip();
-        Self { pts, idx, axis }
+        let (pts, idx): (Vec<[f64; 3]>, Vec<u32>) = pts.into_iter().unzip();
+        // heap numbers of all nodes of the depths whose sub-ranges exceed BOX_MIN points
+        let mut depth = 0;
+        let mut size = pts.len();
+        while size > BOX_MIN {
+            size /= 2;
+            depth += 1;
+        }
+        let mut t = Self {
+            pts,
+            idx,
+            axis,
+            boxes: vec![[0.0; 6]; (1usize << depth) - 1],
+        };
+        if !t.boxes.is_empty() {
+            t.make_box(0, 0, t.pts.len());
+        }
+        t
+    }
+
+    /// Bounding box of sub-range `lo..hi` (node `h`), stored for the upper nodes.
+    fn make_box(&mut self, h: usize, lo: usize, hi: usize) -> [f64; 6] {
+        let mut b = [
+            f64::INFINITY,
+            f64::INFINITY,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::NEG_INFINITY,
+            f64::NEG_INFINITY,
+        ];
+        let add = |b: &mut [f64; 6], o: &[f64; 6]| {
+            for k in 0..3 {
+                b[k] = b[k].min(o[k]);
+                b[k + 3] = b[k + 3].max(o[k + 3]);
+            }
+        };
+        if h >= self.boxes.len() || hi - lo <= LEAF {
+            for p in &self.pts[lo..hi] {
+                add(&mut b, &[p[0], p[1], p[2], p[0], p[1], p[2]]);
+            }
+            return b;
+        }
+        let mid = lo + (hi - lo) / 2;
+        let l = self.make_box(2 * h + 1, lo, mid);
+        let r = self.make_box(2 * h + 2, mid + 1, hi);
+        let p = self.pts[mid];
+        add(&mut b, &l);
+        add(&mut b, &r);
+        add(&mut b, &[p[0], p[1], p[2], p[0], p[1], p[2]]);
+        self.boxes[h] = b;
+        b
+    }
+
+    /// Squared distance from `q` to the box of node `h`, 0 if it has none.
+    #[inline]
+    fn box_dist(&self, h: usize, q: &[f64; 3]) -> f64 {
+        let Some(b) = self.boxes.get(h) else {
+            return 0.0;
+        };
+        let mut d = 0.0;
+        for k in 0..3 {
+            let e = (b[k] - q[k]).max(0.0).max(q[k] - b[k + 3]);
+            d += e * e;
+        }
+        d
     }
 
     pub fn len(&self) -> usize {
@@ -53,7 +128,7 @@ impl KdTree {
 
     /// Size in bytes.
     pub fn bytes(&self) -> u64 {
-        29 * self.pts.len() as u64
+        29 * self.pts.len() as u64 + 48 * self.boxes.len() as u64
     }
 
     /// The cell nearest to (lon, lat) (degrees) and its central angle (radians); `None` for an
@@ -68,7 +143,7 @@ impl KdTree {
             return None;
         }
         let mut best = (f64::INFINITY, u32::MAX);
-        self.search(0, self.pts.len(), &q, &mut best);
+        self.search(0, 0, self.pts.len(), &q, &mut best, &mut [0.0; 3], 0.0);
         let chord = best.0.sqrt();
         Some((best.1 as usize, 2.0 * (0.5 * chord).min(1.0).asin()))
     }
@@ -89,7 +164,19 @@ impl KdTree {
         }
     }
 
-    fn search(&self, lo: usize, hi: usize, q: &[f64; 3], best: &mut (f64, u32)) {
+    /// Searches the sub-range `lo..hi` (node `h`), whose cell lies `off[k]` from the query along
+    /// each axis (squared distance `rd`, the sum of their squares).
+    #[allow(clippy::too_many_arguments)]
+    fn search(
+        &self,
+        h: usize,
+        lo: usize,
+        hi: usize,
+        q: &[f64; 3],
+        best: &mut (f64, u32),
+        off: &mut [f64; 3],
+        rd: f64,
+    ) {
         let n = hi - lo;
         if n <= LEAF {
             for i in lo..hi {
@@ -101,15 +188,24 @@ impl KdTree {
         let a = self.axis[mid] as usize;
         self.consider(mid, q, best);
         let d = q[a] - self.pts[mid][a];
-        let (near, far) = if d < 0.0 {
-            ((lo, mid), (mid + 1, hi))
+        let ((nh, nlo, nhi), (fh, flo, fhi)) = if d < 0.0 {
+            ((2 * h + 1, lo, mid), (2 * h + 2, mid + 1, hi))
         } else {
-            ((mid + 1, hi), (lo, mid))
+            ((2 * h + 2, mid + 1, hi), (2 * h + 1, lo, mid))
         };
-        self.search(near.0, near.1, q, best);
-        // `<=`: a point at the same distance on the far side may have a smaller index
-        if d * d <= best.0 {
-            self.search(far.0, far.1, q, best);
+        // `<=` with slack: a point at the same distance may have a smaller index, and rounding in
+        // the bounds must not prune it
+        let within = |bound: f64, best: f64| bound * (1.0 - 1e-12) <= best;
+        if within(self.box_dist(nh, q).max(rd), best.0) {
+            self.search(nh, nlo, nhi, q, best, off, rd);
+        }
+        // the far cell lies |d| from the query along axis a (at least the old offset)
+        let old = off[a];
+        let rd_far = rd - old * old + d * d;
+        if within(self.box_dist(fh, q).max(rd_far), best.0) {
+            off[a] = d;
+            self.search(fh, flo, fhi, q, best, off, rd_far);
+            off[a] = old;
         }
     }
 }
@@ -170,27 +266,39 @@ mod tests {
                 (2.0 * rnd() - 1.0).asin().to_degrees(),
             )
         };
-        let (mut lon, mut lat): (Vec<f64>, Vec<f64>) = (0..3000).map(|_| pt()).unzip();
-        lon[2999] = lon[17];
-        lat[2999] = lat[17];
-        let tree = KdTree::new(&lon, &lat);
-        for k in 0..500 {
-            let (x, y) = if k == 0 { (lon[17], lat[17]) } else { pt() };
-            let q = unit_vector(x, y);
-            let (bi, bd) = (0..lon.len())
-                .map(|i| {
-                    let p = unit_vector(lon[i], lat[i]);
-                    (
-                        i,
-                        (p[0] - q[0]).powi(2) + (p[1] - q[1]).powi(2) + (p[2] - q[2]).powi(2),
-                    )
+        // the whole sphere, then a cluster (30 x 30 degrees) that most queries are far from
+        for cluster in [false, true] {
+            let (mut lon, mut lat): (Vec<f64>, Vec<f64>) = (0..3000)
+                .map(|_| {
+                    let (x, y) = pt();
+                    if cluster {
+                        (x / 12.0, 40.0 + y / 6.0)
+                    } else {
+                        (x, y)
+                    }
                 })
-                .min_by(|a, b| a.1.total_cmp(&b.1).then(a.0.cmp(&b.0)))
-                .unwrap();
-            let (i, ang) = tree.nearest(x, y).unwrap();
-            assert_eq!(i, bi, "query {k}");
-            assert!((ang - 2.0 * (0.5 * bd.sqrt()).asin()).abs() < 1e-15);
+                .unzip();
+            lon[2999] = lon[17];
+            lat[2999] = lat[17];
+            let tree = KdTree::new(&lon, &lat);
+            for k in 0..500 {
+                let (x, y) = if k == 0 { (lon[17], lat[17]) } else { pt() };
+                let q = unit_vector(x, y);
+                let (bi, bd) = (0..lon.len())
+                    .map(|i| {
+                        let p = unit_vector(lon[i], lat[i]);
+                        (
+                            i,
+                            (p[0] - q[0]).powi(2) + (p[1] - q[1]).powi(2) + (p[2] - q[2]).powi(2),
+                        )
+                    })
+                    .min_by(|a, b| a.1.total_cmp(&b.1).then(a.0.cmp(&b.0)))
+                    .unwrap();
+                let (i, ang) = tree.nearest(x, y).unwrap();
+                assert_eq!(i, bi, "query {k}");
+                assert!((ang - 2.0 * (0.5 * bd.sqrt()).asin()).abs() < 1e-15);
+            }
+            assert_eq!(tree.nearest(lon[17], lat[17]).unwrap().0, 17);
         }
-        assert_eq!(tree.nearest(lon[17], lat[17]).unwrap().0, 17);
     }
 }
