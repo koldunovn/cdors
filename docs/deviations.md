@@ -198,8 +198,9 @@ valid). After `-setgrid,<mesh spec>` cdors uses the mesh:
   below its bottom interface is missing. cdo's rule alone (a missing neighbour level is replaced
   by the other one if that one's weight is at least 0.5) would carry the deepest wet value up to
   half a layer into the ground.
-- **`zon*` of variables with levels on a mesh are refused** (`not_implemented`); 2-D variables
-  behave as without a mesh.
+- **`zon*` of variables with levels on a mesh are refused** (`not_implemented`), except
+  `zonmean`, `zonsum` and `zonint` with `zonal_<DY>`, which work per level ("Latitude bands on
+  model meshes" above); 2-D variables behave as without a mesh.
 
 ## Vertical geometry
 
