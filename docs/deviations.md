@@ -153,6 +153,14 @@ output is created.
   `zonint,zonal_<DY>` with cdo 2.6.5's meaning (cdo 2.6.0 has neither); `zonint` without bands
   (cdo 2.6.5: the rows of regular grids) is refused. Other grid descriptions as the band
   argument are refused. cdo 2.6.0 crashes on a HEALPix subset with `zonal_<DY>`; cdors does not.
+- **Latitude bands on model meshes** (`-setgrid,fesom:…`; cdo cannot read meshes). Nodes have no
+  cell polygons in round 1 (only `fesom.mesh.diag.nc` is read), so on a mesh every cell (node or
+  element) belongs to the one band that contains its centre, [lo, hi), and counts with its whole
+  area, not with the part inside the band: `zonmean` is Σ a·x / Σ a, `zonint` Σ a·x (m²),
+  `zonsum` Σ x over the valid cells of the band. Variables with the mesh's levels use the area
+  of each level (FESOM2 nodes: `nod_area[k]`; elements: `elem_area`), dry levels left out. With
+  coarse bands the result differs from the area-exact rule of other grids by the cells cut by a
+  band edge.
 
 ## Model meshes (`-setgrid,fesom:<dir>`)
 

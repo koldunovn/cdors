@@ -225,7 +225,9 @@ pub fn notes(name: &str) -> Vec<String> {
     if cdors_core::ops::fldstat::takes_zonaldes(name) {
         n.push(
             "zonal_<DY> latitude bands as cdo (also zonaldes=zonal_<DY>; zonsum and zonint as cdo \
-             2.6.5) [Space statistics: Latitude bands zonal_<DY>]",
+             2.6.5) [Space statistics: Latitude bands zonal_<DY>]; on a model mesh a cell is in \
+             the band of its centre, with its (per-level) area [Space statistics: Latitude bands \
+             on model meshes]",
         );
     }
     if is(&["vert"]) {

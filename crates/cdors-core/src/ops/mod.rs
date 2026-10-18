@@ -708,7 +708,6 @@ fn build_registry() -> Vec<OpSpec> {
         o.origin = origin;
         r.push(o);
     }
-    // TODO(Task 11): origin "cdors" once OpSpec has an origin field
     for (name, d) in fldhist::operators() {
         r.push(op(
             &name,
@@ -778,7 +777,7 @@ fn build_registry() -> Vec<OpSpec> {
         }
         if o.name == "regmask"
             || regstat::handles(&o.name)
-            || matches!(o.name.as_str(), "selpoints" | "transect")
+            || matches!(o.name.as_str(), "selpoints" | "transect" | "fldhist")
         {
             o.origin = "cdors";
         }

@@ -1198,6 +1198,161 @@ def nereus_regmean(args, inputs, out):
             o[:] = np.ma.masked_invalid(res)
 
 
+def hist_edges(args):
+    """Bin edges and out=fraction of the row's fldhist."""
+    opts, _ = op_args(args, "fldhist")
+    if "bins" in opts:
+        lo, hi, step = map(float, opts["bins"].split("/"))
+        n = int(round((hi - lo) / step))
+        edges = np.append(lo + step * np.arange(n), hi)
+    else:
+        edges = np.array([float(x) for x in opts["edges"].split("/")])
+    return edges, opts.get("out", "area") == "fraction"
+
+
+def hist_row(val, w, edges):
+    """(below, bins..., above) sums of the weights w of the values val (NaN excluded)."""
+    nb = len(edges) - 1
+    ok = ~np.isnan(val)
+    val, w = val[ok], w[ok]
+    slot = np.where(val < edges[0], 0, np.where(
+        val > edges[-1], nb + 1, np.minimum(np.searchsorted(edges, val, side="right"), nb)))
+    return np.bincount(slot, weights=w, minlength=nb + 2), w.sum()
+
+
+@reference()
+def mesh_fldhist(args, inputs, out):
+    """fldhist on a FESOM2 mesh, per level: nodes weigh nod_area[k] at layer k, elements
+    elem_area; dry levels excluded; out=fraction divides each level by its valid area. Output in
+    the input's dimension order, the cell dimension replaced by bin."""
+    edges, frac = hist_edges(args)
+    nb = len(edges) - 1
+    mesh = read_mesh(args)
+    with netCDF4.Dataset(inputs[0]) as src, netCDF4.Dataset(out, "w") as dst:
+        copy_time(src, dst)
+        dst.createDimension("bin", nb)
+        for n in selected(args, data_vars(src)):
+            v = src[n]
+            x, lev, last = to_tlc(v, args)
+            nt, nl, nc = x.shape
+            nodes = nc == mesh["nod_area"].shape[1]
+            a = mesh["nod_area"][lev] if nodes else np.broadcast_to(mesh["elem_area"], (nl, nc))
+            x = np.where(wet(mesh, nc, lev, v.ndim == 2)[None], x, np.nan)
+            res = np.zeros((nt, nl, nb + 2))
+            for t in range(nt):
+                for k in range(nl):
+                    h, tot = hist_row(x[t, k], a[k], edges)
+                    res[t, k] = h / tot if frac and tot > 0 else (np.nan if frac else h)
+            parts = [("", res[..., 1:nb + 1]), ("_below", res[..., 0]), ("_above", res[..., nb + 1])]
+            if v.ndim == 3 and "lev" not in dst.dimensions:
+                dst.createDimension("lev", nl)
+            for suffix, vals in parts:
+                if v.ndim == 2:
+                    vals, dims = vals[:, 0], ("time",) + (("bin",) if suffix == "" else ())
+                elif suffix == "":
+                    vals, dims = (np.swapaxes(vals, 1, 2), ("time", "bin", "lev")) if last \
+                        else (vals, ("time", "lev", "bin"))
+                else:
+                    dims = ("time", "lev")
+                o = dst.createVariable(n + suffix, "f8", dims, fill_value=netCDF4.default_fillvals["f8"])
+                o[:] = np.ma.masked_invalid(vals)
+
+
+def mesh_zonal(args, inputs, out, name):
+    """zon<stat>,zonal_<DY> on a FESOM2 mesh: a node (element) is in the band containing its
+    centre, [lo, hi); zonmean and zonint weigh it with nod_area[k] at layer k (elements:
+    elem_area), zonsum sums the values; dry levels excluded; a band without valid cells is
+    missing. Element centres: the normalised mean of their nodes' unit vectors."""
+    bands = zonal_bands(args, name)
+    mesh = read_mesh(args)
+    lon, lat = fesom_nodes(args)
+    p = unit(lon, lat)[mesh["elem"]].sum(axis=1)
+    elat = np.degrees(np.arcsin(p[:, 2] / np.linalg.norm(p, axis=1)))
+    with netCDF4.Dataset(inputs[0]) as src, netCDF4.Dataset(out, "w") as dst:
+        copy_time(src, dst)
+        dst.createDimension("lat", len(bands))
+        for n in selected(args, data_vars(src)):
+            v = src[n]
+            x, lev, last = to_tlc(v, args)
+            nt, nl, nc = x.shape
+            nodes = nc == mesh["nod_area"].shape[1]
+            a = mesh["nod_area"][lev] if nodes else np.broadcast_to(mesh["elem_area"], (nl, nc))
+            if name == "zonsum":
+                a = np.ones_like(a)
+            c = lat if nodes else elat
+            x = np.where(wet(mesh, nc, lev, v.ndim == 2)[None], x, np.nan)
+            ok = ~np.isnan(x)
+            res = np.full((nt, nl, len(bands)), np.nan)
+            for b, (lo, hi) in enumerate(bands):
+                m = (c >= lo) & (c < hi)
+                w = np.where(ok & m[None, None], a[None], 0.0)
+                s = (w * np.where(ok, x, 0)).sum(axis=2)
+                cnt = (ok & m[None, None]).sum(axis=2)
+                with np.errstate(invalid="ignore", divide="ignore"):
+                    r = s / w.sum(axis=2) if name == "zonmean" else s
+                res[..., b] = np.where(cnt > 0, r, np.nan)
+            if v.ndim == 2:
+                vals, dims = res[:, 0], ("time", "lat")
+            else:
+                if "lev" not in dst.dimensions:
+                    dst.createDimension("lev", nl)
+                vals, dims = (np.swapaxes(res, 1, 2), ("time", "lat", "lev")) if last \
+                    else (res, ("time", "lev", "lat"))
+            o = dst.createVariable(n, "f8", dims, fill_value=netCDF4.default_fillvals["f8"])
+            o[:] = np.ma.masked_invalid(vals)
+
+
+for _op in ("zonmean", "zonint", "zonsum"):
+    REFERENCES["mesh_" + _op] = (lambda op: lambda a, i, o: mesh_zonal(a, i, o, op))(_op)
+
+
+def nh_nodes(args):
+    """Nodes of the row's -sellonlatbox,-180,180,0,90 (latitude >= 0, both edges included)."""
+    if not any(a.startswith("-sellonlatbox,-180,180,0,90") for a in args):
+        raise SystemExit("reference: the row must select the northern hemisphere with "
+                         "-sellonlatbox,-180,180,0,90")
+    return fesom_nodes(args)[1] >= 0
+
+
+@reference()
+def ice_extent(args, inputs, out):
+    """Ice-extent recipe -fldhist,edges=<t>/<hi> -sellonlatbox,-180,180,0,90 on a FESOM2 mesh:
+    the bin is nereus.ice_extent (area of the nodes with a_ice >= t, nod_area[0], northern
+    hemisphere) less the area above hi; below and above from NumPy."""
+    import nereus
+    edges, frac = hist_edges(args)
+    assert len(edges) == 2 and not frac, "ice_extent: one bin, out=area"
+    nh = nh_nodes(args)
+    area = read_mesh(args)["nod_area"][0]
+    with netCDF4.Dataset(inputs[0]) as src, netCDF4.Dataset(out, "w") as dst:
+        copy_time(src, dst)
+        dst.createDimension("bin", 1)
+        for n in selected(args, data_vars(src)):
+            x = np.ma.filled(masked(src[n][:]), np.nan)
+            above = np.where(nh & (x > edges[1]), area, 0).sum(axis=1)
+            ext = nereus.ice_extent(x, area, threshold=edges[0], mask=nh) - above
+            below = np.where(nh & (x < edges[0]), area, 0).sum(axis=1)
+            for suffix, vals, dims in [("", ext[:, None], ("time", "bin")), ("_below", below, ("time",)),
+                                       ("_above", above, ("time",))]:
+                o = dst.createVariable(n + suffix, "f8", dims, fill_value=netCDF4.default_fillvals["f8"])
+                o[:] = vals
+
+
+@reference()
+def ice_area(args, inputs, out):
+    """Ice-area recipe -fldint -sellonlatbox,-180,180,0,90 on a FESOM2 mesh: nereus.ice_area
+    with nod_area[0] over the northern-hemisphere nodes."""
+    import nereus
+    nh = nh_nodes(args)
+    area = read_mesh(args)["nod_area"][0]
+    with netCDF4.Dataset(inputs[0]) as src, netCDF4.Dataset(out, "w") as dst:
+        copy_time(src, dst)
+        for n in selected(args, data_vars(src)):
+            x = np.ma.filled(masked(src[n][:]), np.nan)
+            o = dst.createVariable(n, "f8", ("time",), fill_value=netCDF4.default_fillvals["f8"])
+            o[:] = nereus.ice_area(x, area, mask=nh)
+
+
 # ---------------------------------------------------------------- commands
 def compare(want, got, rel, abs_, names):
     bad = 0

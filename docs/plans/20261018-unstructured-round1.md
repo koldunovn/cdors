@@ -656,7 +656,7 @@ The harness gains three capabilities (Task 2), so that every check in this plan 
   - `fraction` divides by the total valid area, including below and above.
   - NaN cells are excluded. With a mesh, the histogram is per level with per-level areas.
   - Output dimension `bin`, with bounds.
-- [ ] Write tests:
+- [x] Write tests:
   - `zonmean,zonaldes=zonal_10` vs cdo on unst_360 and hpz2;
   - `fldhist` vs NumPy on `fesom_pi_data`;
   - the ice-extent recipe vs `ref:nereus.ice_extent`;
@@ -695,9 +695,22 @@ The harness gains three capabilities (Task 2), so that every check in this plan 
   2 `json:` rows check the decoded bytes. FESOM2 `sst.fesom.1959.nc` (2.1M nodes, 28 steps,
   238 MB): `--plan` bytes decoded 715 MB → 238 MB, warm wall time 1.10 s → 0.47 s (`-P 8`, login
   node; `fldmean` 0.27 s), output identical.
-- ⚠️ Not done (needs Task 5's mesh): the ice-extent recipe vs `ref:nereus.ice_extent`, per-level
-  histograms with per-level areas, zonal bands on mesh grids. OpSpec has no `origin` yet: `fldhist`
-  carries "(cdors)" in its description and a TODO for Task 11 in `ops/mod.rs`.
+- ➕ Mesh parts (2026-10-18, after Task 5):
+  - `fldhist` on a mesh: one histogram per level with `nod_area[k]` (`fldstat::level_weights`,
+    normalised per level for fractions; elements `elem_area`), dry levels out; both FESOM layouts
+    (the bin takes the place of `nod2`). `ref:numpy.mesh_fldhist`, and a `json:` row on the
+    `mesh_weights` bytes in `--plan`.
+  - `zon*,zonal_<DY>` on a mesh: nodes have no polygons in round 1, so every cell (node or
+    element) is in the band of its centre ([lo, hi)) and weighs its whole (per-level) area:
+    `zonmean` Σa·x/Σa, `zonint` Σa·x, `zonsum` Σx. Documented in `docs/deviations.md` ("Latitude
+    bands on model meshes") and `help`. `ref:numpy.mesh_zonmean|zonint|zonsum`.
+  - Recipes vs nereus on fesom_pi_data and fesom_pi_data_v20 (northern hemisphere, nod_area[0]):
+    ice extent `-fldhist,edges=0.15/1 -sellonlatbox,-180,180,0,90 -setgrid,fesom:<dir>
+    -selname,a_ice` = `nereus.ice_extent` (rel ≤ 6e-16); ice area `-fldint -sellonlatbox,…` =
+    `nereus.ice_area` (rel 5e-8: fldint keeps a_ice's float32). No hemisphere region set exists
+    in the catalog, so agents should use `-sellonlatbox,-180,180,0,90` (or `-90,0` for the
+    south).
+- ➕ `fldhist` has `origin: "cdors"` in the registry (the field came with Task 6).
 
 ### Task 9: Vertical geometry: `vert*` with bottoms, `vertint`, `volint`/`volmean`, `intlevel`, `bottomvalue`
 

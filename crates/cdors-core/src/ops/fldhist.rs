@@ -27,11 +27,12 @@
 //! One fold per input variable: its lanes emit the tiles of all three output variables
 //! ([`FoldKernel::outputs`]), so the input is read once.
 //!
-//! With a model mesh (Task 5 of the round-1 plan) the histogram is per level with per-level
-//! areas: [`hist_weights`] is the only place that decides the weights, and its per-cell
-//! [`Weights`] become per (level, cell) there, as for `fldmean`.
+//! On a model mesh variables with the mesh's levels get one histogram per level with that
+//! level's areas (FESOM2 nodes: `nod_area[k]`, normalised per level for `out=fraction`;
+//! elements: `elem_area`), dry levels (missing after `setgrid`) left out, as `fldmean`;
+//! levels the mesh does not recognise are refused.
 
-use super::fldstat::{self, Weights};
+use super::fldstat::{self, LaneLevels, Weights};
 use crate::chain::OpNode;
 use crate::error::{Error, ErrorCode, Result};
 use crate::io::Values;
@@ -215,6 +216,7 @@ impl FoldKernel for HistKernel {
         let outer: usize = shape[..p.b0].iter().product();
         let inner: usize = shape[p.b0 + p.nb..].iter().product();
         Box::new(State {
+            levels: None,
             lane: lane.clone(),
             outer,
             inner,
@@ -228,6 +230,9 @@ impl FoldKernel for HistKernel {
 /// Running state of one lane: the slots of every (outer index, inner index).
 struct State {
     p: Arc<HistPlan>,
+    /// Per-level weights of the lane (variables with levels on a mesh), loaded at the first
+    /// tile.
+    levels: Option<LaneLevels>,
     lane: TileBox,
     outer: usize,
     inner: usize,
@@ -284,17 +289,21 @@ impl State {
         let (ns, i_n) = (p.slots(), self.inner);
         for o in 0..self.outer {
             for k in 0..n {
-                let w = match &p.weights {
-                    Weights::Const(w) => *w,
-                    Weights::Each(ws) => ws[f0 + k],
-                    Weights::PerLevel(_) => unreachable!("hist_weights refuses levels on a mesh"),
-                };
                 let row = &v[base + o * ostride + k * i_n..][..i_n];
                 for (i, &x) in row.iter().enumerate() {
                     let x: f64 = x.into();
                     if x.is_nan() {
                         continue;
                     }
+                    let w = match (&p.weights, &self.levels) {
+                        (Weights::Const(w), _) => *w,
+                        (Weights::Each(ws), _) => ws[f0 + k],
+                        (Weights::PerLevel(_), Some(lv)) => {
+                            let (ws, s) = &lv.w[lv.of[if lv.outer { o } else { i }]];
+                            ws[f0 + k] * s
+                        }
+                        (Weights::PerLevel(_), None) => unreachable!("levels loaded in push"),
+                    };
                     let a = &mut self.acc[(o * i_n + i) * ns..][..ns];
                     a[p.slot(x)] += w;
                     a[ns - 1] += w;
@@ -345,6 +354,9 @@ impl State {
 
 impl FoldState for State {
     fn push(&mut self, tile: Tile) -> Result<Vec<Tile>> {
+        if let (None, Weights::PerLevel(lw)) = (&self.levels, &self.p.weights) {
+            self.levels = Some(LaneLevels::for_block(lw, self.p.b0, self.p.nb, &self.lane)?);
+        }
         if self.p.nb == 2 {
             let xend = tile.bx.ranges[self.p.b0 + 1].end;
             self.strip.push(tile);
@@ -384,20 +396,6 @@ fn hist_weights(
     srcs: &Sources,
     fraction: bool,
 ) -> Result<(Weights, Option<AreaSource>)> {
-    if let Some(m) = g.base.mesh.as_ref()
-        && m.vertical.is_some()
-        && v.dims.iter().any(|d| d.role == DimRole::Vertical)
-    {
-        return Err(Error::new(
-            ErrorCode::NotImplemented,
-            format!(
-                "fldhist of '{}' on the mesh {}: variables with levels need per-level areas, \
-                 which fldhist does not use yet",
-                v.name, m.name
-            ),
-        )
-        .with_hint("2-D variables on the mesh (e.g. a_ice) work"));
-    }
     if fraction {
         return fldstat::fld_weights(g, v, srcs, false);
     }
@@ -489,6 +487,10 @@ pub fn describe(node: &OpNode, mut inputs: Vec<Desc>, srcs: &Sources) -> Result<
     let (mut winfo, mut equal): (Vec<serde_json::Value>, Vec<(usize, Vec<String>)>) =
         (Vec::new(), Vec::new());
     let mut units: Vec<Option<String>> = Vec::new();
+    // per-level mesh weights: `--plan` facts and the mesh levels already counted
+    let mut minfo: Vec<serde_json::Value> = Vec::new();
+    let mut mloaded = std::collections::HashSet::new();
+    fldstat::refuse_fld_mesh_levels(op, &input)?;
     for v in &input.vars {
         let (b0, nb) = fldstat::block_of(v, DimRole::Horizontal)?;
         let Some(gi) = v.grid.filter(|_| nb > 0) else {
@@ -506,14 +508,36 @@ pub fn describe(node: &OpNode, mut inputs: Vec<Desc>, srcs: &Sources) -> Result<
                 .and_then(|dv| area::area_variable(g.src.dataset(), dv))
         });
         let key = (gi, avar);
-        let (weights, source) = match wcache.get(&key) {
-            Some(c) => c.clone(),
-            None => {
-                let c = hist_weights(g, v, srcs, args.fraction)?;
-                wcache.insert(key, c.clone());
-                c
-            }
-        };
+        let (weights, source) =
+            if let Some((lw, bytes)) = fldstat::level_weights(g, v, args.fraction, &mut mloaded) {
+                winfo.push(serde_json::json!({
+                "variable": v.name,
+                "area_weights": "mesh_per_level",
+                "description": format!(
+                    "areas of each level of place '{}' of the mesh {} (level k: the area at its \
+                     top interface)",
+                    lw.place, lw.mesh.name
+                ),
+            }));
+                minfo.push(serde_json::json!({
+                    "variable": v.name,
+                    "weights": "per_level",
+                    "mesh": lw.mesh.name,
+                    "place": lw.place,
+                    "levels": lw.levels.len(),
+                    "bytes": bytes,
+                }));
+                (Weights::PerLevel(lw), None)
+            } else {
+                match wcache.get(&key) {
+                    Some(c) => c.clone(),
+                    None => {
+                        let c = hist_weights(g, v, srcs, args.fraction)?;
+                        wcache.insert(key, c.clone());
+                        c
+                    }
+                }
+            };
         if let Some(src) = &source {
             winfo.push(serde_json::json!({
                 "variable": v.name,
@@ -625,8 +649,11 @@ pub fn describe(node: &OpNode, mut inputs: Vec<Desc>, srcs: &Sources) -> Result<
         crate::exec::threads::warn_loud("equal_weights", &msg);
         warnings.push(serde_json::json!({"warning": "equal_weights", "message": msg}));
     }
-    let info = (!winfo.is_empty())
+    let mut info = (!winfo.is_empty())
         .then(|| serde_json::json!({"area_weights": winfo, "warnings": warnings}));
+    if let (Some(i), false) = (info.as_mut(), minfo.is_empty()) {
+        i["mesh_weights"] = serde_json::json!(minfo);
+    }
     out.fold = Some(Fold {
         input: Box::new(input),
         kernel: Arc::new(HistKernel { vars: plans, info }),

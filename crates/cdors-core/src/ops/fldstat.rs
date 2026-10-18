@@ -21,7 +21,9 @@
 //!   with bounds; `zonmean` is the area-weighted mean of the cells' parts inside the band,
 //!   `zonint` Σ part area·R²·x, `zonsum` the plain sum over the cells whose centre is in the
 //!   band ([`band_matrix`]). cdo 2.6.0 accepts `zonal_<DY>` with `zonmean` only, 2.6.5 also
-//!   with `zonsum` and `zonint` (which has no row version in cdors).
+//!   with `zonsum` and `zonint` (which has no row version in cdors). On a model mesh (no cell
+//!   polygons in round 1) a cell is in the band of its centre and weighs its area, per level
+//!   with the mesh's per-level areas (`docs/deviations.md`).
 //!
 //! **Fold order.** A lane is one tile's worth of timesteps and levels (`fld*`, `zon*`) or of
 //! timesteps and cells (`vert*`); its tiles arrive in order along the folded dimension(s). Every
@@ -467,22 +469,32 @@ impl LevelWeights {
 
 /// The per-level weights a lane uses: the lane's levels along the level dimension, before
 /// (`outer`) or after the folded block, and the level of each outer or inner index.
-struct LaneLevels {
-    outer: bool,
+pub(crate) struct LaneLevels {
+    pub(crate) outer: bool,
     /// Lane-local level of each outer (or inner) index.
-    of: Vec<usize>,
+    pub(crate) of: Vec<usize>,
     /// Weights and scale of each lane-local level.
-    w: Vec<(Arc<Vec<f64>>, f64)>,
+    pub(crate) w: Vec<(Arc<Vec<f64>>, f64)>,
 }
 
 impl LaneLevels {
     fn new(lw: &LevelWeights, p: &VarPlan, lane: &TileBox) -> Result<Self> {
+        Self::for_block(lw, p.b0, p.nb, lane)
+    }
+
+    /// The levels of a lane whose folded block is the `nb` dimensions from `b0`.
+    pub(crate) fn for_block(
+        lw: &LevelWeights,
+        b0: usize,
+        nb: usize,
+        lane: &TileBox,
+    ) -> Result<Self> {
         let shape = lane.shape();
-        let outer = lw.dim < p.b0;
+        let outer = lw.dim < b0;
         let (lo, hi) = if outer {
-            (0, p.b0)
+            (0, b0)
         } else {
-            (p.b0 + p.nb, shape.len())
+            (b0 + nb, shape.len())
         };
         let n: usize = shape[lo..hi].iter().product();
         let stride: usize = shape[lw.dim + 1..hi].iter().product();
@@ -727,7 +739,24 @@ fn fold_cells<T: Copy + Into<f64>, A: Acc>(
     let (o_n, i_n, n, f0) = (c.o_n, c.i_n, c.n, c.f0);
     // a single band still maps only some cells
     let one_row = p.nrows == 1 && !matches!(p.rows, RowMap::Bands(_));
-    if let Some(lv) = lv {
+    if let (Some(lv), RowMap::Bands(m)) = (lv, &p.rows) {
+        // per-level weights in latitude bands (mesh grids): cell f adds to its bands with the
+        // band weight × its area at the accumulator's level
+        let (bw, nr) = (m.w.as_deref().expect("band weights"), p.nrows);
+        for o in 0..o_n {
+            for i in 0..i_n {
+                let (ws, s) = &lv.w[lv.of[if lv.outer { o } else { i }]];
+                let a = &mut acc[(o * i_n + i) * nr..(o * i_n + i + 1) * nr];
+                let start = c.base + o * c.ostride + i;
+                for k in 0..n {
+                    let (f, x) = (f0 + k, v[start + k * i_n].into());
+                    for e in m.range(f) {
+                        a[m.col[e] as usize].add(bw[e] * ws[f] * s, x);
+                    }
+                }
+            }
+        }
+    } else if let Some(lv) = lv {
         // per-level weights (field statistics, one output row): each accumulator adds its
         // cells in order with the weights of its level
         for o in 0..o_n {
@@ -859,12 +888,18 @@ fn fold_row<T: Copy + Into<f64>, A: Acc>(
                 }
             }
         }
-        (RowMap::Bands(m), _) => {
+        (RowMap::Bands(m), cw) => {
+            // band weight × cell weight (mesh grids: the cell's area; otherwise 1)
             let w = m.w.as_deref().expect("band weights");
             for k in 0..n {
                 let x = val(k);
+                let c = match cw {
+                    Weights::Const(c) => *c,
+                    Weights::Each(ws) => ws[f0 + k],
+                    Weights::PerLevel(_) => unreachable!("per-level weights fold in fold_cells"),
+                };
                 for e in m.range(f0 + k) {
-                    acc[m.col[e] as usize].add(w[e], x);
+                    acc[m.col[e] as usize].add(w[e] * c, x);
                 }
             }
         }
@@ -1277,6 +1312,12 @@ fn cell_corners(g: &GridDesc, op: &str) -> Result<(usize, Vec<f64>, Vec<f64>)> {
 /// Centre latitudes (radians) of the written cells.
 fn cell_center_lats(g: &GridDesc, op: &str) -> Result<Vec<f64>> {
     let d2r = std::f64::consts::PI / 180.0;
+    if let Some(place) = g.base.mesh_place() {
+        return Ok(selected_cells(g)
+            .iter()
+            .map(|&c| place.lat[c] * d2r)
+            .collect());
+    }
     match g.base.kind {
         GridKind::Healpix => Ok(g.healpix_cell_centers()?.1),
         GridKind::Regular | GridKind::Gaussian => {
@@ -1346,6 +1387,9 @@ fn lonlat_cells(nv: usize, lon: &[f64], lat: &[f64]) -> Option<bool> {
 ///   ones only; `zonint` multiplies them by R²;
 /// - `zonsum` (`gen_indices_zonal`): the cells whose centre latitude lies in [lo, hi), weight 1.
 ///
+/// On a model mesh every op uses the centre rule with weight 1; the cells' (per-level) areas
+/// are the fold's cell weights.
+///
 /// Missing values drop out when the matrix is applied: `zonmean` renormalises over the valid
 /// cells, `zonint` and `zonsum` sum them; a band without valid cells is missing.
 fn band_matrix(g: &GridDesc, op: &str, bnds: &[f64]) -> Result<Csr> {
@@ -1362,7 +1406,7 @@ fn band_matrix(g: &GridDesc, op: &str, bnds: &[f64]) -> Result<Csr> {
         (a.min(c), a.max(c))
     };
     let mut rows: Vec<Vec<(u32, f64)>> = vec![Vec::new(); nb];
-    if op == "zonsum" {
+    if op == "zonsum" || g.base.mesh.is_some() {
         let lat = cell_center_lats(g, op)?;
         for (b, row) in rows.iter_mut().enumerate() {
             let (lo, hi) = ibound(b);
@@ -1509,10 +1553,14 @@ pub(crate) fn block_of(v: &VarDesc, role: DimRole) -> Result<(usize, usize)> {
 
 /// Space statistics of variables with levels on a mesh with a vertical: `fld*` and `vert*` work
 /// on the levels whose dry cells `setgrid` masked (`fld*` with per-level areas where the place
-/// has them, `vert*` with the mesh's layers, each cell's dry levels missing); `zon*` (latitude
-/// bands) are not implemented on mesh levels yet, and levels the mesh's rules do not recognise
-/// (no dry-level mask) are refused. 2-D variables are fine.
-fn refuse_mesh_levels(op: &str, fam: Family, input: &Desc) -> Result<()> {
+/// has them, `vert*` with the mesh's layers, each cell's dry levels missing), and `zon*` with
+/// latitude bands (`zonal_<DY>`, each cell in the band of its centre); other `zon*` and levels
+/// the mesh's rules do not recognise (no dry-level mask) are refused. 2-D variables are fine.
+pub(crate) fn refuse_fld_mesh_levels(op: &str, input: &Desc) -> Result<()> {
+    refuse_mesh_levels(op, Family::Fld, false, input)
+}
+
+fn refuse_mesh_levels(op: &str, fam: Family, banded: bool, input: &Desc) -> Result<()> {
     for v in &input.vars {
         let Some(m) = v.grid.and_then(|g| input.grids[g].base.mesh.as_ref()) else {
             continue;
@@ -1520,7 +1568,7 @@ fn refuse_mesh_levels(op: &str, fam: Family, input: &Desc) -> Result<()> {
         if m.vertical.is_some()
             && let Some(z) = v.dims.iter().find(|d| d.role == DimRole::Vertical)
         {
-            if fam != Family::Zon && v.expr.wet_mask().is_some() {
+            if (fam != Family::Zon || banded) && v.expr.wet_mask().is_some() {
                 continue;
             }
             let (what, hint) = if fam != Family::Zon {
@@ -1538,8 +1586,8 @@ fn refuse_mesh_levels(op: &str, fam: Family, input: &Desc) -> Result<()> {
                         "{op} of variables with levels ('{}') on a mesh is not implemented yet",
                         z.name
                     ),
-                    "fld* and vert* statistics work on the mesh's levels; for 2-D variables \
-                     all statistics work",
+                    "fld*, vert*, fldhist and zonmean/zonsum/zonint,zonal_<DY> work per level \
+                     on the mesh; for 2-D variables all statistics work",
                 )
             };
             return Err(Error::new(
@@ -1637,14 +1685,14 @@ pub fn describe(node: &OpNode, mut inputs: Vec<Desc>, srcs: &Sources) -> Result<
     let (fam, stat) =
         parse(name).ok_or_else(|| Error::internal(format!("'{name}' is not a space statistic")))?;
     let input = inputs.remove(0);
-    refuse_mesh_levels(name, fam, &input)?;
-    let mut out = input.clone();
-    let mut plans = Vec::with_capacity(out.vars.len());
-    let mut info = None;
     let zonaldes = match node.args.first() {
         Some(a) if fam == Family::Zon => Some(zonal_increment(name, a)?),
         _ => None,
     };
+    refuse_mesh_levels(name, fam, zonaldes.is_some(), &input)?;
+    let mut out = input.clone();
+    let mut plans = Vec::with_capacity(out.vars.len());
+    let mut info = None;
     if name == "zonint" && zonaldes.is_none() {
         return Err(Error::bad_arguments(
             "zonint needs latitude bands zonal_<DY> (cdo 2.6.5 also integrates the rows of \
@@ -1717,8 +1765,16 @@ pub fn describe(node: &OpNode, mut inputs: Vec<Desc>, srcs: &Sources) -> Result<
                     slot.insert(entry);
                 }
                 let (_, dims, rows, nrows) = &made[&gi];
+                // zonmean, zonint with zonal_<DY> on a mesh: each cell weighs its area (per level
+                // where the place has per-level areas), in m²
+                let mesh_bands = fam == Family::Zon
+                    && zonaldes.is_some()
+                    && g.base.mesh.is_some()
+                    && name != "zonsum";
                 let per_level = if weighted && fam == Family::Fld {
                     level_weights(g, v, !by_area, &mut mloaded)
+                } else if mesh_bands {
+                    level_weights(g, v, false, &mut mloaded)
                 } else {
                     None
                 };
@@ -1775,6 +1831,15 @@ pub fn describe(node: &OpNode, mut inputs: Vec<Desc>, srcs: &Sources) -> Result<
                             }
                         }
                     }
+                    w
+                } else if mesh_bands {
+                    // 2-D variables (and elements): the place's areas
+                    let (w, _) = fld_weights(g, v, srcs, true)?;
+                    winfo.push(serde_json::json!({
+                        "variable": v.name,
+                        "area_weights": "mesh",
+                        "description": "cell areas of the mesh",
+                    }));
                     w
                 } else {
                     Weights::Const(1.0)

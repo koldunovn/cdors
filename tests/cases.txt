@@ -220,10 +220,10 @@ json:(.out.places | map([.name, .size, (.area_sum | . * 1e-3 | round), (.lon_ran
 json:(.out.places | map([.name, .size, (.area_sum | . * 1e-3 | round), (.lon_range + .lat_range | map(. * 1e6 | round)), .wet_levels.min, .wet_levels.max])) == [["nodes", 3140, 339720478580, [-179963006, 179958769, -78516841, 89404840], 4, 45], ["elements", 5839, 339720478580, [-179936944, 179935174, -77865513, 89319950], 4, 45]] and .out.places[0].area_per_level.levels == 47 and .out.memory.lazy_loaded_bytes == 0 and .out.vertical.levels == 47 and .out.vertical.interfaces == [-6250, 0] and .out.topology[0].name == "elem_nodes" and (.out.cache.path | endswith(".zarr")) and (.out.units | startswith("degrees")) | --json mesh info fesom:{fix}/fesom_pi_deg | r36x18_std
 json:.out.units | startswith("radians (given: units=rad)") | --json mesh info fesom:{fix}/fesom_pi,units=rad | r36x18_std
 # -setgrid,fesom: the 2-D variables use the mesh's node areas (--plan says so); a grid that fits no
-# place is grid_mismatch; zon* of 3-D variables on a mesh are refused
+# place is grid_mismatch; zon* without latitude bands on 3-D variables of a mesh are refused
 json:.out.stages[0].kernel.area_weights | map(.area_weights) == ["mesh", "mesh"] | --json --plan -fldmean -selname,a_ice,m_ice -setgrid,fesom:{fix}/fesom_pi_deg {in} {out} | fesom_pi_data
 err:grid_mismatch | -fldmean -setgrid,fesom:{fix}/fesom_pi {in} | hpz2_noleap
-err:not_implemented | -zonmean,zonal_10 -selname,temp -setgrid,fesom:{fix}/fesom_pi {in} | fesom_pi_data
+err:not_implemented | -zonmean -selname,salt -setgrid,fesom:{fix}/fesom_pi {in} | fesom_pi_data
 err:bad_arguments | -fldmean -setgrid,fesom:{fix}/fesom_pi,unit=rad {in} | fesom_pi_data
 # fldint (cdo's Σ area·value) on cdo's grids
 ulp      | -fldint {in}                                | r36x18_std
@@ -325,6 +325,24 @@ err:bad_arguments    | -fldhist,bins=0/0.15/1 {in}     | r36x18_std   # bins= is
 # are those of the input, 2 variables x 648 cells x 1096 steps x 4 B and 3140 nodes x 24 steps x 4 B
 json:.out.totals.bytes_decoded == 5681664 | --plan --json -fldhist,bins=280/310/5 {in} | r36x18_std
 json:.out.totals.bytes_decoded == 301440 | --plan --json -fldhist,edges=0/0.15/1,out=fraction -selname,a_ice {in} | fesom_pi_data
+# fldhist on the FESOM2 mesh: one histogram per level with nod_area[k] (elements: elem_area), dry
+# levels out, both dimension orders (the bin takes the place of nod2); NumPy reference
+ref:numpy.mesh_fldhist | -fldhist,bins=-2/30/4 -setgrid,fesom:{fix}/fesom_pi -selname,temp,a_ice {in} | fesom_pi_data fesom_pi_data_v20
+ref:numpy.mesh_fldhist | -fldhist,edges=-2/0/5/10/20/30,out=fraction -setgrid,fesom:{fix}/fesom_pi_deg -selname,temp,salt,a_ice {in} | fesom_pi_data fesom_pi_data_v20
+ref:numpy.mesh_fldhist | -fldhist,bins=-2/30/4 -setgrid,fesom:{fix}/fesom_pi -sellevel,2.5,25,6125 -selname,temp {in} | fesom_pi_data
+ref:numpy.mesh_fldhist | -fldhist,bins=-1/1/0.5 -setgrid,fesom:{fix}/fesom_pi -selname,u {in} | fesom_pi_data fesom_pi_data_v20
+json:any(.out.stages[0].kernel.mesh_weights[]; .weights == "per_level" and .bytes == 1180640) | --plan --json -fldhist,bins=-2/30/4 -setgrid,fesom:{fix}/fesom_pi -selname,temp {in} | fesom_pi_data
+# Sea-ice recipes against nereus (nod_area[0], northern hemisphere): extent = the area of the
+# nodes with a_ice >= 0.15 (nereus.ice_extent; values > 1 would go to a_ice_above), area =
+# fldint of a_ice (nereus.ice_area). No hemisphere region set exists: -sellonlatbox selects it.
+ref:nereus.ice_extent | -fldhist,edges=0.15/1 -sellonlatbox,-180,180,0,90 -setgrid,fesom:{fix}/fesom_pi -selname,a_ice {in} | fesom_pi_data fesom_pi_data_v20
+ref:nereus.ice_area | -fldint -sellonlatbox,-180,180,0,90 -setgrid,fesom:{fix}/fesom_pi -selname,a_ice {in} | fesom_pi_data fesom_pi_data_v20
+# zonal_<DY> on the mesh: a cell is in the band of its centre and weighs its (per-level) area
+ref:numpy.mesh_zonmean | -zonmean,zonal_10 -setgrid,fesom:{fix}/fesom_pi -selname,temp,a_ice,u {in} | fesom_pi_data fesom_pi_data_v20
+ref:numpy.mesh_zonint  | -zonint,zonal_30 -setgrid,fesom:{fix}/fesom_pi_deg -selname,temp,a_ice {in} | fesom_pi_data fesom_pi_data_v20
+ref:numpy.mesh_zonsum  | -zonsum,zonal_7 -setgrid,fesom:{fix}/fesom_pi -selname,salt,a_ice {in} | fesom_pi_data
+err:not_implemented  | -zonmean -setgrid,fesom:{fix}/fesom_pi -selname,temp {in} | fesom_pi_data   # rows: no latitude rows on a mesh
+err:unsupported_grid | -zonmax -setgrid,fesom:{fix}/fesom_pi -selname,a_ice {in}  | fesom_pi_data
 #
 # Task 5 (executor half): after -setgrid,fesom: values below each cell's bottom (stored as 0) are
 # missing, and fld* weigh layer k of the nodes by nod_area[k] (elements: elem_area), vs NumPy
