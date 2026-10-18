@@ -22,6 +22,18 @@ import sys
 import netCDF4
 import numpy as np
 
+# reference functions by name (`ref:<lib>.<name>` rows): `def f(args, inputs, out)`, registered with
+# @reference() under its own name or @reference("<name>")
+REFERENCES = {}
+
+
+def reference(name=None):
+    def add(f):
+        REFERENCES[name or f.__name__] = f
+        return f
+    return add
+
+
 # pyproj (geopandas, regionmask) finds its database only through PROJ_DATA
 os.environ.setdefault("PROJ_DATA", os.path.join(sys.prefix, "share", "proj"))
 
@@ -97,6 +109,7 @@ def masked(x):
 
 
 # ---------------------------------------------------------------- references
+@reference()
 def fldmean(args, inputs, out, scale=1.0):
     """Area-weighted field mean of every variable of IN1 (time, [level,] horizontal), weighted by
     the cell areas of cell_areas(); missing cells drop out of the weights."""
@@ -116,6 +129,7 @@ def fldmean(args, inputs, out, scale=1.0):
             o[:] = mean
 
 
+@reference()
 def fldmean_wrong(args, inputs, out):
     """Harness self-test only: fldmean off by a relative 1e-5 (must fail at the default rel=1e-6)."""
     fldmean(args, inputs, out, scale=1 + 1e-5)
@@ -212,6 +226,7 @@ def _mask_3D(args, inputs, opname):
     return m.values, hdims
 
 
+@reference()
 def mask_3D(args, inputs, out):
     """regionmask's mask_3D (drop=False: every region, empty ones all zero) of the grid of the
     first data variable of IN1 for `regmask,regions=<set>[,select=<abbrev>,...]`, written as
@@ -225,6 +240,7 @@ def mask_3D(args, inputs, out):
         o[:] = m.astype("i1")
 
 
+@reference()
 def maskregion(args, inputs, out):
     """`maskregion,regions=<set>[,select=...]`: every variable of IN1 (time, <horizontal>) missing
     outside the union of regionmask's regions."""
@@ -242,6 +258,7 @@ def maskregion(args, inputs, out):
             o[:] = np.ma.masked_where(np.broadcast_to(~keep, x.shape) | np.ma.getmaskarray(x), x)
 
 
+@reference()
 def selregion(args, inputs, out):
     """cdo's selregion with every cell once, in ascending order: cdo ($CDO) selects each polygon
     of the region files on its own, from a field that holds the cell index, and the union of the
@@ -303,6 +320,7 @@ def mesh_dir(args):
     raise SystemExit("reference: no -setgrid,fesom:<dir> in the arguments")
 
 
+@reference("mesh_fldmean")
 def mesh_fld(args, inputs, out, integral=False):
     """fldmean (or fldint) of every 2-D (time, nod2|elem) variable of IN1 on the mesh of the row."""
     with netCDF4.Dataset(os.path.join(mesh_dir(args), "fesom.mesh.diag.nc")) as m:
@@ -322,6 +340,7 @@ def mesh_fld(args, inputs, out, integral=False):
             o[:] = res
 
 
+@reference()
 def mesh_fldint(args, inputs, out):
     mesh_fld(args, inputs, out, integral=True)
 
@@ -345,6 +364,7 @@ def op_args(args, name):
     return opts, names
 
 
+@reference()
 def fldhist(args, inputs, out):
     """Area-weighted histogram of every variable (or the -selname ones): <var>(time, [level,] bin)
     with [e_i, e_i+1), the last bin closed, <var>_below and <var>_above; out=area in m2 (areas of
@@ -432,10 +452,12 @@ def zonal_ref(args, inputs, out, name):
             o[:] = np.ma.masked_where(cnt == 0, s)[..., None]
 
 
+@reference()
 def zonsum(args, inputs, out):
     zonal_ref(args, inputs, out, "zonsum")
 
 
+@reference()
 def zonint(args, inputs, out):
     zonal_ref(args, inputs, out, "zonint")
 
@@ -565,18 +587,6 @@ def mesh_place_map(args, inputs, out, to):
             o[:] = np.ma.masked_invalid(y)
 
 
-REFERENCES = {
-    "fldmean": fldmean,
-    "fldmean_wrong": fldmean_wrong,
-    "mesh_fldmean": mesh_fld,
-    "mesh_fldint": mesh_fldint,
-    "mask_3D": mask_3D,
-    "maskregion": maskregion,
-    "selregion": selregion,
-    "fldhist": fldhist,
-    "zonsum": zonsum,
-    "zonint": zonint,
-}
 
 REFERENCES.update({f"mesh_level_{s}": (lambda s: lambda a, i, o: mesh_level_stat(a, i, o, s))(s)
                    for s in ("mean", "int", "min", "std")})
