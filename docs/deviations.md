@@ -3,7 +3,10 @@
 cdors follows cdo 2.6.0 (the reference build on Levante; source references are to CDO 2.6.5)
 except for the points below. Each entry says what cdo does, what cdors does, and why. The notes
 that `cdors help <op>` and `cdors ops --json` print name their entry here as `[section: entry]`.
-Bugs of cdo that cdors does not reproduce are listed in the last section.
+Bugs of cdo that cdors does not reproduce are listed in the last section. The analysis on
+model meshes (round 1, FESOM2) is in "Latitude bands and histograms", "Model meshes", "Vertical
+geometry", "Regions", "Sampling" and "Units of integrals"; operators marked "(cdors)" there
+have no cdo counterpart (`"origin": "cdors"` in `cdors ops --json`).
 
 Bit-identical output is not a goal. cdors accumulates in double precision and in its own order
 (chunk by chunk, on several threads, with the same result for any thread count); cdo accumulates
@@ -88,11 +91,7 @@ output is created.
   (default 60 % of the Slurm allocation, on login nodes a quarter of the available memory, at most
   4 GiB) and refuses a run that cannot fit: `memory_limit` when the state of a single lane or two
   tiles in flight do not fit, `intermediate_too_large` when the inner results of a chain alive at
-  the same time exceed half of the budget (exit code 2). A model mesh's resident arrays (centres,
-  areas, wet levels, the grids' copies) and the per-level areas the kernels load are held outside
-  the stages: the stages are planned for the budget less them (at least a quarter of it; a mesh
-  that leaves less gets the `mesh_memory` warning), and `--plan` counts them
-  (`memory.parts.mesh_resident`, `mesh_weights`).
+  the same time exceed half of the budget (exit code 2).
 - **Printed values** are limited by `--max-values` (see "Printing values: Flood guard").
 
 ## Statistics
@@ -151,6 +150,8 @@ output is created.
   for regular grids. The field mean of the EERIE IFS skin temperature of January 1950 on the
   O1280 grid (285.66658 K) agrees with that of the same field on the 0.25° grid (285.66653 K);
   equal weights give 287.31 K.
+### Latitude bands and histograms
+
 - **Latitude bands `zonal_<DY>`.** As in cdo, `zonmean,zonal_<DY>` takes the part of each cell
   inside a band (cdo clips the cells with yac, cdors integrates along their edges: equal up to
   rounding). cdors also accepts `zonaldes=zonal_<DY>`, and `zonsum,zonal_<DY>` and
@@ -165,73 +166,96 @@ output is created.
   of each level (FESOM2 nodes: `nod_area[k]`; elements: `elem_area`), dry levels left out. With
   coarse bands the result differs from the area-exact rule of other grids by the cells cut by a
   band edge.
+- **`fldhist` (cdors; cdo has no histogram operator).**
+  `fldhist,bins=<lo>/<hi>/<step>` or `fldhist,edges=<e0>/<e1>/…/<en>`, `[,out=area|fraction]`:
+  the area of each field's valid cells per bin. Bins are [e_i, e_i+1), the last one closed.
+  Values below e0 and above en go to the variables `<var>_below` and `<var>_above`, so nothing
+  is dropped. `out=area` (default) uses `fldint`'s cell areas and refuses a grid without them;
+  `out=fraction` uses `fldmean`'s weights (with the `equal_weights` fallback and its warning)
+  and divides by the whole valid area, below and above included. On a model mesh there is one
+  histogram per level with that level's areas, dry levels left out. Three explicit edges would
+  look like `lo/hi/step`, hence the two keys.
 
 ## Model meshes (`-setgrid,fesom:<dir>`)
 
 cdo reads FESOM2 output as generic grids (no coordinates, equal weights, every stored value
-valid). After `-setgrid,<mesh spec>` cdors uses the mesh:
+valid). After `-setgrid,<mesh spec>` cdors uses the mesh. FESOM2 is the only model in round 1;
+its mesh is read from `fesom.mesh.diag.nc` alone (no ASCII mesh files).
 
+- **The mesh must match the data.** `setgrid` checks the sizes of the data's horizontal
+  dimensions (`nod2`/`nod_n` → nodes, `elem`/`elem_n` → elements) against the mesh and fails
+  with `grid_mismatch` otherwise, so horizontal selections belong above `setgrid`. Both FESOM
+  dimension orders are read: `(time, nz1, nod2)` (FESOM 2.1 and later) and `(time, nod2, nz1)`
+  (FESOM 2.0), with the same results; outputs keep the input's order. A FESOM 2.0 file without
+  the `nz1` coordinate variable (the PHC climatologies in `/pool/data/AWICM/FESOM2`) has no
+  vertical axis for cdo or cdors and is refused (`grid_mismatch`).
+- **Units of the node coordinates** (mesh.diag `nodes` has no `units` attribute; core2 and dart
+  store radians, ng5 degrees): radians if |lat| ≤ π/2 and |lon| ≤ 2π (within a small ε),
+  otherwise degrees; `fesom:<dir>,units=deg|rad` overrides, and `cdors mesh info` shows the
+  decision. Both mesh.diag layouts are read (older `nod_n`, `elem_n`, `nl`, `zbar`, `Z`; newer
+  `nod2`, `elem`, `nz`, `nz1`, `elements`/`face_nodes`). Element centres are the normalised mean
+  of their three nodes' unit vectors.
+- **Mesh cache.** The mesh is converted once into a UGRID Zarr store in
+  `$CDORS_CACHE/meshes/<key>.zarr` (key: path, size and mtime of each source file; a content
+  fingerprint of the first and last MiB is checked on load). An entry that fails the check is
+  renamed to `<key>.zarr.bad-<time>-<pid>` (warning `mesh_cache_rebuilt`), never deleted.
+  Without `CDORS_CACHE` the mesh is read from mesh.diag on every run.
 - **Dry levels are missing.** A value at a level outside its cell's wet levels (below the bottom
   from `nlevels_nod2D`/`nlevels`, above `ulevels` under cavities) is missing for every operator
   that follows, whatever the value `setgrid` receives holds there (the file's 0, or what
   arithmetic before `setgrid` made of it). FESOM2 writes 0 there, so outputs carry the
   missing value where the input had 0, and `fldmin`, `fldmean`, `timmean`, ... leave those cells
-  out instead of counting zeros. 2-D variables are unchanged.
+  out instead of counting zeros. 2-D variables are unchanged. The wet levels come from
+  mesh.diag; on dart it disagrees with `nlvls.out` at one node (node 0, under the Ross ice
+  shelf: 2 wet layers in mesh.diag, 4 in the data), and cdors follows mesh.diag.
 - **Field statistics use the mesh's areas, per level.** `fldmean`, `fldavg`, `fldstd`, `fldvar`
   (and their `1` forms) and `fldint` weight node `i` at layer `k` by `nod_area[k, i]` (the area at
   the layer's top interface; FESOM2 `nod_area` shrinks with depth along the coasts), elements by
-  `elem_area` at every level, and 2-D variables by the surface row. Variables on the interfaces
-  (`nz`, e.g. `w`) weight interface `k` by `nod_area[k]`; a node's area there is 0 at its sea floor
-  (its deepest wet interface), which is right for an area at the floor, so a level where every
-  wet node is at its floor has no area (mean missing, integral 0). After `intlevel` each target
-  depth is weighted by the layer that contains it, `nod_area[k]`, with that layer's dry cells. cdo, given the same file with
+  `elem_area` at every level, and 2-D variables by the surface row. cdo, given the same file with
   a grid description, would weight every level by one 2-D area. `--plan` names the weights
   (`area_weights: "mesh_per_level"`) and counts the per-level areas in its memory estimate
-  (`memory.parts.mesh_weights`).
-- **`vert*` use the mesh's layers.** `vertmean`, `vertavg`, `vertstd`, `vertvar` (and their `1`
-  forms) weight level k by the thickness of the full layer between the mesh interfaces k and
-  k + 1 (FESOM2 `zbar`), normalised as cdo normalises layer weights; `vertint` multiplies by it.
-  cdo, without layer bounds in the file, weights all levels equally. Dry levels are missing and
-  drop out, so each cell is averaged over its own wet levels. **Full layers only**: FESOM2's
-  partial bottom cells (`use_partial_cell`) and zstar layer thickness are not modelled. The
-  thickness-weighted operators refuse variables on the interfaces (`nz`).
-- **`bottomvalue` takes each cell's own bottom**: the value of its deepest wet level (the deeper
-  mesh level is the bottom, whatever the axis's `positive` attribute says). cdo takes the deepest
-  stored value of the column, the 0 that FESOM2 writes into the ground.
-- **`intlevel` does not interpolate into the ground.** A target above a cell's top interface or
-  below its bottom interface is missing. cdo's rule alone (a missing neighbour level is replaced
-  by the other one if that one's weight is at least 0.5) would carry the deepest wet value up to
-  half a layer into the ground.
-- **`zon*` of variables with levels on a mesh are refused** (`not_implemented`), except
-  `zonmean`, `zonsum` and `zonint` with `zonal_<DY>`, which work per level ("Latitude bands on
-  model meshes" above); 2-D variables behave as without a mesh.
+  (`memory.parts.mesh_weights`). On dart, the surface area used for every layer gives a
+  0.40 % higher Atlantic 0–700 m heat content than the per-level areas.
+- **`tonodes`, `toelems` (cdors).** Map a variable between the places of the mesh: `toelems` is
+  the mean of an element's three nodes, `tonodes` the `elem_area`-weighted mean of the elements
+  around a node. Missing values are left out (weights renormalised), and levels outside the
+  target cell's wet range are missing.
 
 ## Vertical geometry
 
-- **`vertint` (cdo has none)** is Σ thickness·value over the valid values, the thickness from the
-  layer bounds of the vertical axis (1 without bounds, with the `equal_vertical_weights`
-  warning), on a mesh from its interfaces. `vertint,<z0>/<z1>` cuts the layers at the depths z0
-  and z1 (positive down: absolute values of the bounds; metres on a mesh) and counts the part of
-  each layer inside the range; without layer bounds it is refused (`no_coordinates`). A cell
-  without a valid value inside the range is missing. The output is float64 with the units
-  `<input units> m` (`m` without units).
+- **`vert*` on a mesh use the mesh's layers.** `vertmean`, `vertavg`, `vertstd`, `vertvar` (and
+  their `1` forms) weight level k by the thickness of the full layer between the mesh interfaces
+  k and k + 1 (FESOM2 `zbar`), normalised as cdo normalises layer weights; `vertint` multiplies
+  by it. cdo, without layer bounds in the file, weights all levels equally. Dry levels are
+  missing and drop out, so each cell is averaged over its own wet levels. **Full layers only**:
+  FESOM2's partial bottom cells (`use_partial_cell`) and zstar layer thickness are not modelled.
+  The thickness-weighted operators refuse variables on the interfaces (`nz`).
+- **`vertint` (cdors; cdo has none)** is Σ thickness·value over the valid values, the thickness
+  from the layer bounds of the vertical axis (1 without bounds, with the
+  `equal_vertical_weights` warning), on a mesh from its interfaces. `vertint,<z0>/<z1>` cuts the
+  layers at the depths z0 and z1 (positive down: absolute values of the bounds; metres on a
+  mesh) and counts the part of each layer inside the range; without layer bounds it is refused
+  (`no_coordinates`). A cell without a valid value inside the range is missing.
 - **`volint`, `volmean`, `volint,<z0>/<z1>`, `volmean,<z0>/<z1>` (cdors).** Per timestep
   Σ area·dz·value over all cells and levels with valid values, and that divided by their volume
   Σ area·dz; areas per level on a mesh place that has them (FESOM2 nodes: `nod_area[k]`),
   otherwise the cell areas of `fldint`. `volmean` is not `fldmean -vertmean`: every wet cell
-  counts with its volume. Variables without levels are refused (`unsupported_dimension`).
-  With a depth range (also `vertint,<z0>/<z1>`) only the levels whose layer reaches into it are
-  read, and only their per-level areas are loaded.
-  `volint` writes float64 with the units `<input units> m3` (`m3` without units); `volmean`
-  keeps the input's units and type.
+  counts with its volume. Variables without levels are refused (`unsupported_dimension`). The
+  depth range does not limit what is read: select the levels as well (`-sellevel`).
 - **`intlevel`** interpolates as cdo does (float32 weights, cdo's missing-value rule, targets
   outside the levels missing unless `extrapolate=true`), from positional targets or `level=`;
   `zdescription=` and `zvarname=` are not implemented. Every variable with more than one level
   is interpolated on its own vertical axis (cdo: the variables on the first z-axis with more than
-  one level, or with as many levels). The output axis has the target values and no bounds.
+  one level, or with as many levels). The output axis has the target values and no bounds. On a
+  mesh a target above a cell's top interface or below its bottom interface is missing: cdo's
+  rule alone (a missing neighbour level is replaced by the other one if that one's weight is at
+  least 0.5) would carry the deepest wet value up to half a layer into the ground.
 - **`bottomvalue`** reduces every variable with levels (cdo: only those on the first z-axis with
   more than one level, the others are copied) and copies a file without levels (cdo aborts with
-  "No processable variable found!").
+  "No processable variable found!"). On a mesh it takes each cell's own bottom, the value of its
+  deepest wet level (the deeper mesh level is the bottom, whatever the axis's `positive`
+  attribute says); cdo takes the deepest stored value of the column, the 0 that FESOM2 writes
+  into the ground.
 
 ## GRIB (gribscan references)
 
@@ -324,29 +348,41 @@ the two views differ, cdors follows the references:
 
 ## Regions
 
+- **Region catalog (cdors; cdo knows only region files and GMT's DCW).** `regions=<set>` takes a
+  set name or a GeoJSON file of polygons. Built into the binary: `ar6.all`, `ar6.land`,
+  `ar6.ocean` (IPCC AR6, Iturbide et al. 2020, CC-BY 4.0), `srex`, `giorgi`, `prudence` (from
+  regionmask, MIT; coordinates from the papers) and `nino` (NOAA CPC's Niño 1+2, 3, 3.4 and 4
+  boxes). From a regions directory (`$CDORS_REGIONS`, else `share/regions/` of the install),
+  unsimplified: Natural Earth v5.1.2 (public domain) `ne.countries_50`, `ne.countries_110`,
+  `ne.land_50`, `ne.land_110`, `ne.ocean_basins_50`, and nereus' `basins` and `moc` (MPAS
+  geometric_features, from the IHO seas via marineregions.org, CC-BY 4.0). Source, licence and
+  attribution are attributes of every output (`regions_source`, `regions_license`,
+  `regions_attribution`); `cdors help regmask` lists them. There is no hemisphere set: use
+  `-sellonlatbox,-180,180,0,90`.
 - **`regmask`.** A cdors operator (cdo has none): `regmask,regions=<set>[,select=<abbrev,...>][,fill=nearest]`
   writes `mask(region, <cells>)` as int8 (1: the cell centre lies in the region) with the
   coordinate `region` (the region numbers) and the string variables `region_name` and
   `region_abbrev` (NetCDF: character arrays over `<name>_strlen`; Zarr: variable-length UTF-8
   strings). The grid stays as it is; `region` is an axis of the vertical kind, so cdo reads the
   file as one field with a level per region (and skips the string variables with a warning).
-  Membership follows regionmask 0.13 (`mask_3D`, identical cell for cell on the test grids),
-  with one difference: every region is kept (regionmask's `drop=False`); an empty region is a
-  zero row and the warning `regions_empty`. `select=` masks with the selected regions only, as
-  regionmask's `regions[[...]]`. `fill=nearest` gives every cell outside all regions to the
-  region of the nearest member cell; every cell of the grid counts (there is no wet mask
-  without a model mesh), so on grids with land it fills the land too. The count is the warning
-  `regions_filled` (stderr, `--plan` `warnings[]`) and the attribute `regions_filled`. The set's
-  source, licence and attribution are attributes of `mask`.
+  Membership follows regionmask 0.13 (`mask_3D`, identical cell for cell on the test grids and
+  on dart's nodes), with one difference: every region is kept (regionmask's `drop=False`); an
+  empty region is a zero row and the warning `regions_empty`. `select=` masks with the selected
+  regions only, as regionmask's `regions[[...]]`. `fill=nearest` gives every cell outside all
+  regions to the region of the nearest member cell: on a model mesh every cell with a wet level,
+  on other grids every cell (there is no wet mask without a mesh), so on grids with land it
+  fills the land too. The count is the warning `regions_filled` (stderr, `--plan` `warnings[]`)
+  and the attribute `regions_filled`.
 - **Region statistics** `regmin`, `regmax`, `regsum`, `regint`, `regmean`, `regstd`
   (`regions=<set>[,select=...][,fill=nearest]`), cdors operators: the `fld*` statistic over the
   cells of each region (membership as `regmask`; overlapping sets count a cell in each of its
-  regions). `regsum`, `regmin`, `regmax` are unweighted; `regint` is Σ area·value (float64,
-  units `<input units> m2`; cdo 2.6.0's `fldint` keeps the input's units and float32),
-  `regmean` and `regstd` are weighted by cell area (`regstd` with cdo's one-pass
-  variance, as `fldstd`); on a model mesh per level with that level's areas. The horizontal
-  dimensions become `region` (cdo reads it as a generic grid); a region without valid cells is
-  missing (without any cell also the warning `regions_empty`).
+  regions). `regsum`, `regmin`, `regmax` are unweighted; `regint` is Σ area·value (units: see
+  "Units of integrals"); `regmean` and `regstd` are weighted by cell area (`regstd` with cdo's
+  one-pass variance, as `fldstd`); on a model mesh per level with that level's areas. The
+  horizontal dimensions become `region` (cdo reads it as a generic grid); a region without
+  valid cells is missing (without any cell also the warning `regions_empty`). Region names are
+  known only inside the chain that makes them: `outputtab,region_name` on a stored file fails
+  with `no_coordinates` (cdors reads no string variables).
 - **`maskregion,regions=<set>[,select=...][,fill=nearest]`.** A cdors extension: the union of the
   catalog regions (regionmask's rules) as the mask; cdo's region files work as in cdo.
 - **`selregion` with several polygons.** cdo 2.6.0 (and 2.6.5's source) appends the selected
@@ -366,6 +402,42 @@ the two views differ, cdors follows the references:
 - **`maskregion` and variables on other grids.** cdo writes only the variables on the masked
   grid (and needs exactly one); cdors masks every grid with coordinates and passes single
   points unchanged.
+
+## Sampling: `selpoints` and `transect`
+
+Both are cdors operators. cdo's nearest point is `remapnn,lon=<x>_lat=<y>` (weights from cdo,
+one point per call), which cdors keeps unchanged.
+
+- **`selpoints,file=<csv>|lon=<x>_lat=<y>[,...][,method=nn|linear]`** gives the dimension
+  `station` with `lon`, `lat`, `station_name` and, on a mesh, `bottom_depth`. `nn` takes the
+  nearest cell (KD-tree on unit vectors; on equal distances the smallest cell index); `linear`
+  takes barycentric weights in the mesh's own triangles (FESOM2 nodes) or, on built-in grids,
+  the local spherical Delaunay triangle of the nearest cells. The weights are planar in the
+  triangle, as FESOM2's P1 elements, so a field linear in x, y, z is exact at the point's
+  central projection, not at the point (O(h²)). A mesh place without triangles of its own
+  (FESOM2 elements, a subset of the nodes) is sampled by `nn` with the warning `linear_as_nn`;
+  a point in no triangle is missing (warning `points_outside`).
+- **`transect,<lon0>,<lat0>,<lon1>,<lat1>[,...]|file=<GeoJSON LineString>[,step=<km>][,method=…]`**
+  samples great-circle segments in equal arcs, at most `step` km apart (default: the median
+  cell spacing along the path), on a sphere of 6371 km; one path per call. The output has the
+  dimension `distance` (km) with `lon`, `lat` and `bottom_depth`.
+- **Levels are kept, values below the bottom are missing.** Neither operator interpolates in
+  the vertical. A value is missing if any cell its point uses is missing or dry there.
+- **nereus' `transect` samples otherwise:** `n_points` (default 100) on one segment by
+  normalised chord interpolation, a flat-earth distance, no dry-level masking, and it returns a
+  figure. On cdors' points, nereus' nearest-node rule (scipy's cKDTree on unit vectors) picks
+  the same nodes: Drake on pi (checked against nereus itself) and on dart.
+
+## Units of integrals
+
+- **The integrals of cdors operators write float64 with the integral's units:** `vertint`
+  `<input units> m`, `regint` `<input units> m2`, `volint` `<input units> m3` (just `m`, `m2`,
+  `m3` without input units); `fldhist,out=area` writes m², `out=fraction` `1`.
+- **cdo-named operators keep cdo's behaviour:** `fldint` and `zonint` keep the input's units
+  and type (cdo 2.6.0's `fldint`: float32, units unchanged). `volmean`, `regmean` and the other
+  means keep the input's units and type.
+- **`-mulc` keeps the units**, as in cdo: the heat content `-mulc,4.09e6 -volint,…` of a
+  temperature in °C is in J but labelled `C m3`.
 
 ## Information operators
 

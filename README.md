@@ -7,8 +7,10 @@ are read at all, consecutive operators are merged into one pass, and memory is b
 Its command language is CDO's: same operator names, arguments and chaining. Its primary users are
 AI agents; humans come second.
 
-It is a prototype: about 190 operators in a dozen families (`cdors ops`), tested against cdo 2.6.0
-on small fixtures (`tests/`). Where cdors deliberately differs from cdo, the difference is listed
+It is a prototype: 207 operators in a dozen families (`cdors ops`), tested against cdo 2.6.0
+on small fixtures (`tests/`), and, since round 1, analysis on native ocean model meshes (FESOM2:
+regions, latitude bands, histograms, vertical and volume integrals, points and sections), tested
+against regionmask, nereus and NumPy. Where cdors deliberately differs from cdo, the difference is listed
 in [docs/deviations.md](docs/deviations.md).
 
 **Status (2026-10-09): the prototype is complete.** On a Levante compute node it was 4.4–72×
@@ -20,8 +22,16 @@ and a daily climatology over 1.1 TB within a 32 GB budget. What was shown and wh
 [docs/criteria.md](docs/criteria.md), with the details in
 [docs/bench-results.md](docs/bench-results.md) and [docs/agent-check.md](docs/agent-check.md).
 
+**Round 1 (2026-10-19): FESOM2 meshes.** On 3.16 million nodes of AWI-CM3's dart mesh, values
+agree with nereus given the same mesh areas (Atlantic heat content 0–700 m to 2.9e-8, the float32
+output; ice extent to 3e-14), and the Atlantic and AR6 ocean masks are identical to nereus' and
+regionmask's (all nodes; AR6 on every 10th node). Three years of daily NH ice extent took 7.2 s on a compute node,
+17.7× faster than nereus; the Atlantic heat content took 15.4 s, 4.5× faster <!-- refresh: OHC
+time and factor after the volint fix -->. See "Model meshes (FESOM2)" below and
+[docs/unstructured-results.md](docs/unstructured-results.md).
+
 **On Levante, without building:** `export PATH=/work/ab0995/a270088/cdors/bin:$PATH`. The guide with
-worked examples on nextGEMS, EERIE and CMIP6 data is [docs/levante.md](docs/levante.md), installed
+worked examples on nextGEMS, EERIE, CMIP6 and FESOM2 data is [docs/levante.md](docs/levante.md), installed
 next to the program as `/work/ab0995/a270088/cdors/README.md`.
 
 ## Building (Levante)
@@ -105,6 +115,111 @@ output and, on failure, removes only that file or directory and only if it creat
 files of killed runs (`kill -9`, node failure) keep that name and are never removed automatically;
 remove them by hand.
 
+## Operators
+
+`cdors ops` lists all 207 with their arguments; `cdors help <op>` prints cdo's help text plus
+cdors' notes. **Bold**: cdors operators (`"origin": "cdors"` in `cdors ops --json`), which cdo
+does not have. †: cdo operators with an extension for model meshes (`extensions` in
+`cdors ops --json`).
+
+| Family | Operators |
+|---|---|
+| Information | `sinfo`, `showname`, `showtimestamp`, `griddes`; `info`, `infon`, `output`, `outputf`, `outputtab` |
+| Selection | `selname`, `sellevel`, `seltimestep`, `seldate`, `selyear`, `selmon`, `selseason`, `sellonlatbox`, `selregion`, `bottomvalue`† |
+| Modification | `setgrid`† (`fesom:<dir>`), `maskregion`† (`regions=<set>`) |
+| Arithmetic | `add`, `sub`, `mul`, `div`, `addc`, `subc`, `mulc`, `divc`, `ifthen`, `ymon*`, `yday*`, `yseas*` × `add`/`sub`/`mul`/`div` |
+| Time statistics | `tim*`, `hour*`, `day*`, `mon*`, `seas*`, `year*`, `ymon*`, `yday*`, `yseas*`, `run*` × mean, avg, min, max, sum, range, std, std1, var, var1; exact percentiles `tim/hour/day/mon/seas/yearpctl` |
+| Space statistics | `fld*`† (with `fldint`), `zon*` (`zonmean`†, `zonsum`†, `zonint`† with `zonal_<DY>` bands), `vert*`†, **`vertint`**, **`volint`**, **`volmean`**, **`fldhist`** |
+| Regions | **`regmask`**, **`regmin`**, **`regmax`**, **`regsum`**, **`regint`**, **`regmean`**, **`regstd`** |
+| Sampling | **`selpoints`**, **`transect`**; `remapnn,lon=<x>_lat=<y>` |
+| Model meshes | **`tonodes`**, **`toelems`**; `cdors mesh info <spec>` |
+| Interpolation | `remap`, `remapnn`, `remapdis`, `remapbil`, `remapcon`, `remapycon`, `hpdegrade`, `hpupgrade`, `intlevel`† |
+| Files | `copy`, `mergetime`, `cat` |
+
+## Model meshes (FESOM2)
+
+FESOM2 writes its output on the nodes and elements of an unstructured mesh, with dry levels
+stored as 0 and no cell areas in the files; cdo reads such files as generic grids with equal
+weights. `-setgrid,fesom:<dir>`, with `<dir>` the mesh directory holding `fesom.mesh.diag.nc`,
+gives the data its mesh:
+
+- **areas per level** (`nod_area[k]` for nodes, `elem_area` for elements), used by `fld*`,
+  `reg*`, `fldhist`, `zon*` and `volint`;
+- **layers and wet levels:** levels below each cell's bottom are missing from then on, whatever
+  the file stores there, so `fldmin`, `fldmean`, `vertmean`, ... skip them; `vert*` and
+  `vertint` use the mesh's layer thicknesses (full layers; FESOM2's default);
+- **both FESOM dimension orders**, `(time, nz1, nod2)` (FESOM 2.1 and later) and
+  `(time, nod2, nz1)` (FESOM 2.0), with the same results;
+- **a mesh cache:** the first use converts the mesh into a UGRID Zarr store in
+  `$CDORS_CACHE/meshes/` (dart, 3.16 million nodes: 14 s on a login node, 1.2 GB); later runs
+  read it from there (0.7 s for `cdors mesh info`);
+- **`cdors mesh info fesom:<dir> [--json]`:** places, sizes, area sums, wet levels, how the units
+  of the node coordinates were decided (radians or degrees; `fesom:<dir>,units=deg|rad`
+  overrides), source files and the cache entry.
+
+The data must be on the whole mesh (`grid_mismatch` otherwise), so `setgrid` goes right above
+the input and its time and level selections, and horizontal selections above `setgrid`.
+
+```sh
+cdors mesh info fesom:/pool/data/AWICM/FESOM2/MESHES_FESOM2.1/dart
+```
+```
+mesh fesom2:dart (fesom2)
+  place nodes     3160340 cells, area sum 3.600464e14, wet levels 2..79, areas per level (79 levels, 1997334880 B, lazy)
+  place elements  6262485 cells, area sum 3.600464e14, wet levels 2..79
+  table elem_nodes (elements -> nodes), 125249708 B, lazy
+  vertical: 79 levels, interfaces [-6550.0,-0.0], full layers
+  units: radians: max |lat| 1.570482 <= pi/2 and max |lon| 3.141592 <= 2 pi (nodes has no units attribute; override with units=deg)
+  ...
+```
+
+**Regions.** `reg*`, `regmask` and `maskregion,regions=<set>` take a set name or a GeoJSON file;
+a cell belongs to a region if its centre is inside (regionmask's rules), and `fill=nearest` hands
+wet cells outside every polygon to the nearest region. Built into the binary: `ar6.all`,
+`ar6.land`, `ar6.ocean` (IPCC AR6, Iturbide et al. 2020, CC-BY 4.0), `srex`, `giorgi`,
+`prudence` (via regionmask, MIT) and `nino` (NOAA CPC's Niño boxes). In the regions directory
+only (`$CDORS_REGIONS`, else `share/regions/` of the install; `tools/export_regions.py` writes
+it): Natural Earth v5.1.2 (public domain) `ne.countries_50/110`, `ne.land_50/110`,
+`ne.ocean_basins_50`, and nereus' ocean basins `basins` and `moc` (from MPAS
+geometric_features, made from the IHO seas via marineregions.org, CC-BY 4.0). Every output
+carries the set's source, licence and attribution as attributes; `cdors help regmask` lists
+them.
+
+**Recipes** (`<mesh>` is the mesh directory; also in `cdors guide`):
+
+```sh
+# ocean heat content 0-700 m in J (4.09e6 = rho0*cp = 1025*3990 J m-3 K-1); select the layers above 700 m:
+# the depth range alone does not limit what is read
+cdors -mulc,4.09e6 -volint,0/700 -setgrid,fesom:<mesh> -sellevel,<the layers above 700 m> -selname,temp in.nc ohc.nc
+# northern-hemisphere ice area (m2), extent (area with a_ice >= 0.15, m2) and ice volume (m3)
+cdors -fldint -sellonlatbox,-180,180,0,90 -setgrid,fesom:<mesh> -selname,a_ice in.nc area.nc
+cdors -fldhist,edges=0.15/1 -sellonlatbox,-180,180,0,90 -setgrid,fesom:<mesh> -selname,a_ice in.nc extent.nc
+cdors -fldint -setgrid,fesom:<mesh> -selname,m_ice in.nc volume.nc
+# Atlantic series (nereus' basins)
+cdors --json outputtab,date,value -regmean,regions=basins,select=Atlantic_Basin -setgrid,fesom:<mesh> -selname,sst in.nc
+# temperature section through the Drake Passage: temp(time, nz1, distance), dry levels missing
+cdors -transect,-65,-55,-60,-65 -setgrid,fesom:<mesh> -selname,temp in.nc drake.nc
+```
+
+`vertint`, `regint` and `volint` write float64 in the input's units times m, m2, m3; `fldint`
+keeps cdo's units and type; `-mulc` keeps units, so the heat content above reads "C m3" but is
+in J. Worked examples on the AWI-CM3 dart run: [docs/levante.md](docs/levante.md). Differences
+from cdo and from nereus: [docs/deviations.md](docs/deviations.md).
+
+**On real data** (AWI-CM3 `TCO319L137-DART/hist1950d`, dart mesh, 3 years, one compute node,
+128 cores; [docs/unstructured-results.md](docs/unstructured-results.md)):
+
+| 3 years, dart | cdors | nereus |
+|---|---|---|
+| NH ice extent from daily a_ice, cold | 7.2 s | 126 s |
+| Atlantic heat content 0–700 m, cold <!-- refresh --> | 15.4 s | 68.6 s |
+| first use of the mesh with the Atlantic mask | 19.7 s | 343 s |
+| values against nereus with the mesh's `nod_area` | heat content 2.9e-8, extent 3e-14 (relative) | |
+| peak memory <!-- refresh --> | ice 1.1–1.7 GB, heat content 3.0–3.3 GB | 5.1–6.2 GB |
+
+The heat content misses its speed and memory marks: `volint` keeps only 10–15 of the 128 cores
+busy (one lane per output step) <!-- refresh: after the volint fix -->.
+
 ## For agents
 
 cdors never prompts and never reads stdin. Add `--json` to any command to get machine-readable
@@ -149,7 +264,8 @@ b.nc` plans both files. Main fields (schema version `"cdors_plan": 1`):
 | `read_limit` | `limit`, its `source`, `bytes` (decoded bytes read from files, stores and URLs; reads of in-memory intermediates do not count) and `exceeded` (the run would be refused with `read_limit`) |
 | `print` | only for the value-printing operators: `operator`, `values` (`fields` for `info`/`infon`), `max_values`, `exceeded` |
 | `stages[].kernel.area_weights[]` | `fld*` statistics: per variable, where the area weights come from (`area_weights`: `file` with `area_variable`, `bounds`, `reduced_rows`, `healpix`, `pseudo_bounds`, or `equal`) and a `description` |
-| `warnings[]` | results that are probably wrong, each `warning` and `message`: `equal_weights` (a weighted field statistic over a grid without cell areas, see "Area weights" above) |
+| `stages[].kernel.mesh_weights` | on a model mesh: the per-level areas and region tables a stage loads, with their bytes (also in `memory.parts.mesh_weights`) |
+| `warnings[]` | results that are probably wrong or incomplete, each `warning` and `message`: `equal_weights` (a weighted field statistic over a grid without cell areas, see "Area weights" above), `regions_empty`, `regions_filled` (`fill=nearest`), `points_outside` (`selpoints`, `transect` with `method=linear`) |
 
 For a remapping, `--plan` reads cdo's target-grid template if one is cached and otherwise
 describes the target grid itself: `r<nx>x<ny>`, `global_<inc>`, `hpz<zoom>[_nested|_ring]`,
@@ -270,6 +386,10 @@ hand when it is no longer needed. `--plan` and refused runs write nothing there.
   `weights/tgt-<hash>.nc` and `weights/src-<hash>.nc`: grid files cdors writes for cdo when a
   target or source grid comes from a dataset cdo cannot read (Zarr); `weights/tmp/`: files being
   generated.
+- `meshes/<key>.zarr`: model meshes converted to UGRID Zarr (`-setgrid,fesom:<dir>`, `cdors mesh
+  info`), keyed by path, size and modification time of the mesh files and checked against a
+  fingerprint of their contents on load; an entry that fails the check is renamed to
+  `<key>.zarr.bad-<time>-<pid>` and rebuilt, never deleted.
 - `nc4index/<hash>.json`: chunk indexes of NetCDF-4 files, keyed by path, size, modification
   time, inode and status-change time, with the file's netCDF-C header (dimensions, variables,
   attributes, coordinate values up to 262144) once a run has opened it: later runs describe the
@@ -325,6 +445,12 @@ is accepted; the min/max inputs are not read.
 - Intermediate results are never spilled to disk.
 - Remapping weights and target-grid templates are generated by cdo; the first run per pair of
   grids runs cdo, later runs read the cache.
+- Model meshes: FESOM2 only, read from `fesom.mesh.diag.nc` (no ASCII mesh files), full layers (no
+  partial cells or zstar thickness), scalar fields only (no vectors, transports or MOC). Nodes have
+  no cell polygons, so latitude bands on a mesh take each cell whole, in the band of its centre.
+  `volint` folds one lane per output step and keeps few cores busy on long series, and
+  `volint,<z0>/<z1>` reads every level unless the levels are selected (`-sellevel`)
+  <!-- refresh: after the volint fix -->.
 - Bit-identical agreement with cdo is not a goal; results agree within a few float32 units in the
   last place (see [docs/deviations.md](docs/deviations.md)).
 

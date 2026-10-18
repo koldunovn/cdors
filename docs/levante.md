@@ -2,7 +2,8 @@
 
 **cdors runs CDO's analysis operators, many times faster.** Same commands as cdo, on Zarr, kerchunk and NetCDF.
 cdors reads only the chunks it needs, in parallel, reads the EERIE cloud (cdo cannot), and shows what a run will
-read before it runs. It is a prototype (0.1.0, October 2026): 187 operators, each compared with cdo 2.6.0.
+read before it runs. It is a prototype (0.1.0, October 2026): 207 operators, each compared with cdo 2.6.0 or, where
+cdo has no counterpart, with regionmask, nereus or NumPy.
 
 The same command with cdo and with cdors, wall time on one Levante compute node:
 
@@ -19,6 +20,10 @@ Global data: nextGEMS ICON, 3.1 million HEALPix cells. The results agree with cd
 
 On the 6 km DestinE projections: 60 years of global-mean temperature from 36 GB in 6–20 s (cdo: about a minute), and
 a 6 km warming map in 15 s (see "Larger problems").
+
+On FESOM2's own mesh (AWI-CM3, 3.2 million nodes): three years of daily Arctic sea-ice extent in 7.2 s, 18× faster
+than nereus, and the Atlantic heat content 0–700 m in 15 s, 4.5× faster <!-- refresh: after the volint fix -->, with
+the same values (Example 7).
 
 ## Try it
 
@@ -43,8 +48,8 @@ cdors outputtab,date,value -yearmean -fldmean -sellonlatbox,-10,40,35,70 -selmon
 That took 0.6 s on a login node. Data: nextGEMS ICON `ngc4008`, daily, 3,145,728 HEALPix cells, 2020–2049. cdors
 read 60 of the 17,568 chunks of `tas` (0.47 GB).
 
-The examples go from small to large. Examples 1–6 ran on a login node, the larger problems after them on an
-interactive node with 128 CPUs (2026-10-09).
+The examples go from small to large. Examples 1–7 ran on a login node, the larger problems after them on an
+interactive node with 128 CPUs (2026-10-09) or a compute node (FESOM2, 2026-10-19).
 
 ## Example 1: look at a dataset
 
@@ -266,6 +271,159 @@ ushow tas_ymonmean.nc
 `info`, `infon`, `output`, `outputf` and `outputtab` print any chain's result in cdo's format, up to a million
 values (`--max-values`).
 
+## Example 7: FESOM2 on its own mesh
+
+FESOM2 writes ocean and sea-ice output on the nodes of an unstructured mesh, stores 0 below the sea floor and no
+cell areas. `-setgrid,fesom:<mesh directory>` gives the data its mesh: areas at every level, the layers, and each
+node's bottom. Levels below the bottom then count as missing, field means are area-weighted level by level, and
+regions, histograms, volume integrals and sections become available.
+
+Data: AWI-CM3 (`TCO319L137-DART/hist1950d`), one file per variable and year, on the dart mesh (3,160,340 nodes,
+79 levels). Monthly `temp` is 12 GB per year, daily `a_ice` 4.6 GB.
+
+```bash
+M=/pool/data/AWICM/FESOM2/MESHES_FESOM2.1/dart
+F=/work/ab0995/a270210/runtime/awicm3-v3.1_refactoring/TCO319L137-DART/hist1950d/outdata/fesom
+cdors mesh info fesom:$M
+```
+```
+mesh fesom2:dart (fesom2)
+  place nodes     3160340 cells, area sum 3.600464e14, wet levels 2..79, areas per level (79 levels, 1997334880 B, lazy)
+  place elements  6262485 cells, area sum 3.600464e14, wet levels 2..79
+  table elem_nodes (elements -> nodes), 125249708 B, lazy
+  vertical: 79 levels, interfaces [-6550.0,-0.0], full layers
+  units: radians: max |lat| 1.570482 <= pi/2 and max |lon| 3.141592 <= 2 pi (nodes has no units attribute; override with units=deg)
+  ...
+```
+
+The first use of a mesh converts it into `$CDORS_CACHE/meshes/` (14 s and 1.2 GB for dart); after that it takes
+0.7 s.
+
+**Below the sea floor.** At 4100 m, 2,152,694 of the 3,160,340 nodes are in the ground. Without the mesh they are
+zeros; with it they are missing:
+
+```bash
+cdors infon -sellevel,4100 -selmon,1 -selname,temp $F/temp.fesom.1975.nc
+cdors infon -setgrid,fesom:$M -sellevel,4100 -selmon,1 -selname,temp $F/temp.fesom.1975.nc
+```
+```
+    -1 :       Date     Time   Level Gridsize    Miss :     Minimum        Mean     Maximum : Parameter name
+     1 : 1975-01-31 23:56:00    4100  3160340       0 :    -0.95207     0.22199      13.375 : temp
+     1 : 1975-01-31 23:56:00    4100  3160340 2152694 :    -0.95207     0.69624      13.375 : temp
+```
+
+**Sea ice.** Northern-hemisphere ice extent (the area where `a_ice` ≥ 0.15) and ice area per month of 1975, in
+million km², from 365 daily fields:
+
+```bash
+cdors outputtab,date,value -mulc,1e-12 -monmean -selname,a_ice -fldhist,edges=0.15/1 \
+  -sellonlatbox,-180,180,0,90 -setgrid,fesom:$M -selname,a_ice $F/a_ice.fesom.1975.nc
+cdors outputtab,date,value -mulc,1e-12 -monmean -fldint \
+  -sellonlatbox,-180,180,0,90 -setgrid,fesom:$M -selname,a_ice $F/a_ice.fesom.1975.nc
+```
+```
+#      date    value
+ 1975-01-16 15.1062178626641
+ 1975-02-15 16.3297166887086
+ 1975-03-16 16.2105242359811
+ ...
+ 1975-09-16 9.24912279716533
+ ...
+ 1975-12-16 14.2145074531006
+#      date    value
+ 1975-01-16 13.89501
+ 1975-02-15 14.97291
+ 1975-03-16 14.87076
+ ...
+ 1975-09-16 7.518077
+ ...
+ 1975-12-16 13.15417
+```
+
+3.5 s the first time (4.6 GB), 1.2 s after. `fldhist` counts the area per bin, here one bin [0.15, 1]; the area
+below 0.15 goes to `a_ice_below` and is dropped here with `-selname,a_ice`. `fldint` keeps cdo's float32.
+
+**Regions.** Surface temperature of July 1975 in nereus' ocean basins, and the monthly mean over the Niño 3.4 box for the year:
+
+```bash
+cdors outputtab,region_name,value -regmean,regions=basins -setgrid,fesom:$M -sellevel,2.5 -selmon,7 -selname,temp $F/temp.fesom.1975.nc
+cdors outputtab,date,value -regmean,regions=nino,select=nino34 -setgrid,fesom:$M -sellevel,2.5 -selname,temp $F/temp.fesom.1975.nc
+```
+```
+#   region_name    value
+Atlantic_Basin 20.32537
+ Pacific_Basin 23.10711
+  Indian_Basin 22.74278
+  Arctic_Basin -1.098592
+Southern_Ocean_Basin 3.885819
+Mediterranean_Basin 24.09919
+  Global Ocean 17.82859
+Global Ocean 65N to 65S 19.13921
+Global Ocean 15S to 15N 26.88675
+#      date    value
+ 1975-01-31 25.00394
+ 1975-02-28 25.27674
+ ...
+ 1975-06-30 27.20209
+ ...
+ 1975-12-31 25.26336
+```
+
+1.2 s and 0.8 s. A node belongs to a region if it lies inside the polygon (regionmask's rules; on dart the Atlantic
+holds the same 924,967 nodes as in nereus). The sets: IPCC AR6 (`ar6.ocean`, `ar6.land`, `ar6.all`), SREX, Giorgi,
+PRUDENCE and the Niño boxes are built in; nereus' `basins` and `moc` and Natural Earth's `ne.countries_50`,
+`ne.ocean_basins_50`, ... are installed next to the program. `cdors help regmask` lists them with their licences.
+`regint`, `regmin`, `regmax`, `regsum`, `regstd` work the same way, and `-maskregion,regions=<set>,select=<region>`
+masks everything outside.
+
+**Heat content.** Atlantic ocean heat content 0–700 m, in J, for January and February 1975 (ρ₀ c_p = 1025 × 3990
+J m⁻³ K⁻¹, nereus' constants):
+
+```bash
+LV=2.5,7.5,15,25,35,45,55,65,75,85,95,106,118.5,132.5,147.5,162.5,177.5,192.5,207.5,222.5,240,262.5,287.5,312.5,337.5,362.5,387.5,415,445,475,505,535,565,600,640,680
+cdors outputtab,date,value -mulc,4089750 -volint,0/700 -maskregion,regions=basins,select=Atlantic_Basin \
+  -setgrid,fesom:$M -sellevel,$LV -selmon,1/2 -selname,temp $F/temp.fesom.1975.nc
+```
+```
+#      date    value
+ 1975-01-31 2.25583432712012e+24
+ 1975-02-28 2.24917390126973e+24
+```
+
+3.0 s, 2.8 GB of memory <!-- refresh: after the volint and region-mask fixes -->. `volint,0/700` is Σ value × area × layer thickness over every wet node and layer down to
+700 m (a layer that crosses 700 m counts in part); `volmean` divides by the volume. `$LV` lists the 36 layers above
+700 m: the depth range alone does not limit what is read. The output's units read `C m3`, because `-mulc` keeps
+units.
+
+**A section.** Temperature through the Drake Passage, January 1975, nearest node, at the surface every 100 km:
+
+```bash
+cdors outputtab,distance,lat,value -transect,-65,-55,-60,-65,step=100 -setgrid,fesom:$M -sellevel,2.5 -selmon,1 -selname,temp $F/temp.fesom.1975.nc
+```
+```
+#distance    lat    value
+       0    -55 7.895102
+95.44144 -55.83952 4.856841
+190.8829 -56.67819  4.51521
+ ...
+1049.856 -64.17486 1.076849
+1145.297    -65 -1.805974
+```
+
+Without `step` and the level selection, the section has every level and a point every 10 km (the median node
+spacing), with `bottom_depth` and missing values below it (1.5 s):
+
+```bash
+cdors -transect,-65,-55,-60,-65 -setgrid,fesom:$M -selmon,1 -selname,temp $F/temp.fesom.1975.nc drake.nc
+```
+
+`temp(time, nz1, distance)`, 79 × 117. One station works the same way:
+`-selpoints,lon=-30_lat=55` gives `temp(time, nz1, station)`; at 30°W 55°N in July 1975, 11.75 °C at the surface
+and 3.56 °C at 2000 m.
+
+All of these ran on a login node (16 threads). `cdors help <op>` explains the operators that cdo does not have
+(`"origin": "cdors"` in `cdors ops --json`).
+
 ## Larger problems: an interactive node
 
 When problems get large, with millions of cells per field over decades, move to an interactive node: there cdors
@@ -414,6 +572,34 @@ In a Slurm job cdors uses all allocated cores, 128 reads in flight, no read limi
 (`--mem`). This is the 72× command from the top: 79 s, against 1 h 35 min for cdo. `--progress json` logs progress
 once per second.
 
+### Three years of FESOM2
+
+In the batch script above, with these commands (`$M`, `$F` and `$LV` as in Example 7):
+
+Three years of the AWI-CM3 run (1970–1972 below; 1980–1982 and 1990–1992 too): 16.4 GB of `temp` above 700 m
+and 13.9 GB of daily `a_ice`. On one compute node (128 cores), against nereus (Python, xarray and dask) given the
+same mesh areas, best of the three sets:
+
+```bash
+cdors -mulc,4089750 -volint,0/700 -maskregion,regions=basins,select=Atlantic_Basin -setgrid,fesom:$M \
+  -sellevel,$LV -selname,temp -cat $F/temp.fesom.197[012].nc ohc.nc
+cdors -fldhist,edges=0.15/1 -sellonlatbox,-180,180,0,90 -setgrid,fesom:$M -selname,a_ice \
+  -cat $F/a_ice.fesom.197[012].nc extent.nc
+```
+
+| 3 years, dart, one node | cdors | nereus |
+|---|---|---|
+| Atlantic heat content 0–700 m, 36 months, cold <!-- refresh --> | 15.4 s | 68.6 s |
+| the same, warm <!-- refresh --> | 13.9 s | 20.5 s |
+| NH ice extent, 1096 days, cold | 7.2 s | 126 s |
+| the same, warm | 6.2 s | 16.3 s |
+| first use of the mesh and the Atlantic mask | 19.7 s | 343 s |
+| peak memory <!-- refresh --> | 1.1–1.7 GB (ice), 3.0–3.3 GB (heat content) | 5.1–6.2 GB |
+
+The values agree with nereus to 2.9e-8 (heat content, float32 output) and 3e-14 (extent). The heat content uses
+only 10–15 of the 128 cores for now <!-- refresh: after the volint fix -->.
+
+
 ## The rules in one minute
 
 - **Same syntax as cdo:** `cdors [options] -op3 -op2,args -op1 input output`.
@@ -424,6 +610,8 @@ once per second.
 - **Outputs:** `.zarr` gives Zarr, anything else NetCDF-4; existing files need `-O`; `-z zip` compresses NetCDF
   (Zarr always is).
 - **Login nodes:** 16 threads, 64 GB read per command, a 4 GiB memory plan.
+- **Model meshes:** `-setgrid,fesom:<mesh directory>` right above the input and its time and level selections;
+  horizontal selections, regions and statistics above it.
 - **Scripts:** add `--json`.
 - **Missing operator:** run that step with cdo; `cdors ops` lists what exists.
 
@@ -440,8 +628,11 @@ HDF5 1.14.3, netCDF-C 4.9.3-rc1
 No module or conda environment is needed. `cdors` is a wrapper that sets two defaults; set either yourself to
 override it:
 
-- `CDORS_CACHE`: remap weights and NetCDF indexes, default `/scratch/<x>/<user>/cdors-cache`.
+- `CDORS_CACHE`: remap weights, NetCDF indexes and model meshes, default `/scratch/<x>/<user>/cdors-cache`.
 - `CDO`: the cdo that makes remap weights, default cdo 2.6.0.
+
+The larger region sets (nereus' basins, Natural Earth) are in `share/regions/` next to the program; `CDORS_REGIONS`
+points cdors to another directory.
 
 Documentation next to the program, in `/work/ab0995/a270088/cdors/`:
 
@@ -467,6 +658,8 @@ Documentation next to the program, in `/work/ab0995/a270088/cdors/`:
 - A field mean over a grid without cell areas or bounds uses equal weights, as in cdo, but warns in a framed block
   (cdo: one line). cdors weights reduced Gaussian grids by cell area; cdo 2.6 weights them equally.
 - GRIB through gribscan references: time stamps and level order are the references' (monthly means mid-month).
+- On a FESOM2 mesh, levels below the sea floor are missing (cdo sees the stored 0), and field means weight each
+  level by its own node areas.
 
 Full list: `doc/deviations.md`, with five cdo bugs found on the way (cdo 2.6.0, for one, misreads a partly filled
 last time chunk of HEALPix Zarr).
@@ -475,8 +668,9 @@ last time chunk of HEALPix Zarr).
 
 - **GRIB without gribscan references, and GRIB1** (ERA5 in `/pool/data/ERA5`): use cdo. GRIB with gribscan
   references (EERIE IFS-FESOM) works, see Example 4.
-- **Many cdo operators**, e.g. `expr`, `trend`, correlations, ETCCDI indices, `ydaypctl`, `intlevel`, ensemble
-  statistics, EOFs.
+- **Many cdo operators**, e.g. `expr`, `trend`, correlations, ETCCDI indices, `ydaypctl`, ensemble statistics, EOFs.
+- **Other model meshes** (ICON, NEMO, FESOM3, IFS native), gradients, transports, MOC and vectors on sections: round
+  1 covers scalar fields on FESOM2 meshes, with full layers.
 - **Classic NetCDF output** (`-f nc4c` writes NetCDF-4).
 - **Fast percentiles on data stored one field per chunk:** correct, but read several times.
 - **Weights without cdo:** cdo makes them once per grid pair.
@@ -486,13 +680,14 @@ last time chunk of HEALPix Zarr).
 
 - `$CDORS_CACHE/weights/`: remapping weights and grid files from cdo.
 - `$CDORS_CACHE/nc4index/`: chunk indexes of NetCDF-4 files.
+- `$CDORS_CACHE/meshes/`: model meshes, converted once (1.2 GB for dart).
 
-Both can be deleted any time. A killed run can leave a hidden `.<output>.cdors-tmp-...` next to the output; remove
+All three can be deleted any time. A killed run can leave a hidden `.<output>.cdors-tmp-...` next to the output; remove
 it by hand.
 
 ## Version and feedback
 
-Installed: 0.1.0, commit `1e5d801` (2026-10-10), the build that passed the tests; older versions stay next to it.
+Installed: 0.1.0, commit `1e5d801` (2026-10-10) <!-- refresh: commit of the round-1 install -->, the build that passed the tests; older versions stay next to it.
 Source: [github.com/koldunovn/cdors](https://github.com/koldunovn/cdors).
 
 It is a prototype: send wrong numbers, confusing errors or slow commands, with the command and `cdors --version`, to

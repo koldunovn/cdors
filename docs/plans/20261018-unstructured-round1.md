@@ -1010,9 +1010,24 @@ The harness gains three capabilities (Task 2), so that every check in this plan 
   2. speed against the gate's marks;
   3. agents 5/5, at a cost no higher than the Python arm;
   4. memory bounded under `--mem`.
-- [ ] Update the README (operator list and a mesh section), `docs/levante.md` (FESOM2 examples; the shared install
+- [x] Update the README (operator list and a mesh section), `docs/levante.md` (FESOM2 examples; the shared install
       and guide page only with approved text), `docs/deviations.md` and `docs/STATUS.md`.
 - [ ] Move this plan to `docs/plans/completed/`.
+- ➕ Documentation drafted (2026-10-19), criteria document left for the end:
+  - README: an operator table (cdors operators in bold, mesh extensions marked †) and "Model meshes (FESOM2)"
+    (what `setgrid,fesom:` gives, the region catalog with licences, the six recipes, the dart numbers);
+  - `docs/levante.md`: Example 7 (dart, login node: mesh info, dry levels, monthly NH ice extent and area of 1975,
+    basin means and Niño 3.4, Atlantic OHC for two months, Drake section, a station), and "Three years of FESOM2"
+    (node timings of Task 13, commands only);
+  - `docs/deviations.md`: round-1 entries regrouped (bands and histograms, meshes, vertical, regions, sampling,
+    units), each once; the "zon* with levels on a mesh are refused" entry was wrong since Task 8 and is gone;
+  - `docs/STATUS.md`: a round-1 section at the top, with follow-ups and the cleanup list.
+  - Numbers that change with the `volint` fix carry `<!-- refresh -->` comments (README, levante.md, STATUS.md).
+- ⚠️ The installed guide assumes the round-1 install has `share/regions/` (nereus' basins in Example 7); until then
+  those examples need `CDORS_REGIONS`.
+- ⚠️ The FESOM 2.0 PHC climatologies (`/pool/data/AWICM/FESOM2/climatology_PHC/*/temp.fesom.1948.nc`, pi and core2)
+  have no `nz1` coordinate variable: cdo and cdors see one generic grid of nz1 × nod2 points, and `-setgrid,fesom:`
+  fails with `grid_mismatch` ("dimension 'nod2' has 147580 points"), so they could not serve as the small example.
 
 ## Technical Details
 
