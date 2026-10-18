@@ -4,11 +4,15 @@
 # (fresh input + output tokens; in addition roughly 3–8M cache-read tokens, which are cheaper but count
 # towards usage limits). Run a ONE-SESSION PILOT first and re-estimate from its result record:
 #     RUN=1 TASKS=T5 ARMS=A bench/agent_check.sh
+# FESOM2 set (round 1): ~$4-6 at list price for 10 sessions (bench/agent_tasks.md, "Cost estimate");
+# pilot first:  RUN=1 TASKSET=fesom TASKS=F5 ARMS=A bench/agent_check.sh
 # =====================================================================================================
 #
 # Agent check (plan Task 14): five analysis tasks (bench/agent_tasks.md), each given to a headless
 # `claude -p` session twice: arm A with cdors, arm B with cdo + Python/xarray. Sessions run strictly one
 # after another, each in its own fresh scratch directory, and are scored against the reference answers.
+# Two task sets: TASKSET=prototype (T1-T5: HEALPix/ICON, 2026-10-09) and TASKSET=fesom (F1-F5: FESOM2
+# on the dart mesh, round 1; arm B gets the nereus environment, arm A CDORS_REGIONS for the basins).
 #
 # Usage:
 #   bench/agent_check.sh               DRY RUN (default): checks the tools, prints every prompt and the
@@ -17,14 +21,18 @@
 #   RUN=1 bench/agent_check.sh         runs the sessions (needs Nikolay's go-ahead, see above)
 #
 # Environment (defaults in brackets):
-#   TASKS ["T1 T2 T3 T4 T5"]  ARMS ["A B"]  RUN_ID [YYYYmmdd-HHMMSS]
+#   TASKSET [prototype] prototype (T1-T5) or fesom (F1-F5); sets the default TASKS and, for fesom, DOCS=guide
+#   TASKS ["T1 T2 T3 T4 T5" | "F1 F2 F3 F4 F5"]  ARMS ["A B"]  RUN_ID [YYYYmmdd-HHMMSS]
 #   TIME_LIMIT [1800] wall seconds per session (timeout; the transcript so far is kept and scored)
 #   MAX_TURNS [50] passed as --max-turns (empty: not passed)
 #   MAX_BUDGET_USD [] passed as --max-budget-usd when set (only enforced for API-key billing)
 #   MODEL [] / EFFORT []  passed as --model / --effort when set; use the same for both arms
 #   CDORS_BIN [/work/ab0995/a270088/cdors-target/release/cdors]  REPO [/home/a/a270088/cdo]
-#   DOCS [full]  documentation offered to arm A: full = README and docs/deviations.md copied into the
-#                session; guide = only `cdors guide` (the 5 kB guide for agents) besides help and ops
+#   DOCS [full; guide for TASKSET=fesom]  documentation offered to arm A: full = README and
+#                docs/deviations.md copied into the session; guide = only `cdors guide` (the 7 kB guide for
+#                agents) besides help and ops
+#   CDORS_REGIONS [/work/ab0995/a270088/cdors-target/fixtures/regions]  region catalog (basins, moc, ne.*)
+#                exported to arm-A sessions; F1 needs its basins.geojson
 #   BASE [/scratch/a/a270088/cdors-agentcheck]   sessions go to $BASE/<run-id>/<task>-<arm>/
 #   RESULTS_DIR [bench/agent]   CLAUDE_BIN [claude on PATH; a stub for testing the RUN path without claude]
 #
@@ -40,7 +48,12 @@ TASKS_MD=$HERE/agent_tasks.md
 SCORE=$HERE/agent/agent_score.py
 RUN=${RUN:-0}
 SELFTEST=${SELFTEST:-0}
-TASKS=${TASKS:-T1 T2 T3 T4 T5}
+TASKSET=${TASKSET:-prototype}
+case $TASKSET in
+  prototype) TASKS=${TASKS:-T1 T2 T3 T4 T5}; DOCS=${DOCS:-full} ;;
+  fesom) TASKS=${TASKS:-F1 F2 F3 F4 F5}; DOCS=${DOCS:-guide} ;;
+  *) echo "agent_check: unknown TASKSET=$TASKSET (prototype or fesom)" >&2; exit 1 ;;
+esac
 ARMS=${ARMS:-A B}
 RUN_ID=${RUN_ID:-$(date +%Y%m%d-%H%M%S)}
 TIME_LIMIT=${TIME_LIMIT:-1800}
@@ -52,7 +65,9 @@ CDORS_BIN=${CDORS_BIN:-/work/ab0995/a270088/cdors-target/release/cdors}
 REPO=${REPO:-/home/a/a270088/cdo}
 BASE=${BASE:-/scratch/a/a270088/cdors-agentcheck}
 CDO_BIN=/sw/spack-levante/cdo-2.6.0-akkxhz/bin/cdo
-PY_BIN=/work/ab0995/a270088/mambaforge/envs/hk25/bin/python
+PY_BIN=/work/ab0995/a270088/mambaforge/envs/hk25/bin/python          # arm B, T tasks
+PY_FESOM=/work/ab0995/a270088/mambaforge/envs/nereus/bin/python       # arm B, F tasks (nereus 0.4.1)
+CDORS_REGIONS=${CDORS_REGIONS:-/work/ab0995/a270088/cdors-target/fixtures/regions}
 NCDUMP_BIN=/sw/spack-levante/netcdf-c-main-k4lh4v/bin/ncdump
 HDF5_PLUGINS=/sw/spack-levante/netcdf-c-main-bdxvs5/plugins:/sw/spack-levante/netcdf-c-main-k4lh4v/plugins
 SYS_PATH=/usr/local/bin:/usr/bin:/bin
@@ -81,6 +96,11 @@ CLAUDE_BIN=${CLAUDE_BIN:-$(command -v claude)} || die "claude CLI not found"   #
 [ -x "$CDORS_BIN" ] || die "cdors binary not found: $CDORS_BIN"
 [ -x "$CDO_BIN" ] || die "cdo 2.6.0 not found: $CDO_BIN"
 [ -x "$PY_BIN" ] || die "python (hk25) not found: $PY_BIN"
+case " $TASKS " in *" F"*)
+  [ -x "$PY_FESOM" ] || die "python (nereus) not found: $PY_FESOM"
+  "$PY_FESOM" -I -c 'import nereus' 2>/dev/null || die "nereus does not import in $PY_FESOM"
+  [ -f "$CDORS_REGIONS/basins.geojson" ] || die "no basins.geojson in CDORS_REGIONS=$CDORS_REGIONS" ;;
+esac
 [ -x "$NCDUMP_BIN" ] || die "ncdump not found: $NCDUMP_BIN"
 py extract "$TASKS_MD" reference | python3 -I -c 'import json,sys; json.load(sys.stdin)' \
   || die "reference JSON in $TASKS_MD does not parse"
@@ -97,7 +117,6 @@ fi
 # answers. Its README and docs/deviations.md are copied into the session directory instead (docs/), and
 # the scorer flags any transcript that touches agent_tasks.md or the reference scripts.
 DOC_FILES=()
-DOCS=${DOCS:-full}
 case $DOCS in full|guide) ;; *) die "unknown DOCS=$DOCS (full or guide)";; esac
 if [ "$DOCS" = guide ]; then
   "$CDORS_BIN" guide >/dev/null 2>&1 || die "DOCS=guide but $CDORS_BIN has no 'guide' subcommand"
@@ -109,13 +128,16 @@ if [ "$DOCS" = full ] && [ -f "$REPO/docs/deviations.md" ]; then
   CDORS_DOCS+=", and docs/deviations.md (known differences from cdo)"; DOC_FILES+=("$REPO/docs/deviations.md")
 fi
 
+py_for() { case $1 in F*) echo "$PY_FESOM";; *) echo "$PY_BIN";; esac; }   # task -> arm-B python
+
 prompt_for() {  # task arm
-  local note
-  note=$(py extract "$TASKS_MD" "arm $2")
+  local note key="arm $2"
+  [ "${1#F}" != "$1" ] && key="arm $2 fesom"
+  note=$(py extract "$TASKS_MD" "$key")
   note=${note//\{CDORS\}/$CDORS_BIN}
   note=${note//\{CDORS_DOCS\}/$CDORS_DOCS}
   note=${note//\{CDO\}/$CDO_BIN}
-  note=${note//\{PYTHON\}/$PY_BIN}
+  note=${note//\{PYTHON\}/$(py_for "$1")}
   note=${note//\{NCDUMP\}/$NCDUMP_BIN}
   printf '%s\n\n%s\n\n%s\n' "$(py extract "$TASKS_MD" "prompt $1")" "$note" "$(py extract "$TASKS_MD" footer)"
 }
@@ -138,13 +160,13 @@ claude_args() {  # arm -> fills the array CLAUDE_ARGS. The prompt goes first, ri
   return 0
 }
 
-arm_path() {  # arm A: cdors only (it prints values itself: info/outputtab --json); arm B: cdo, Python, ncdump
+arm_path() {  # arm task. A: cdors only (it prints values itself: info/outputtab --json); B: cdo, Python, ncdump
   if [ "$1" = A ]; then echo "$(dirname "$CDORS_BIN"):$SYS_PATH"
-  else echo "$(dirname "$CDO_BIN"):$(dirname "$PY_BIN"):$(dirname "$NCDUMP_BIN"):$SYS_PATH"; fi
+  else echo "$(dirname "$CDO_BIN"):$(dirname "$(py_for "$2")"):$(dirname "$NCDUMP_BIN"):$SYS_PATH"; fi
 }
 
 n=0; for t in $TASKS; do for a in $ARMS; do n=$((n + 1)); done; done
-echo "agent_check: run $RUN_ID, $n session(s): tasks [$TASKS] x arms [$ARMS], time limit ${TIME_LIMIT}s," \
+echo "agent_check: run $RUN_ID, task set $TASKSET, $n session(s): tasks [$TASKS] x arms [$ARMS], time limit ${TIME_LIMIT}s," \
      "max turns ${MAX_TURNS:-none}, model ${MODEL:-default}; claude $("$CLAUDE_BIN" --version 2>/dev/null | head -1)"
 echo "agent_check: cdors: $("$CDORS_BIN" --version 2>/dev/null | sed -n 1p) ($CDORS_BIN)"
 echo "agent_check: docs copied into arm-A session directories: ${DOC_FILES[*]:-none}"
@@ -155,7 +177,8 @@ if [ "$RUN" != 1 ]; then
     claude_args "$a"
     echo
     echo "=================== $t-$a  ->  $BASE/$RUN_ID/$t-$a/"
-    echo "--- PATH=$(arm_path "$a")"
+    echo "--- PATH=$(arm_path "$a" "$t")"
+    [ "$a" = A ] && echo "--- env: CDORS_CACHE=$BASE/$RUN_ID/$t-$a/cdors-cache CDORS_REGIONS=$CDORS_REGIONS CDO=$CDO_BIN"
     printf -- '--- command: claude -p "$(cat prompt.txt)"'; printf ' %q' "${CLAUDE_ARGS[@]}"; echo
     echo "--- prompt.txt:"
     prompt_for "$t" "$a"
@@ -188,10 +211,12 @@ for t in $TASKS; do for a in $ARMS; do
   t0=$(date +%s.%N)
   (
     cd "$dir" || exit 97
-    export PATH="$(arm_path "$a")"
+    export PATH="$(arm_path "$a" "$t")"
     if [ "$a" = A ]; then
-      # fresh weights/index cache per session; cdors calls cdo (gen*) internally to make remap weights
-      export CDORS_CACHE="$dir/cdors-cache" HDF5_PLUGIN_PATH="$HDF5_PLUGINS" CDO="$CDO_BIN"
+      # fresh weights/index/mesh cache per session; cdors calls cdo (gen*) internally to make remap
+      # weights; the region catalog (basins, moc, Natural Earth) is read from CDORS_REGIONS
+      export CDORS_CACHE="$dir/cdors-cache" HDF5_PLUGIN_PATH="$HDF5_PLUGINS" CDO="$CDO_BIN" \
+             CDORS_REGIONS="$CDORS_REGIONS"
     fi
     exec timeout -k 30 "$TIME_LIMIT" "$CLAUDE_BIN" -p "$(cat prompt.txt)" "${CLAUDE_ARGS[@]}" \
       < /dev/null > transcript.jsonl 2> stderr.txt

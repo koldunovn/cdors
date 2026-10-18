@@ -3,7 +3,8 @@
 
   agent_score.py extract TASKS_MD KEY
       print the fenced block that follows `<!-- KEY -->` in TASKS_MD
-      (KEY: "prompt T1" .. "prompt T5", "arm A", "arm B", "footer", "reference")
+      (KEY: "prompt T1" .. "prompt T5", "prompt F1" .. "prompt F5", "arm A", "arm B", "arm A fesom",
+      "arm B fesom", "footer", "reference")
   agent_score.py score TASKS_MD TASK ARM TRANSCRIPT RESULTS_TSV RUN_ID WALL_S EXIT_CODE
       parse a `claude -p --output-format stream-json` (or `json`) transcript, score the ANSWER line
       against the reference, append one row to RESULTS_TSV (header written if the file is new) and
@@ -104,13 +105,13 @@ def parse_numbers(s, n_expected):
 
 
 def within(vals, ref, spec):
+    """tol_abs or tol_rel: one number for every value, or a list with one per value."""
     if len(vals) != len(ref):
         return False
-    for v, r in zip(vals, ref):
-        if "tol_abs" in spec:
-            if not abs(v - r) <= spec["tol_abs"]:
-                return False
-        elif not abs(v - r) <= spec["tol_rel"] * abs(r):
+    key = "tol_abs" if "tol_abs" in spec else "tol_rel"
+    tols = spec[key] if isinstance(spec[key], list) else [spec[key]] * len(ref)
+    for v, r, t in zip(vals, ref, tols):
+        if not abs(v - r) <= (t if key == "tol_abs" else t * abs(r)):
             return False
     return True
 
@@ -134,7 +135,7 @@ def score(md, task, arm, transcript, tsv, run_id, wall_s, exit_code):
     texts = []
     def peeks(s):
         """the reference answers, the reference scripts/logs or another session's directory"""
-        if re.search(r"agent_tasks|bench/agent|ref_t\d|ref_cdo|results-|/prep\b", s):
+        if re.search(r"agent_tasks|bench/agent|ref_t\d|ref_cdo|ref_fesom|cdors-bench|results-|/prep\b", s):
             return True
         if re.search(r"(^|[\s'\"=;(])\.\.($|[\s/'\";)])", s):  # parent directory of the session
             return True

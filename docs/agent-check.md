@@ -95,3 +95,23 @@ instead of copies of the README and `docs/deviations.md` (34 kB). Run `20261010-
 Per task: T1 56 s ($0.27), T2 149 s ($0.52), T3 88 s ($0.45), T4 90 s ($0.48), T5 44 s ($0.26). No session was
 flagged. With the guide, the cdors arm cost 27% less and took 39% less time: 1.3× the cost of cdo + Python, and
 4× faster.
+
+## FESOM2 set (round 1): prepared, not yet run (2026-10-19)
+
+Five tasks on raw FESOM2 output (AWI-CM3 `hist1950d`, dart mesh, 3.16M nodes): F1 Atlantic heat content 0–700 m
+per month of 1990–1991, F2 the NH ice-extent seasonal cycle from daily concentration (1990–1991), F3 a Drake
+Passage section of temperature (65° W, January 2000), F4 the NINO3.4 anomalies of 2005 (base 2001–2005), F5 the
+Arctic (> 66.5° N) mean SST per year 2006–2010. Arm A: cdors with `cdors guide` only (`DOCS=guide`); arm B: cdo
+2.6.0 and Python with nereus 0.4.1 (env `nereus`). Both arms get the mesh directory in the prompt.
+
+Prompts, references, tolerances, variants and the cdors cross-check are in `bench/agent_tasks.md` (section
+"FESOM2 task set"). The references come from NumPy scripts (`bench/agent/ref_fesom_*.py`) with nereus as the
+second method for F1 and F2. They were computed on a compute node (job 28230786, `bench/agent/ref_fesom.sh`,
+4 min 50 s). The cdors commands an expert would use agree with them: to 1e-14 relative on F1–F3, and to 1e-6 °C
+on F4–F5, where cdors writes float32. Three cdors findings came up along the way; they are listed there.
+The largest: `maskregion,regions=…` inflates the planned bytes 5×, so on a login node the natural F1 command is
+refused by the 64 GB read limit.
+
+Run: `TASKSET=fesom bench/agent_check.sh` (dry run), a pilot `RUN=1 TASKSET=fesom TASKS=F5 ARMS=A
+bench/agent_check.sh`, then `RUN=1 TASKSET=fesom bench/agent_check.sh`. Estimated cost: $4–6 for the ten
+sessions (range $3–8), 40–90 min.

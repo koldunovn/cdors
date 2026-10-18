@@ -1,0 +1,1 @@
+{"type": "result", "subtype": "success", "is_error": false, "duration_ms": 90000, "num_turns": 9, "result": "Section mean and wet samples.\n\nANSWER: 1.0573380 5233", "session_id": "00000000-0000-0000-0000-000000000000", "total_cost_usd": 0.27, "usage": {"input_tokens": 30, "cache_creation_input_tokens": 9000, "cache_read_input_tokens": 40000, "output_tokens": 900}}

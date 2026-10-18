@@ -925,6 +925,12 @@ The harness gains three capabilities (Task 2), so that every check in this plan 
 - [ ] Five tasks, two arms. Tasks: Atlantic OHC 0–700 m series, NH ice seasonal cycle, Drake T section, NINO3.4
       index, Arctic mean SST. Arms: cdors (`cdors guide` only) and Python + nereus.
 - [ ] Score correctness against the Task 13 references. Report wall time, tokens and USD for each arm.
+- ➕ **Prepared 2026-10-19** (no session run): tasks F1–F5, prompts, references and tolerances in
+  `bench/agent_tasks.md` (FESOM2 task set); references by `bench/agent/ref_fesom_*.py` (NumPy, nereus as the
+  second method), computed in job 28230786 by `bench/agent/ref_fesom.sh`, which also ran the expert's cdors
+  commands (all five agree with the references). Runner: `TASKSET=fesom bench/agent_check.sh` (arm B gets the
+  nereus env, arm A `CDORS_REGIONS`, `DOCS=guide`); the mesh directory is named in every prompt, the same for
+  both arms. The references are this task's own, not Task 13's (Task 13 covers OHC and ice only).
 
 ### Task 15: [Final] Criteria and documentation
 
