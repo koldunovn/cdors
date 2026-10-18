@@ -118,6 +118,90 @@ pub struct Leaf {
     /// One entry per stored dimension (storage order): the output dimension it follows and the
     /// map from output index to stored index. Output dimensions not listed are broadcast.
     pub maps: Vec<(usize, IndexMap)>,
+    /// Dry levels on a model mesh (`-setgrid,<mesh spec>`): values outside each cell's wet levels
+    /// are missing.
+    pub mask: Option<Arc<WetMask>>,
+}
+
+/// The dry levels of a leaf on a model mesh: a value whose level lies outside the wet levels of
+/// its cell is missing, whatever the file stores there (FESOM2 writes 0). Applied to the leaf's
+/// values as they are gathered ([`WetMask::apply`]), so every operator downstream sees missing
+/// values; selections and renumbering of the output dimensions need no care, since the mask works
+/// on stored indices through the leaf's maps.
+#[derive(Debug, Clone)]
+pub struct WetMask {
+    pub mesh: Arc<cdors_mesh::Mesh>,
+    /// Place of the leaf's cells (`nodes`, `elements`).
+    pub place: String,
+    /// Mid-levels or interfaces.
+    pub rule: cdors_mesh::models::DimRule,
+    /// The mesh's level of each stored level index (identity for a file on the mesh; an
+    /// intermediate result keeps the levels its input selected).
+    pub levels: IndexMap,
+    /// Positions in [`Leaf::maps`] of the vertical and of the horizontal stored dimension.
+    pub level: usize,
+    pub cell: usize,
+}
+
+impl WetMask {
+    /// Sets the dry values of a gathered tile (box `bx` of the output dimensions) to NaN.
+    pub fn apply(
+        &self,
+        maps: &[(usize, IndexMap)],
+        bx: &tiling::TileBox,
+        v: &mut crate::io::Values,
+    ) {
+        let Some(wet) = self.mesh.vertical.as_ref().and_then(|z| z.wet(&self.place)) else {
+            return;
+        };
+        let ((dl, ml), (dc, mc)) = (&maps[self.level], &maps[self.cell]);
+        let (dl, dc) = (*dl, *dc);
+        let shape = bx.shape();
+        let nd = shape.len();
+        if nd == 0 || bx.is_empty() || dl >= nd || dc >= nd {
+            return;
+        }
+        // mesh level of each tile index along the level dimension, wet range of each cell
+        let levels: Vec<usize> = bx.ranges[dl]
+            .clone()
+            .map(|i| self.levels.get(ml.get(i)))
+            .collect();
+        let ranges: Vec<std::ops::Range<usize>> = bx.ranges[dc]
+            .clone()
+            .map(|i| cdors_mesh::models::wet_range(wet, self.rule, mc.get(i)))
+            .collect();
+        let stride = |d: usize| shape[d + 1..].iter().product::<usize>();
+        let (sl, sc) = (stride(dl), stride(dc));
+        let last = nd - 1;
+        let n = shape[last];
+        fn mask<T: Copy>(
+            v: &mut [T],
+            nan: T,
+            n: usize,
+            row_index: &dyn Fn(usize) -> (Option<usize>, Option<usize>),
+            levels: &[usize],
+            ranges: &[std::ops::Range<usize>],
+        ) {
+            for (r, row) in v.chunks_mut(n).enumerate() {
+                let (li, ci) = row_index(r * n);
+                for (k, x) in row.iter_mut().enumerate() {
+                    if !ranges[ci.unwrap_or(k)].contains(&levels[li.unwrap_or(k)]) {
+                        *x = nan;
+                    }
+                }
+            }
+        }
+        let row_index = |f: usize| {
+            (
+                (dl != last).then(|| (f / sl) % shape[dl]),
+                (dc != last).then(|| (f / sc) % shape[dc]),
+            )
+        };
+        match v {
+            crate::io::Values::F32(x) => mask(x, f32::NAN, n, &row_index, &levels, &ranges),
+            crate::io::Values::F64(x) => mask(x, f64::NAN, n, &row_index, &levels, &ranges),
+        }
+    }
 }
 
 /// Pointwise operators with one input.
@@ -205,6 +289,34 @@ impl Expr {
         out
     }
 
+    /// Leaves in depth-first order, mutable.
+    pub fn leaves_mut(&mut self) -> Vec<&mut Leaf> {
+        let mut out = Vec::new();
+        fn walk<'a>(e: &'a mut Expr, out: &mut Vec<&'a mut Leaf>) {
+            match e {
+                Expr::Leaf(l) => out.push(l),
+                Expr::Unary(_, _, a) => walk(a, out),
+                Expr::Binary(_, _, a, b) => {
+                    walk(a, out);
+                    walk(b, out);
+                }
+            }
+        }
+        walk(self, &mut out);
+        out
+    }
+
+    /// The wet mask of the first masked leaf with the output dimension its level follows and
+    /// the map from output level index to the mesh's level (`None`: no leaf is masked).
+    pub fn wet_mask(&self) -> Option<(Arc<WetMask>, usize, IndexMap)> {
+        self.leaves().into_iter().find_map(|l| {
+            let m = l.mask.clone()?;
+            let (d, map) = &l.maps[m.level];
+            let levels = m.levels.compose(map);
+            Some((m, *d, levels))
+        })
+    }
+
     /// Data type of the result.
     pub fn dtype(&self, plan_sources: &[Arc<dyn ChunkSource>]) -> DType {
         match self {
@@ -216,7 +328,12 @@ impl Expr {
     /// Short text form for `--plan`.
     pub fn describe(&self, sources: &[Arc<dyn ChunkSource>]) -> String {
         match self {
-            Self::Leaf(l) => format!("{}:{}", sources[l.src].dataset().source, l.var),
+            Self::Leaf(l) => format!(
+                "{}:{}{}",
+                sources[l.src].dataset().source,
+                l.var,
+                if l.mask.is_some() { "[wet levels]" } else { "" }
+            ),
             Self::Unary(op, _, e) => {
                 let (n, c) = match op {
                     UnOp::AddC(c) => ("addc", c),
@@ -784,6 +901,7 @@ pub fn describe_source(srcs: &Sources, si: usize) -> Result<Desc> {
                 src: si,
                 var: v.name.clone(),
                 maps,
+                mask: None,
             }),
         });
     }

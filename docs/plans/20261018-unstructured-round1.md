@@ -446,7 +446,7 @@ The harness gains three capabilities (Task 2), so that every check in this plan 
 - [x] **Rules:**
   - dimensions: `nod2`/`nod_n` → nodes, `elem`/`elem_n` → elements, `nz` → interfaces, `nz1` → mid-levels;
   - levels below a cell's bottom (or above its top) are missing, whatever value the file stores (0 in FESOM output).
-- [ ] **`-setgrid,fesom:<dir>`.** Sizes are checked against the data; a mismatch is error `grid_mismatch`, and its
+- [x] **`-setgrid,fesom:<dir>`.** Sizes are checked against the data; a mismatch is error `grid_mismatch`, and its
       hint names both sizes and the mesh. Area-weighted operators (`fldmean`, `fldint`, `fldstd`, …) then use the mesh
       areas, at level k `nod_area[k]`, through `Weights::PerLevel`. A deviation from cdo's 2-D area goes into
       `docs/deviations.md`.
@@ -468,17 +468,17 @@ The harness gains three capabilities (Task 2), so that every check in this plan 
 - ➕ Element centres: normalised mean of the unit vectors of the three nodes. The grid's coordinates
   are `lon`/`lat` for the first place (nodes) and `lon_<dim>`/`lat_<dim>` for the others, so outputs
   with node and element variables keep both.
-- [ ] **Executor for FESOM 2.0's `(time, nod2, nz1)` order** (current FESOM2 writes `(time, nz1, nod2)`, which the
+- [x] **Executor for FESOM 2.0's `(time, nod2, nz1)` order** (current FESOM2 writes `(time, nz1, nod2)`, which the
       executor already handles; both orders must give identical results, fixture `fesom_pi_data_v20`). `FieldKernel` lanes accept horizontal dimensions that are
       not last: they gather to `(…, nz1, nod2)` on input and scatter back on output. The output keeps the input's
       dimension order.
-- [ ] **`RemapWeights::from_csr`** takes a public rule: `Renormalise` for means, `Drop` for sums and integrals.
+- [x] **`RemapWeights::from_csr`** takes a public rule: `Renormalise` for means, `Drop` for sums and integrals.
       Per-level weights are one membership CSR, scaled by `area[k][col]` at apply time; there is no matrix per level.
-- [ ] **`tonodes`/`toelems`** from `elem`:
+- [x] **`tonodes`/`toelems`** from `elem`:
   - toelems: the mean of the three nodes;
   - tonodes: the element-area-weighted mean;
   - NaN as in remap.
-- [ ] Write tests:
+- [x] Write tests:
   - `fldmean`/`fldint` per level on `fesom_pi_data` vs `ref:nereus.surface_mean` (and a NumPy per-level reference);
   - the degrees and radians meshes give identical `mesh info` (`json:`); ✓ (loader half)
   - an `err:grid_mismatch` row; ✓ (loader half)
@@ -486,7 +486,25 @@ The harness gains three capabilities (Task 2), so that every check in this plan 
   - `tonodes`/`toelems` vs NumPy;
   - all rows on `fesom_pi_data`, so the planner variant runs;
   - existing remap rows unchanged.
-- [ ] Run tests.
+- [x] Run tests.
+- ➕ Executor half (second agent): dry levels are masked on the leaves `-setgrid` puts on the mesh
+  (`plan::WetMask` on `Leaf::mask`, applied to each gathered tile through the leaf's maps, so any
+  later selection or dimension order is handled; the stored level maps to the mesh level), and
+  carried to intermediates still on a mesh place (`-fldmean -toelems ...`). `fld*` on variables
+  with levels use `Weights::PerLevel` for nodes (the mesh's own `nod_area[k]` arrays, loaded per
+  lane on first use, so `--plan` loads nothing; normalised to sum 1 per level except for
+  `fldint`, as cdo's 2-D weights) and `elem_area` for elements; `--plan` lists them in
+  `kernel.mesh_weights` and `memory.parts.mesh_weights`. `zon*`/`vert*` on levels stay refused.
+- ⚠️ The plan's "one membership CSR scaled by `area[k][col]`" is not needed for `fld*`: their
+  per-level weights are the area rows themselves (no matrix). `tonodes`/`toelems` weights do not
+  depend on the level (1/3; `elem_area` share). The scaled-membership form is left to the region
+  statistics of Task 6, which can build it on `from_csr` (rows: regions, weights 1) and scale by
+  `place.area_per_level.level(k)` at apply time.
+- ⚠️ `tonodes` on all 47 levels of the tiny-chunk copy does not fit the planner variant's
+  `--mem 1M` (a lane holds all 5839 elements of 5 timesteps, next to two tiles in flight), so
+  that row keeps 5 levels on `fesom_pi_data` (all levels on `fesom_pi_data_v20`).
+- ⚠️ `hpdegrade`/`hpupgrade` and `remap*` accept non-trailing horizontal dimensions too (the
+  same lanes); the existing rows are unchanged.
 
 ### Task 6: Region catalog, `regmask` and region statistics
 

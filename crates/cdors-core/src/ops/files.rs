@@ -17,8 +17,9 @@ use crate::io::ChunkSource;
 use crate::io::multifile::{MultiFileSource, expand_glob, is_glob};
 use crate::model::mesh_cache;
 use crate::model::{DimRole, GridKind};
-use crate::plan::{Desc, GridDesc, IndexMap, Sources};
+use crate::plan::{Desc, GridDesc, IndexMap, Sources, VarDesc, WetMask};
 use cdors_mesh::models::{self, DimRule, MeshSpec};
+use cdors_mesh::{Mesh, Place};
 use std::sync::Arc;
 
 /// Whether `name` is an operator that concatenates its input files along time.
@@ -83,10 +84,92 @@ pub fn describe_concat(node: &OpNode, srcs: &mut Sources) -> Result<Desc> {
     crate::plan::describe_source(srcs, si)
 }
 
+/// The grid of the cells of `place` of `mesh` over the data's dimension `dim`: centres, 2-D
+/// areas and the mesh itself (`Grid::mesh`). The mesh's first place has coordinates `lon`/`lat`,
+/// the others `lon_<dim>`/`lat_<dim>` (`remap::target::mesh_place`).
+pub(crate) fn mesh_grid(
+    origin: &str,
+    mesh: &Arc<Mesh>,
+    place: &Place,
+    dim: &str,
+) -> Result<GridDesc> {
+    let first = mesh.places.first().is_some_and(|p| p.name == place.name);
+    let gsrc = crate::remap::target::mesh_place(origin, dim, place, !first)?;
+    let mut grid = gsrc.dataset().grids.first().cloned().ok_or_else(|| {
+        Error::internal(format!(
+            "no grid for place '{}' of {}",
+            place.name, mesh.name
+        ))
+    })?;
+    grid.mesh = Some(mesh.clone());
+    grid.mesh_place = Some(place.name.clone());
+    Ok(GridDesc {
+        kind: grid.kind,
+        sel: vec![IndexMap::identity(grid.size)],
+        base: grid,
+        src: Arc::new(gsrc),
+        xvals: None,
+        fixed: None,
+    })
+}
+
+/// Masks the dry levels of `v` on `place` of `mesh`: every leaf with a vertical stored dimension
+/// (by the model's rules: FESOM2 `nz1` mid-levels, `nz` interfaces; otherwise a vertical
+/// dimension with as many levels as the mesh has layers or interfaces) and the horizontal one
+/// gets a [`WetMask`]. 2-D variables and leaves without levels are left as they are.
+fn mask_dry_levels(v: &mut VarDesc, mesh: &Arc<Mesh>, place: &str, srcs: &Sources) {
+    let Some(vert) = mesh.vertical.as_ref().filter(|z| z.wet(place).is_some()) else {
+        return;
+    };
+    let Some(hd) = v.hdims().first().copied() else {
+        return;
+    };
+    let roles: Vec<DimRole> = v.dims.iter().map(|d| d.role).collect();
+    let nlev = vert.nlev();
+    for leaf in v.expr.leaves_mut() {
+        let Some(dvar) = srcs
+            .srcs
+            .get(leaf.src)
+            .and_then(|s| s.dataset().var(&leaf.var))
+        else {
+            continue;
+        };
+        let stored = &dvar.dims;
+        let cell = leaf.maps.iter().position(|(d, _)| *d == hd);
+        let level = leaf.maps.iter().enumerate().find_map(|(p, (d, _))| {
+            let sd = stored.get(p)?;
+            let rule = match models::dim_rule(mesh, &sd.name) {
+                Some(r @ (DimRule::Mid | DimRule::Interfaces)) => r,
+                Some(DimRule::Place(_)) => return None,
+                None if roles.get(*d) == Some(&DimRole::Vertical) && sd.size == nlev => {
+                    DimRule::Mid
+                }
+                None if roles.get(*d) == Some(&DimRole::Vertical) && sd.size == nlev + 1 => {
+                    DimRule::Interfaces
+                }
+                None => return None,
+            };
+            let n = if rule == DimRule::Mid { nlev } else { nlev + 1 };
+            (sd.size == n).then_some((p, rule, n))
+        });
+        if let (Some(cell), Some((level, rule, n))) = (cell, level) {
+            leaf.mask = Some(Arc::new(WetMask {
+                mesh: mesh.clone(),
+                place: place.to_owned(),
+                rule,
+                levels: IndexMap::identity(n),
+                level,
+                cell,
+            }));
+        }
+    }
+}
+
 /// `setgrid,<mesh spec>`: each input grid whose dimension the model's rules name (`nod2` →
 /// `nodes`), or else whose size one place has, becomes that place of the mesh: its centres,
-/// its 2-D areas, and the mesh itself on the grid (`Grid::mesh`).
-fn setgrid_mesh(spec: &MeshSpec, mut d: Desc) -> Result<Desc> {
+/// its 2-D areas, and the mesh itself on the grid (`Grid::mesh`); the dry levels of variables
+/// with levels become missing ([`mask_dry_levels`]).
+fn setgrid_mesh(spec: &MeshSpec, mut d: Desc, srcs: &Sources) -> Result<Desc> {
     let loaded = mesh_cache::load(spec)?;
     let mesh = loaded.mesh;
     let places = || {
@@ -138,30 +221,15 @@ fn setgrid_mesh(spec: &MeshSpec, mut d: Desc) -> Result<Desc> {
                 places()
             )));
         }
-        let first = mesh.places.first().is_some_and(|p| p.name == place.name);
-        let gsrc = crate::remap::target::mesh_place(&loaded.spec, &dim, place, !first)?;
-        let mut grid = gsrc.dataset().grids.first().cloned().ok_or_else(|| {
-            Error::internal(format!(
-                "no grid for place '{}' of {}",
-                place.name, mesh.name
-            ))
-        })?;
-        grid.mesh = Some(mesh.clone());
-        grid.mesh_place = Some(place.name.clone());
-        d.grids[gi] = GridDesc {
-            kind: grid.kind,
-            sel: vec![IndexMap::identity(grid.size)],
-            base: grid,
-            src: Arc::new(gsrc),
-            xvals: None,
-            fixed: None,
-        };
+        let pname = place.name.clone();
+        d.grids[gi] = mesh_grid(&loaded.spec, &mesh, place, &dim)?;
         replaced = true;
         for v in &mut d.vars {
             if v.grid == Some(gi) {
                 for i in v.hdims() {
                     v.dims[i].role = DimRole::Horizontal;
                 }
+                mask_dry_levels(v, &mesh, &pname, srcs);
             }
         }
     }
@@ -191,7 +259,7 @@ fn setgrid_mesh(spec: &MeshSpec, mut d: Desc) -> Result<Desc> {
 fn setgrid(node: &OpNode, mut d: Desc, srcs: &mut Sources) -> Result<Desc> {
     // a mesh spec may carry options: `-setgrid,fesom:<dir>,units=deg`
     if let Some(spec) = mesh_cache::parse_spec(&node.args.join(",")) {
-        return setgrid_mesh(&spec?, d);
+        return setgrid_mesh(&spec?, d, srcs);
     }
     let path = &node.args[0];
     if node.args.len() > 1 {

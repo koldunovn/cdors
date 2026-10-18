@@ -417,6 +417,130 @@ def zonint(args, inputs, out):
 
 
 # the functions a row can name (ref:<lib>.<fn>)
+# Field statistics per level and node <-> element mapping on a FESOM2 mesh, in both dimension
+# orders: (time, nz1, nod2|elem) and FESOM 2.0's (time, nod2|elem, nz1). Levels outside a cell's
+# wet range (nlevels - 1 layers from the top) are missing whatever the file stores (0).
+def read_mesh(args):
+    """Per-level node areas (nl, nod), element areas, elem -> nodes (ne, 3, 0-based) and the
+    number of wet layers of nodes and elements."""
+    with netCDF4.Dataset(os.path.join(mesh_dir(args), "fesom.mesh.diag.nc")) as m:
+        el = m["elem" if "elem" in m.variables else "elements"][:].astype("i8")
+        el = el.T if el.shape[0] == 3 else el
+        return {"nod_area": m["nod_area"][:].astype("f8"), "elem_area": m["elem_area"][:].astype("f8"),
+                "elem": el - el.min(), "wet_nod": m["nlevels_nod2D"][:].astype("i8") - 1,
+                "wet_elem": m["nlevels"][:].astype("i8") - 1}
+
+
+def selected(args, names):
+    """The variables of -selname,<a>,<b>,... in the arguments (all if there is none)."""
+    for a in args:
+        if a.startswith("-selname,"):
+            return [n for n in a.split(",")[1:] if n in names]
+    return names
+
+
+def to_tlc(v, args):
+    """Values of variable v as (time, level, cell), the levels kept by -sellevel,<values> (by
+    the values of nz1; all without), and whether its levels come last (FESOM 2.0); 2-D variables
+    get one level."""
+    x = np.ma.filled(masked(v[:]), np.nan)
+    if v.ndim == 2:
+        return x[:, None, :], np.arange(1), False
+    last = v.dimensions[2].startswith("nz")
+    x = np.swapaxes(x, 1, 2) if last else x
+    lev = np.arange(x.shape[1])
+    for a in args:
+        if a.startswith("-sellevel,"):
+            want = [float(z) for z in a.split(",")[1:]]
+            lev = np.array([k for k, z in enumerate(v.group()["nz1"][:]) if z in want])
+    return x[:, lev, :], lev, last
+
+
+def wet(mesh, ncell, lev, surface):
+    """(levels, ncell) wet mask at the mesh levels lev; 2-D variables are wet everywhere."""
+    w = mesh["wet_nod"] if ncell == len(mesh["wet_nod"]) else mesh["wet_elem"]
+    return np.ones((1, ncell), bool) if surface else lev[:, None] < w[None, :]
+
+
+def mesh_level_stat(args, inputs, out, stat):
+    """fld<stat> per level: nodes weigh nod_area[k] at layer k, elements elem_area; dry levels
+    excluded; mean, int (sum of area times value), min, std (population, weighted); nereus: the
+    mean of nereus.surface_mean per level with these areas."""
+    mesh = read_mesh(args)
+    with netCDF4.Dataset(inputs[0]) as src, netCDF4.Dataset(out, "w") as dst:
+        copy_time(src, dst)
+        for n in selected(args, data_vars(src)):
+            v = src[n]
+            x, lev, _ = to_tlc(v, args)
+            nt, nl, nc = x.shape
+            nodes = nc == mesh["nod_area"].shape[1]
+            a = mesh["nod_area"][lev] if nodes else np.broadcast_to(mesh["elem_area"], (nl, nc))
+            x = np.where(wet(mesh, nc, lev, v.ndim == 2)[None], x, np.nan)
+            ok = ~np.isnan(x)
+            w = np.where(ok, a[None], 0.0)
+            xs = np.where(ok, x, 0.0)
+            with np.errstate(invalid="ignore", divide="ignore"):
+                mean = (w * xs).sum(axis=2) / w.sum(axis=2)
+                res = {"mean": mean, "int": (w * xs).sum(axis=2),
+                       "min": np.where(ok.any(axis=2), np.nanmin(np.where(ok, x, np.inf), axis=2), np.nan),
+                       "std": np.sqrt((w * (xs - mean[..., None]) ** 2).sum(axis=2) / w.sum(axis=2))
+                       }.get(stat)
+            if stat == "nereus":
+                import nereus
+                res = np.stack([nereus.surface_mean(x[:, k, :], a[k]) for k in range(nl)], axis=1)
+            res = np.where(ok.any(axis=2), res, np.nan)
+            if v.ndim == 2:
+                o = dst.createVariable(n, "f8", ("time",), fill_value=netCDF4.default_fillvals["f8"])
+                o[:] = np.ma.masked_invalid(res[:, 0])
+            else:
+                if "lev" not in dst.dimensions:
+                    dst.createDimension("lev", nl)
+                o = dst.createVariable(n, "f8", ("time", "lev"), fill_value=netCDF4.default_fillvals["f8"])
+                o[:] = np.ma.masked_invalid(res)
+
+
+def mesh_place_map(args, inputs, out, to):
+    """toelems (mean of the three nodes) or tonodes (mean of the elements around a node weighted
+    by elem_area), over the valid values only; dry levels of the target place missing. Written
+    in the input's dimension order."""
+    mesh = read_mesh(args)
+    el, ea = mesh["elem"], mesh["elem_area"]
+    nn, ne = mesh["nod_area"].shape[1], len(ea)
+    with netCDF4.Dataset(inputs[0]) as src, netCDF4.Dataset(out, "w") as dst:
+        copy_time(src, dst)
+        for n in selected(args, data_vars(src)):
+            v = src[n]
+            x, lev, last = to_tlc(v, args)
+            nt, nl, nc = x.shape
+            x = np.where(wet(mesh, nc, lev, v.ndim == 2)[None], x, np.nan)
+            ok = ~np.isnan(x)
+            xs = np.where(ok, x, 0.0)
+            if to == "elems":
+                num = xs[..., el].sum(axis=3)
+                den = ok[..., el].sum(axis=3).astype("f8")
+                ncell, dim = ne, "elem"
+            else:
+                num, den = np.zeros((nt, nl, nn)), np.zeros((nt, nl, nn))
+                for k in range(3):
+                    np.add.at(num, (slice(None), slice(None), el[:, k]), xs * ea)
+                    np.add.at(den, (slice(None), slice(None), el[:, k]), ok * ea)
+                ncell, dim = nn, "nod2"
+            with np.errstate(invalid="ignore", divide="ignore"):
+                y = np.where(den > 0, num / den, np.nan)
+            y = np.where(wet(mesh, ncell, lev, v.ndim == 2)[None], y, np.nan)
+            if dim not in dst.dimensions:
+                dst.createDimension(dim, ncell)
+            if v.ndim == 2:
+                dims, y = ("time", dim), y[:, 0]
+            else:
+                if "nz1" not in dst.dimensions:
+                    dst.createDimension("nz1", nl)
+                dims = ("time", dim, "nz1") if last else ("time", "nz1", dim)
+                y = np.swapaxes(y, 1, 2) if last else y
+            o = dst.createVariable(n, "f8", dims, fill_value=netCDF4.default_fillvals["f8"])
+            o[:] = np.ma.masked_invalid(y)
+
+
 REFERENCES = {
     "fldmean": fldmean,
     "fldmean_wrong": fldmean_wrong,
@@ -429,6 +553,12 @@ REFERENCES = {
     "zonsum": zonsum,
     "zonint": zonint,
 }
+
+REFERENCES.update({f"mesh_level_{s}": (lambda s: lambda a, i, o: mesh_level_stat(a, i, o, s))(s)
+                   for s in ("mean", "int", "min", "std")})
+REFERENCES["nereus_level_mean"] = lambda a, i, o: mesh_level_stat(a, i, o, "nereus")
+REFERENCES.update({f"to{t}": (lambda t: lambda a, i, o: mesh_place_map(a, i, o, t))(t)
+                   for t in ("nodes", "elems")})
 
 
 # ---------------------------------------------------------------- commands

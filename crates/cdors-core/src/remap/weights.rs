@@ -61,6 +61,9 @@ pub enum MapMethod {
     Bilinear,
     /// "Conservative remapping", first order
     Conservative,
+    /// A matrix cdors built itself ([`RemapWeights::from_csr`]: mesh operators such as
+    /// `tonodes`, region statistics, points and sections).
+    Sparse,
 }
 
 /// `normalization` attribute of a weight file.
@@ -72,8 +75,11 @@ pub enum Normalization {
 }
 
 /// What to do with a destination cell some of whose linked sources are missing.
+///
+/// A row without missing sources is the plain sum Σ w·x in every case, so a mean's weights must
+/// sum to 1 over the row (as cdo's `fracarea` weights do).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum MissingRule {
+pub enum MissingRule {
     /// Σ w·x / Σ w over the valid links.
     Renormalise,
     /// Σ w·x over the valid links.
@@ -255,7 +261,9 @@ impl RemapWeights {
             (MapMethod::Bilinear, _) => MissingRule::AllOrNothing,
             (MapMethod::Conservative, Normalization::FracArea) => MissingRule::Renormalise,
             (MapMethod::Conservative, _) => MissingRule::Drop,
-            (MapMethod::Nearest | MapMethod::Distance, _) => MissingRule::Renormalise,
+            (MapMethod::Nearest | MapMethod::Distance | MapMethod::Sparse, _) => {
+                MissingRule::Renormalise
+            }
         };
 
         let fallback_rows = if method == MapMethod::Bilinear {
@@ -276,6 +284,43 @@ impl RemapWeights {
             src_mask,
             rule,
         })
+    }
+
+    /// A matrix from a CSR table of cdors's own (targets × source cells, see
+    /// [`cdors_mesh::Csr`]): row `r` of `csr` is destination cell `r`, its columns are source
+    /// cells, its weights the link weights (all 1 for an incidence table without weights).
+    /// `rule` says what missing sources do: [`MissingRule::Renormalise`] for means (weights of
+    /// each row summing to 1), [`MissingRule::Drop`] for sums and integrals. Every source cell is
+    /// valid in the matrix's mask. The rest of the executor applies as for weight files:
+    /// [`RemapWeights::apply_batch`], [`RemapWeights::restrict_sources`] after pruning, and the
+    /// field lanes of `ops::remap`.
+    pub fn from_csr(csr: &cdors_mesh::Csr, rule: MissingRule) -> Result<Self, RemapError> {
+        if csr.ncols > u32::MAX as usize {
+            return Err(RemapError::Unsupported(
+                "source grid larger than 2^32 cells".into(),
+            ));
+        }
+        let w = csr.w.clone().unwrap_or_else(|| vec![1.0; csr.nnz()]);
+        Ok(Self {
+            method: MapMethod::Sparse,
+            normalization: match rule {
+                MissingRule::Renormalise => Normalization::FracArea,
+                _ => Normalization::None,
+            },
+            src_size: csr.ncols,
+            dst_size: csr.rows(),
+            row_ptr: csr.row_ptr.clone(),
+            col: csr.col.clone(),
+            w,
+            fallback_rows: Vec::new(),
+            src_mask: vec![true; csr.ncols],
+            rule,
+        })
+    }
+
+    /// Bytes of the matrix in memory.
+    pub fn bytes(&self) -> u64 {
+        cdors_mesh::mesh::csr_bytes(self.dst_size, self.col.len(), true) + self.src_size as u64
     }
 
     pub fn method(&self) -> MapMethod {

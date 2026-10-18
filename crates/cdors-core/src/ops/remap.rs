@@ -111,22 +111,74 @@ fn rerr(op: &str, e: RemapError) -> Error {
 /// Maps complete horizontal fields of one variable to fields on another grid.
 pub(crate) trait FieldMap: Send + Sync {
     /// `src` holds `n` fields of the input grid back to back; returns `n` output fields as `out`.
-    fn apply(&self, var: usize, src: &Values, n: usize, out: DType) -> Result<Values>;
+    /// `lane` says which timestep, level, ... each field is ([`FieldLane::index`]).
+    fn apply(
+        &self,
+        var: usize,
+        src: &Values,
+        n: usize,
+        out: DType,
+        lane: &FieldLane,
+    ) -> Result<Values>;
     /// Facts for `--plan` (weights to generate), see [`FoldKernel::plan_info`].
     fn plan_info(&self) -> Option<serde_json::Value> {
         None
     }
 }
 
+/// The fields of one lane of a [`FieldKernel`]: one per index of the lane's dimensions other
+/// than the horizontal ones, in C order of those dimensions.
+pub(crate) struct FieldLane<'a> {
+    pub lane: &'a TileBox,
+    pub hfirst: usize,
+    pub hcount: usize,
+}
+
+impl FieldLane<'_> {
+    /// The index along (non-horizontal) dimension `d` of the variable of every field.
+    pub fn index(&self, d: usize) -> Vec<usize> {
+        let shape = self.lane.shape();
+        let h = self.hfirst..self.hfirst + self.hcount;
+        let n: usize = (0..shape.len())
+            .filter(|i| !h.contains(i))
+            .map(|i| shape[i])
+            .product();
+        let stride: usize = (d + 1..shape.len())
+            .filter(|i| !h.contains(i))
+            .map(|i| shape[i])
+            .product();
+        let start = self.lane.ranges[d].start;
+        (0..n).map(|f| start + (f / stride) % shape[d]).collect()
+    }
+}
+
 /// Shape bookkeeping of one variable folded by a [`FieldKernel`].
 #[derive(Debug, Clone)]
 pub(crate) struct FieldVar {
-    /// Index of the first horizontal dimension (horizontal dimensions are the trailing ones).
+    /// Index of the first horizontal dimension and their number (contiguous, see
+    /// [`hdim_block`]); dimensions after them (FESOM 2.0's `nz1` in `(time, nod2, nz1)`) are
+    /// gathered in front of them for the map and scattered back after it.
     pub hfirst: usize,
+    pub hcount: usize,
     pub src_size: usize,
     /// Sizes of the output horizontal dimensions.
     pub out_hdims: Vec<usize>,
     pub out_dtype: DType,
+}
+
+impl FieldVar {
+    /// The horizontal block of `v` (see [`hdim_block`]) and its sizes; `src_size` cells in, the
+    /// output grid's `out_hdims` out.
+    pub fn new(op: &str, v: &VarDesc, src_size: usize, out_hdims: Vec<usize>) -> Result<Self> {
+        let (hfirst, hcount) = hdim_block(op, v)?;
+        Ok(Self {
+            hfirst,
+            hcount,
+            src_size,
+            out_hdims,
+            out_dtype: v.dtype,
+        })
+    }
 }
 
 /// A fold kernel over the horizontal dimensions: collects complete fields and maps them.
@@ -236,12 +288,32 @@ impl FoldState for FieldState {
         let Some(values) = self.whole.take().or_else(|| self.buf.take()) else {
             return Ok(Vec::new());
         };
-        let nfields = values.len() / self.fv.src_size.max(1);
-        let out = self
-            .map
-            .apply(self.var, &values, nfields, self.fv.out_dtype)?;
-        let mut ranges: Vec<_> = self.lane.ranges[..self.fv.hfirst].to_vec();
-        ranges.extend(self.fv.out_hdims.iter().map(|&n| 0..n));
+        let fv = &self.fv;
+        let h1 = fv.hfirst + fv.hcount;
+        let shape = self.lane.shape();
+        let outer: usize = shape[..fv.hfirst].iter().product();
+        let inner: usize = shape[h1..].iter().product();
+        let nfields = values.len() / fv.src_size.max(1);
+        let lane = FieldLane {
+            lane: &self.lane,
+            hfirst: fv.hfirst,
+            hcount: fv.hcount,
+        };
+        let dst_size: usize = fv.out_hdims.iter().product();
+        let out = if inner > 1 {
+            // (outer, cells, inner) -> (outer, inner, cells) and back
+            let fields = swap_inner(&values, outer, fv.src_size, inner);
+            let out = self
+                .map
+                .apply(self.var, &fields, nfields, fv.out_dtype, &lane)?;
+            swap_inner(&out, outer, inner, dst_size)
+        } else {
+            self.map
+                .apply(self.var, &values, nfields, fv.out_dtype, &lane)?
+        };
+        let mut ranges: Vec<_> = self.lane.ranges[..fv.hfirst].to_vec();
+        ranges.extend(fv.out_hdims.iter().map(|&n| 0..n));
+        ranges.extend(self.lane.ranges[h1..].iter().cloned());
         Ok(vec![Tile {
             var: self.var,
             bx: TileBox { ranges },
@@ -250,15 +322,38 @@ impl FoldState for FieldState {
     }
 }
 
-/// Index of the first horizontal dimension of `v`; horizontal dimensions must be trailing.
-pub(crate) fn trailing_hdims(op: &str, v: &VarDesc) -> Result<usize> {
+/// `v[o][a][b]` -> `w[o][b][a]` for `v` of `outer` blocks of `a × b` values.
+fn swap_inner(v: &Values, outer: usize, a: usize, b: usize) -> Values {
+    fn swap<T: Copy + Default>(v: &[T], outer: usize, a: usize, b: usize) -> Vec<T> {
+        let mut w = vec![T::default(); v.len()];
+        for o in 0..outer {
+            let (s, d) = (
+                &v[o * a * b..(o + 1) * a * b],
+                &mut w[o * a * b..(o + 1) * a * b],
+            );
+            for x in 0..a {
+                for y in 0..b {
+                    d[y * a + x] = s[x * b + y];
+                }
+            }
+        }
+        w
+    }
+    match v {
+        Values::F32(x) => Values::F32(swap(x, outer, a, b)),
+        Values::F64(x) => Values::F64(swap(x, outer, a, b)),
+    }
+}
+
+/// The horizontal dimensions of `v`: index of the first one and their number. They must be
+/// adjacent; dimensions may follow them (FESOM 2.0's `(time, nod2, nz1)`).
+pub(crate) fn hdim_block(op: &str, v: &VarDesc) -> Result<(usize, usize)> {
     let h = v.hdims();
-    let n = v.dims.len();
-    if h.is_empty() || h != (n - h.len()..n).collect::<Vec<_>>() {
+    if h.is_empty() || h != (h[0]..h[0] + h.len()).collect::<Vec<_>>() {
         return Err(Error::new(
             ErrorCode::UnsupportedDimension,
             format!(
-                "variable '{}': {op} needs the horizontal dimensions last (dims: {})",
+                "variable '{}': {op} needs adjacent horizontal dimensions (dims: {})",
                 v.name,
                 v.dims
                     .iter()
@@ -270,7 +365,7 @@ pub(crate) fn trailing_hdims(op: &str, v: &VarDesc) -> Result<usize> {
         .with("operator", op.to_owned())
         .with("variable", v.name.clone()));
     }
-    Ok(n - h.len())
+    Ok((h[0], h.len()))
 }
 
 /// Rejects an input that is itself the pending output of a reduction (one fold per chain).
@@ -396,6 +491,7 @@ fn write_grid_file(
         expr: Expr::Leaf(Leaf {
             src: 0,
             var: String::new(),
+            mask: None,
             maps: Vec::new(),
         }),
     };
@@ -604,7 +700,7 @@ fn check_sizes(op: &str, w: &RemapWeights, src: usize, dst: usize, path: &Path) 
     Ok(())
 }
 
-fn apply_t<T: crate::remap::Value, U: crate::remap::Value>(
+pub(crate) fn apply_t<T: crate::remap::Value, U: crate::remap::Value>(
     w: &RemapWeights,
     src: &[T],
     n: usize,
@@ -621,7 +717,14 @@ impl FieldMap for RemapMap {
         Some(serde_json::json!({ "remap_weights": w }))
     }
 
-    fn apply(&self, var: usize, src: &Values, n: usize, out: DType) -> Result<Values> {
+    fn apply(
+        &self,
+        var: usize,
+        src: &Values,
+        n: usize,
+        out: DType,
+        _lane: &FieldLane,
+    ) -> Result<Values> {
         let w = self.grids[self.var_grid[var]].weights(&self.op)?;
         let r = match (src, out) {
             (Values::F32(s), DType::F32) => apply_t::<f32, f32>(&w, s, n, Values::F32),
@@ -810,7 +913,7 @@ fn target_grid(
 /// The selection (one map per horizontal dimension of `g`) that keeps only the source cells the
 /// links of `w` read, and the kept cells as flat source indices (ascending); `None` when it would
 /// keep more than half of the grid.
-fn prune(g: &GridDesc, w: &RemapWeights) -> Option<(Vec<IndexMap>, Vec<usize>)> {
+pub(crate) fn prune(g: &GridDesc, w: &RemapWeights) -> Option<(Vec<IndexMap>, Vec<usize>)> {
     let used = w.used_sources();
     let n = w.src_size();
     if used.is_empty() {
@@ -904,7 +1007,13 @@ pub fn describe(node: &OpNode, mut inputs: Vec<Desc>, srcs: &mut Sources) -> Res
             .with("variable", v.name.clone())
             .with_hint("select variables on a horizontal grid with -selname")
         })?;
-        let hfirst = trailing_hdims(op, v)?;
+        let fv = FieldVar::new(
+            op,
+            v,
+            input.grids[gi].size(),
+            thdims.iter().map(|d| d.size).collect(),
+        )?;
+        let (hfirst, hcount) = (fv.hfirst, fv.hcount);
         let g = &input.grids[gi];
         let entry = match grid_index.iter().find(|(i, _)| *i == gi) {
             Some(&(_, e)) => e,
@@ -938,7 +1047,7 @@ pub fn describe(node: &OpNode, mut inputs: Vec<Desc>, srcs: &mut Sources) -> Res
                         method: m,
                         target: gen_target.clone(),
                         grid: Box::new(g.clone()),
-                        hdims: v.dims[hfirst..].to_vec(),
+                        hdims: v.dims[hfirst..hfirst + hcount].to_vec(),
                     },
                     (None, None) => unreachable!("remap has a weight file"),
                 };
@@ -956,15 +1065,10 @@ pub fn describe(node: &OpNode, mut inputs: Vec<Desc>, srcs: &mut Sources) -> Res
             }
         };
         var_grid.push(entry);
-        fvars.push(FieldVar {
-            hfirst,
-            src_size: g.size(),
-            out_hdims: thdims.iter().map(|d| d.size).collect(),
-            out_dtype: v.dtype,
-        });
+        fvars.push(fv);
         let mut ov = v.clone();
-        ov.dims.truncate(hfirst);
-        ov.dims.extend(thdims.iter().cloned());
+        ov.dims
+            .splice(hfirst..hfirst + hcount, thdims.iter().cloned());
         ov.grid = Some(0);
         out_vars.push(ov);
     }

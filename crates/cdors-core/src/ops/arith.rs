@@ -230,6 +230,7 @@ pub fn describe(node: &OpNode, mut inputs: Vec<Desc>) -> Result<Desc> {
             Expr::Leaf(crate::plan::Leaf {
                 src: 0,
                 var: String::new(),
+                mask: None,
                 maps: vec![],
             }),
         );

@@ -206,21 +206,28 @@ fn to_f64(v: Values) -> Vec<f64> {
 }
 
 /// Evaluates an expression on a tile, given the gathered values of its leaves (depth-first
-/// order, as [`Expr::leaves`]). A bare leaf is returned unchanged; otherwise the result is f64
-/// (already rounded to the expression's type).
-pub fn eval(expr: &Expr, leaves: &mut std::vec::IntoIter<Values>) -> Values {
+/// order, as [`Expr::leaves`]) and the tile's box `bx`. A bare leaf is returned unchanged (its dry
+/// levels set missing, [`super::WetMask`]); otherwise the result is f64 (already rounded to the
+/// expression's type).
+pub fn eval(expr: &Expr, leaves: &mut std::vec::IntoIter<Values>, bx: &TileBox) -> Values {
     match expr {
-        Expr::Leaf(_) => leaves.next().expect("one value set per leaf"),
+        Expr::Leaf(l) => {
+            let mut v = leaves.next().expect("one value set per leaf");
+            if let Some(m) = &l.mask {
+                m.apply(&l.maps, bx, &mut v);
+            }
+            v
+        }
         Expr::Unary(op, t, e) => {
-            let mut v = to_f64(eval(e, leaves));
+            let mut v = to_f64(eval(e, leaves, bx));
             for x in &mut v {
                 *x = unop(*op, *t, *x);
             }
             Values::F64(v)
         }
         Expr::Binary(op, t, a, b) => {
-            let mut va = to_f64(eval(a, leaves));
-            let vb = to_f64(eval(b, leaves));
+            let mut va = to_f64(eval(a, leaves, bx));
+            let vb = to_f64(eval(b, leaves, bx));
             for (x, &y) in va.iter_mut().zip(&vb) {
                 *x = binop(*op, *t, *x, y);
             }

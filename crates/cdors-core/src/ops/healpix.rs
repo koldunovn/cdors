@@ -16,7 +16,7 @@
 //! Access class: whole extent over space (complete fields, parallel over timesteps and levels),
 //! through the same field kernel as remapping.
 
-use super::remap::{FieldKernel, FieldMap, FieldVar, no_pending_fold, trailing_hdims};
+use super::remap::{FieldKernel, FieldLane, FieldMap, FieldVar, no_pending_fold};
 use crate::chain::OpNode;
 use crate::error::{Error, ErrorCode, Result};
 use crate::io::Values;
@@ -97,7 +97,14 @@ impl HpMap {
 }
 
 impl FieldMap for HpMap {
-    fn apply(&self, _var: usize, src: &Values, n: usize, out: DType) -> Result<Values> {
+    fn apply(
+        &self,
+        _var: usize,
+        src: &Values,
+        n: usize,
+        out: DType,
+        _lane: &FieldLane,
+    ) -> Result<Values> {
         use rayon::prelude::*;
         let n1 = (12 * self.nside_in * self.nside_in) as usize;
         let n2 = (12 * self.nside_out * self.nside_out) as usize;
@@ -316,20 +323,18 @@ pub fn describe(node: &OpNode, mut inputs: Vec<Desc>) -> Result<Desc> {
             )
             .with("operator", op.to_owned()));
         }
-        let hfirst = trailing_hdims(op, v)?;
-        fvars.push(FieldVar {
-            hfirst,
-            src_size: g.size(),
-            out_hdims: vec![n2],
-            out_dtype: v.dtype,
-        });
+        let fv = FieldVar::new(op, v, g.size(), vec![n2])?;
+        let (hfirst, hcount) = (fv.hfirst, fv.hcount);
+        fvars.push(fv);
         let mut ov = v.clone();
-        ov.dims.truncate(hfirst);
-        ov.dims.push(VarDim {
-            name: "cells".into(),
-            size: n2,
-            role: crate::model::DimRole::Horizontal,
-        });
+        ov.dims.splice(
+            hfirst..hfirst + hcount,
+            [VarDim {
+                name: "cells".into(),
+                size: n2,
+                role: crate::model::DimRole::Horizontal,
+            }],
+        );
         ov.grid = Some(0);
         out_vars.push(ov);
     }

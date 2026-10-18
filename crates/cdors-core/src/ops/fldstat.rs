@@ -327,6 +327,101 @@ impl Acc for VarAcc {
 pub(crate) enum Weights {
     Const(f64),
     Each(Arc<Vec<f64>>),
+    /// Field statistics of a variable with levels on a mesh place with per-level areas (FESOM2
+    /// nodes): at each level the cells weigh that level's areas.
+    PerLevel(Arc<LevelWeights>),
+}
+
+/// Per-level cell weights: at output level `j` of the variable's level dimension `dim`, cell
+/// `f` of the block weighs `area_k[cells[f]] * scale_k`, where `k = levels[j]` is the mesh level
+/// and `scale_k` normalises the level's weights to sum 1 (all weighted `fld*` but `fldint`, as
+/// cdo's 2-D weights). The areas are the mesh's own arrays (whole place) or a gathered copy
+/// (a subset), loaded when a lane first needs them, so `--plan` loads nothing.
+pub(crate) struct LevelWeights {
+    dim: usize,
+    mesh: Arc<cdors_mesh::Mesh>,
+    place: String,
+    levels: IndexMap,
+    /// Stored cells of the block, `None` for the whole place in order.
+    cells: Option<Arc<Vec<usize>>>,
+    normalise: bool,
+    loaded: Vec<std::sync::OnceLock<(Arc<Vec<f64>>, f64)>>,
+}
+
+impl std::fmt::Debug for LevelWeights {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "LevelWeights(dim {}, {} levels of '{}' of {})",
+            self.dim,
+            self.levels.len(),
+            self.place,
+            self.mesh.name
+        )
+    }
+}
+
+impl LevelWeights {
+    /// Areas and scale of output level `j`.
+    fn level(&self, j: usize) -> Result<(Arc<Vec<f64>>, f64)> {
+        if let Some(v) = self.loaded[j].get() {
+            return Ok(v.clone());
+        }
+        let k = self.levels.get(j);
+        let lv = self
+            .mesh
+            .place(&self.place)
+            .and_then(|p| p.area_per_level.as_ref())
+            .ok_or_else(|| Error::internal(format!("no per-level areas of '{}'", self.place)))?;
+        let all = lv.level(k).map_err(|e| {
+            Error::new(
+                ErrorCode::BadData,
+                format!("per-level areas of the mesh {}: {e}", self.mesh.name),
+            )
+        })?;
+        let a = match &self.cells {
+            None => all,
+            Some(c) => Arc::new(c.iter().map(|&i| all[i]).collect()),
+        };
+        let scale = if self.normalise {
+            let t: f64 = a.iter().sum();
+            if t > 0.0 { 1.0 / t } else { 1.0 }
+        } else {
+            1.0
+        };
+        let _ = self.loaded[j].set((a, scale));
+        Ok(self.loaded[j].get().expect("set").clone())
+    }
+}
+
+/// The per-level weights a lane uses: the lane's levels along the level dimension, before
+/// (`outer`) or after the folded block, and the level of each outer or inner index.
+struct LaneLevels {
+    outer: bool,
+    /// Lane-local level of each outer (or inner) index.
+    of: Vec<usize>,
+    /// Weights and scale of each lane-local level.
+    w: Vec<(Arc<Vec<f64>>, f64)>,
+}
+
+impl LaneLevels {
+    fn new(lw: &LevelWeights, p: &VarPlan, lane: &TileBox) -> Result<Self> {
+        let shape = lane.shape();
+        let outer = lw.dim < p.b0;
+        let (lo, hi) = if outer {
+            (0, p.b0)
+        } else {
+            (p.b0 + p.nb, shape.len())
+        };
+        let n: usize = shape[lo..hi].iter().product();
+        let stride: usize = shape[lw.dim + 1..hi].iter().product();
+        let of = (0..n).map(|x| (x / stride) % shape[lw.dim]).collect();
+        let w = lane.ranges[lw.dim]
+            .clone()
+            .map(|j| lw.level(j))
+            .collect::<Result<_>>()?;
+        Ok(Self { outer, of, w })
+    }
 }
 
 /// Output row of each cell of the folded block.
@@ -419,6 +514,8 @@ struct State<A: Acc> {
     acc: Vec<A>,
     /// Tiles of the current row strip (2-D blocks whose `x` is split into several tiles).
     strip: Vec<Tile>,
+    /// Per-level weights of the lane, loaded with its first tile.
+    levels: Option<LaneLevels>,
 }
 
 impl<A: Acc> State<A> {
@@ -434,8 +531,17 @@ impl<A: Acc> State<A> {
             inner,
             acc: vec![A::new(); outer * inner * p.nrows],
             strip: Vec::new(),
+            levels: None,
             p,
         }
+    }
+
+    /// Loads the lane's per-level weights (once).
+    fn ensure_levels(&mut self) -> Result<()> {
+        if let (None, Weights::PerLevel(lw)) = (&self.levels, &self.p.weights) {
+            self.levels = Some(LaneLevels::new(lw, &self.p, &self.lane)?);
+        }
+        Ok(())
     }
 
     /// Folds the buffered tiles of one strip (or one tile): rows of the strip in order, within
@@ -470,9 +576,10 @@ impl<A: Acc> State<A> {
                     o_n,
                     i_n,
                 };
+                let lv = self.levels.as_ref();
                 match &t.values {
-                    Values::F32(v) => fold_cells(v, &c, p, &mut self.acc),
-                    Values::F64(v) => fold_cells(v, &c, p, &mut self.acc),
+                    Values::F32(v) => fold_cells(v, &c, p, lv, &mut self.acc),
+                    Values::F64(v) => fold_cells(v, &c, p, lv, &mut self.acc),
                 }
             }
         }
@@ -495,7 +602,7 @@ impl<A: Acc> State<A> {
             o_n,
             i_n,
         };
-        fold_cells(v, &c, p, &mut self.acc);
+        fold_cells(v, &c, p, self.levels.as_ref(), &mut self.acc);
     }
 
     fn output(&self) -> Tile {
@@ -537,11 +644,30 @@ const GROUP: usize = 8;
 
 // the cells of GROUP rows are interleaved by index on purpose
 #[allow(clippy::needless_range_loop)]
-fn fold_cells<T: Copy + Into<f64>, A: Acc>(v: &[T], c: &Cells, p: &VarPlan, acc: &mut [A]) {
+fn fold_cells<T: Copy + Into<f64>, A: Acc>(
+    v: &[T],
+    c: &Cells,
+    p: &VarPlan,
+    lv: Option<&LaneLevels>,
+    acc: &mut [A],
+) {
     let (o_n, i_n, n, f0) = (c.o_n, c.i_n, c.n, c.f0);
     // a single band still maps only some cells
     let one_row = p.nrows == 1 && !matches!(p.rows, RowMap::Bands(_));
-    if one_row && i_n == 1 {
+    if let Some(lv) = lv {
+        // per-level weights (field statistics, one output row): each accumulator adds its
+        // cells in order with the weights of its level
+        for o in 0..o_n {
+            for i in 0..i_n {
+                let (ws, s) = &lv.w[lv.of[if lv.outer { o } else { i }]];
+                let a = &mut acc[o * i_n + i];
+                let start = c.base + o * c.ostride + i;
+                for (k, &w) in ws[f0..f0 + n].iter().enumerate() {
+                    a.add(w * s, v[start + k * i_n].into());
+                }
+            }
+        }
+    } else if one_row && i_n == 1 {
         // field statistics: one accumulator per timestep (and level), GROUP of them at a time,
         // the leftover ones in groups of 4, 2 and 1
         let mut o = 0;
@@ -566,8 +692,9 @@ fn fold_cells<T: Copy + Into<f64>, A: Acc>(v: &[T], c: &Cells, p: &VarPlan, acc:
             let acc = &mut acc[o * i_n..(o + 1) * i_n];
             for k in 0..n {
                 let w = match &p.weights {
-                    Weights::Const(w) => *w,
                     Weights::Each(ws) => ws[f0 + k],
+                    Weights::Const(w) => *w,
+                    Weights::PerLevel(_) => unreachable!("per-level weights fold above"),
                 };
                 let row = &v[c.base + o * c.ostride + k * i_n..][..i_n];
                 for (a, &x) in acc.iter_mut().zip(row) {
@@ -615,6 +742,7 @@ fn fold_group<T: Copy + Into<f64>, A: Acc, const G: usize>(
                 }
             }
         }
+        Weights::PerLevel(_) => unreachable!("per-level weights fold in fold_cells"),
     }
     acc[..G].copy_from_slice(&a);
 }
@@ -678,6 +806,7 @@ fn fold_row<T: Copy + Into<f64>, A: Acc>(
                 let wk = match w {
                     Weights::Const(c) => *c,
                     Weights::Each(ws) => ws[f],
+                    Weights::PerLevel(_) => unreachable!("per-level weights fold in fold_cells"),
                 };
                 acc[r].add(wk, val(k));
             }
@@ -687,6 +816,7 @@ fn fold_row<T: Copy + Into<f64>, A: Acc>(
 
 impl<A: Acc> FoldState for State<A> {
     fn push(&mut self, tile: Tile) -> Result<Vec<Tile>> {
+        self.ensure_levels()?;
         if self.p.nb == 2 {
             let xend = tile.bx.ranges[self.p.b0 + 1].end;
             self.strip.push(tile);
@@ -715,6 +845,9 @@ impl<A: Acc> FoldState for State<A> {
     ) -> Option<Result<Vec<Tile>>> {
         if self.p.nb == 2 {
             return None;
+        }
+        if let Err(e) = self.ensure_levels() {
+            return Some(Err(e));
         }
         match values {
             Values::F32(v) => self.fold_values(bx, &v[range]),
@@ -1300,10 +1433,12 @@ pub(crate) fn block_of(v: &VarDesc, role: DimRole) -> Result<(usize, usize)> {
     }
 }
 
-/// Space statistics of variables with levels on a mesh with a vertical are refused: each level
-/// needs its own areas and the dry levels below each cell's bottom (stored as 0 by FESOM2) must
-/// be left out, which these operators do not do yet. 2-D variables are fine.
-fn refuse_mesh_levels(op: &str, input: &Desc) -> Result<()> {
+/// Space statistics of variables with levels on a mesh with a vertical: `fld*` work on the
+/// levels whose dry cells `setgrid` masked (per-level areas where the place has them); `zon*`
+/// (latitude bands) and `vert*` (each cell's own bottom) are not implemented on meshes yet, and
+/// levels the mesh's rules do not recognise (no dry-level mask) are refused. 2-D variables are
+/// fine.
+fn refuse_mesh_levels(op: &str, fam: Family, input: &Desc) -> Result<()> {
     for v in &input.vars {
         let Some(m) = v.grid.and_then(|g| input.grids[g].base.mesh.as_ref()) else {
             continue;
@@ -1311,22 +1446,78 @@ fn refuse_mesh_levels(op: &str, input: &Desc) -> Result<()> {
         if m.vertical.is_some()
             && let Some(z) = v.dims.iter().find(|d| d.role == DimRole::Vertical)
         {
+            if fam == Family::Fld && v.expr.wet_mask().is_some() {
+                continue;
+            }
+            let (what, hint) = if fam == Family::Fld {
+                (
+                    format!(
+                        "its levels ('{}', {}) are not the mesh's layers or interfaces, so the \
+                         dry cells of each level are not known",
+                        z.name, z.size
+                    ),
+                    "select the variable with the mesh's level dimension (FESOM2: nz1 or nz)",
+                )
+            } else {
+                (
+                    format!(
+                        "{op} of variables with levels ('{}') on a mesh is not implemented yet",
+                        z.name
+                    ),
+                    "fld* statistics work per level on the mesh; for 2-D variables all \
+                     statistics work",
+                )
+            };
             return Err(Error::new(
                 ErrorCode::NotImplemented,
-                format!(
-                    "{op} of '{}' on the mesh {}: variables with levels ('{}') need per-level \
-                     areas and dry-level masking, which are not implemented yet",
-                    v.name, m.name, z.name
-                ),
+                format!("{op} of '{}' on the mesh {}: {what}", v.name, m.name),
             )
             .with("variable", v.name.clone())
-            .with_hint(
-                "2-D variables on the mesh (e.g. a_ice) work; for one level of a 3-D variable \
-                 this is not available yet either, since dry cells would enter as 0",
-            ));
+            .with_hint(hint));
         }
     }
     Ok(())
+}
+
+/// Per-level weights of `v` on grid `g` if it has levels on a mesh place with per-level areas;
+/// with the bytes of the mesh levels it reads that `loaded` (mesh name, place, level) does not
+/// hold yet.
+fn level_weights(
+    g: &GridDesc,
+    v: &VarDesc,
+    normalise: bool,
+    loaded: &mut std::collections::HashSet<(String, String, usize)>,
+) -> Option<(Arc<LevelWeights>, u64)> {
+    let mesh = g.base.mesh.clone()?;
+    let place = g.base.mesh_place()?;
+    let lv = place.area_per_level.as_ref()?;
+    let (mask, dim, levels) = v.expr.wet_mask()?;
+    if mask.place != place.name {
+        return None;
+    }
+    let cells = selected_cells(g);
+    let whole = cells.len() == place.size && cells.iter().enumerate().all(|(k, &c)| k == c);
+    let n = levels.len();
+    let mut bytes = 0;
+    for j in 0..n {
+        let k = levels.get(j);
+        if k < lv.nlev() && loaded.insert((mesh.name.clone(), place.name.clone(), k)) {
+            bytes += 8 * place.size as u64;
+        }
+    }
+    if !whole {
+        bytes += 8 * (n * cells.len()) as u64;
+    }
+    let lw = LevelWeights {
+        dim,
+        place: place.name.clone(),
+        levels,
+        cells: (!whole).then(|| Arc::new(cells)),
+        normalise,
+        loaded: (0..n).map(|_| std::sync::OnceLock::new()).collect(),
+        mesh,
+    };
+    Some((Arc::new(lw), bytes))
 }
 
 /// Output description of a space statistic.
@@ -1335,7 +1526,7 @@ pub fn describe(node: &OpNode, mut inputs: Vec<Desc>, srcs: &Sources) -> Result<
     let (fam, stat) =
         parse(name).ok_or_else(|| Error::internal(format!("'{name}' is not a space statistic")))?;
     let input = inputs.remove(0);
-    refuse_mesh_levels(name, &input)?;
+    refuse_mesh_levels(name, fam, &input)?;
     let mut out = input.clone();
     let mut plans = Vec::with_capacity(out.vars.len());
     let mut info = None;
@@ -1368,6 +1559,9 @@ pub fn describe(node: &OpNode, mut inputs: Vec<Desc>, srcs: &Sources) -> Result<
             // `--plan`: where each variable's weights come from; variables weighted equally by grid
             let mut winfo = Vec::new();
             let mut equal: Vec<(usize, Vec<String>)> = Vec::new();
+            // per-level mesh areas: what each variable loads (`--plan` memory)
+            let mut minfo = Vec::new();
+            let mut mloaded = std::collections::HashSet::new();
             for v in &mut out.vars {
                 let (b0, nb) = block_of(v, DimRole::Horizontal)?;
                 let bshape: Vec<usize> = v.dims[b0..b0 + nb].iter().map(|d| d.size).collect();
@@ -1412,7 +1606,32 @@ pub fn describe(node: &OpNode, mut inputs: Vec<Desc>, srcs: &Sources) -> Result<
                     slot.insert(entry);
                 }
                 let (_, dims, rows, nrows) = &made[&gi];
-                let weights = if weighted {
+                let per_level = if weighted && fam == Family::Fld {
+                    level_weights(g, v, !by_area, &mut mloaded)
+                } else {
+                    None
+                };
+                let weights = if let Some((lw, bytes)) = per_level {
+                    let src = format!(
+                        "areas of each level of place '{}' of the mesh {} (level k: the area at \
+                         its top interface)",
+                        lw.place, lw.mesh.name
+                    );
+                    winfo.push(serde_json::json!({
+                        "variable": v.name,
+                        "area_weights": "mesh_per_level",
+                        "description": src,
+                    }));
+                    minfo.push(serde_json::json!({
+                        "variable": v.name,
+                        "weights": "per_level",
+                        "mesh": lw.mesh.name,
+                        "place": lw.place,
+                        "levels": lw.levels.len(),
+                        "bytes": bytes,
+                    }));
+                    Weights::PerLevel(lw)
+                } else if weighted {
                     let dvar = v.expr.leaves().first().and_then(|l| {
                         srcs.srcs[l.src]
                             .dataset()
@@ -1480,6 +1699,9 @@ pub fn describe(node: &OpNode, mut inputs: Vec<Desc>, srcs: &Sources) -> Result<
             }
             if !winfo.is_empty() {
                 info = Some(serde_json::json!({"area_weights": winfo, "warnings": warnings}));
+            }
+            if let (Some(i), false) = (info.as_mut(), minfo.is_empty()) {
+                i["mesh_weights"] = serde_json::json!(minfo);
             }
             for (gi, (gd, _, _, _)) in made {
                 out.grids[gi] = gd;

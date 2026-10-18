@@ -154,6 +154,26 @@ output is created.
   (cdo 2.6.5: the rows of regular grids) is refused. Other grid descriptions as the band
   argument are refused. cdo 2.6.0 crashes on a HEALPix subset with `zonal_<DY>`; cdors does not.
 
+## Model meshes (`-setgrid,fesom:<dir>`)
+
+cdo reads FESOM2 output as generic grids (no coordinates, equal weights, every stored value
+valid). After `-setgrid,<mesh spec>` cdors uses the mesh:
+
+- **Dry levels are missing.** A value at a level outside its cell's wet levels (below the bottom
+  from `nlevels_nod2D`/`nlevels`, above `ulevels` under cavities) is missing for every operator
+  that follows, whatever the file stores there. FESOM2 writes 0 there, so outputs carry the
+  missing value where the input had 0, and `fldmin`, `fldmean`, `timmean`, ... leave those cells
+  out instead of counting zeros. 2-D variables are unchanged.
+- **Field statistics use the mesh's areas, per level.** `fldmean`, `fldavg`, `fldstd`, `fldvar`
+  (and their `1` forms) and `fldint` weight node `i` at layer `k` by `nod_area[k, i]` (the area at
+  the layer's top interface; FESOM2 `nod_area` shrinks with depth along the coasts), elements by
+  `elem_area` at every level, and 2-D variables by the surface row. cdo, given the same file with
+  a grid description, would weight every level by one 2-D area. `--plan` names the weights
+  (`area_weights: "mesh_per_level"`) and counts the per-level areas in its memory estimate
+  (`memory.parts.mesh_weights`).
+- **`zon*` and `vert*` of variables with levels on a mesh are refused** (`not_implemented`)
+  until latitude bands and per-cell bottoms exist; 2-D variables behave as without a mesh.
+
 ## GRIB (gribscan references)
 
 cdors reads GRIB through gribscan's references (`README.md`); cdo reads the GRIB files. Where

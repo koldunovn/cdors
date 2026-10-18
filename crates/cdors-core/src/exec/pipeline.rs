@@ -251,7 +251,7 @@ fn compute(job: &TileJob) -> Result<Tile> {
             .collect::<Result<_>>()?;
         vals.push(lr.gather(cs, &shape));
     }
-    let values = eval(&job.sv.expr, &mut vals.into_iter());
+    let values = eval(&job.sv.expr, &mut vals.into_iter(), &job.bx);
     Ok(Tile {
         var: job.sv.var,
         bx: job.bx.clone(),

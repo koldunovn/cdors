@@ -25,7 +25,7 @@
 //! prototype).
 
 use super::stage::Stage;
-use super::{Desc, Expr, IndexMap, Leaf, OutKind, Plan, Sources};
+use super::{Desc, Expr, IndexMap, Leaf, OutKind, Plan, Sources, WetMask};
 use crate::error::{Error, ErrorCode, Result};
 use crate::exec::{OutVar, Writer};
 use crate::io::ChunkSource;
@@ -164,14 +164,8 @@ pub fn materialize(d: Desc, consumer: &str, srcs: &mut Sources) -> Result<Desc> 
         name.clone(),
         OutKind::Zarr3,
     );
-    let writer = crate::io::write_zarr::ZarrWriter::create_in(
-        store.clone(),
-        &tmp,
-        &lay,
-        false,
-        None,
-        None,
-    )?;
+    let writer =
+        crate::io::write_zarr::ZarrWriter::create_in(store.clone(), &tmp, &lay, false, None, None)?;
     let reader = crate::io::zarr::ZarrSource::open_store(&name, store.clone(), &Vec::new)?;
     let reader: Arc<dyn ChunkSource> = Arc::new(reader);
     srcs.paths.push(name.clone());
@@ -182,9 +176,11 @@ pub fn materialize(d: Desc, consumer: &str, srcs: &mut Sources) -> Result<Desc> 
         ..d.clone()
     };
     for v in &mut out.vars {
+        let mask = carried_mask(v, &out.grids);
         v.expr = Expr::Leaf(Leaf {
             src: si,
             var: v.name.clone(),
+            mask,
             maps: v
                 .dims
                 .iter()
@@ -206,6 +202,37 @@ pub fn materialize(d: Desc, consumer: &str, srcs: &mut Sources) -> Result<Desc> 
         consumer_stage: usize::MAX,
     });
     Ok(out)
+}
+
+/// The dry-level mask of a result that is still on a mesh place with its levels (`tonodes`,
+/// `timmean`, ... of masked input): the same levels, on the place of the result's grid, so that
+/// operators reading the intermediate know its levels (per-level weights). Its values are
+/// already missing there.
+fn carried_mask(v: &crate::plan::VarDesc, grids: &[super::GridDesc]) -> Option<Arc<WetMask>> {
+    let (m, d, levels) = v.expr.wet_mask()?;
+    let g = &grids[v.grid?];
+    let place = g.base.mesh_place()?;
+    let hd = v.hdims();
+    let dim = v.dims.get(d)?;
+    if hd.len() != 1
+        || dim.role != DimRole::Vertical
+        || dim.size != levels.len()
+        || !g
+            .base
+            .mesh
+            .as_ref()
+            .is_some_and(|x| Arc::ptr_eq(x, &m.mesh))
+    {
+        return None;
+    }
+    Some(Arc::new(WetMask {
+        mesh: m.mesh.clone(),
+        place: place.name.clone(),
+        rule: m.rule,
+        levels,
+        level: d,
+        cell: hd[0],
+    }))
 }
 
 /// `intermediate_too_large` if the intermediates alive at the same time (see [`live_bytes`])

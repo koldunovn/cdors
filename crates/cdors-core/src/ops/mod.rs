@@ -24,6 +24,7 @@ pub mod healpix;
 pub mod info;
 pub mod output;
 pub mod pctl;
+pub mod places;
 pub mod regions;
 pub mod remap;
 pub mod runstat;
@@ -244,6 +245,8 @@ const IMPLEMENTED: &[&str] = &[
     "remapycon",
     "hpdegrade",
     "hpupgrade",
+    "toelems",
+    "tonodes",
     "mergetime",
     "cat",
     "selregion",
@@ -567,6 +570,26 @@ fn build_registry() -> Vec<OpSpec> {
             false,
         ),
         op(
+            "toelems",
+            one,
+            1,
+            vec![],
+            WholeExtent,
+            "Map a variable on the nodes of a model mesh to its elements: the mean of each \
+             element's nodes (cdors operator, needs -setgrid,<mesh>)",
+            false,
+        ),
+        op(
+            "tonodes",
+            one,
+            1,
+            vec![],
+            WholeExtent,
+            "Map a variable on the elements of a model mesh to its nodes: the area-weighted mean \
+             of the elements around each node (cdors operator, needs -setgrid,<mesh>)",
+            false,
+        ),
+        op(
             "hpupgrade",
             one,
             1,
@@ -838,6 +861,7 @@ pub fn describe(node: &OpNode, inputs: Vec<Desc>, srcs: &mut Sources) -> Result<
     match node.name.as_str() {
         n if remap::handles(n) => return remap::describe(node, inputs, srcs),
         "hpdegrade" | "hpupgrade" => return healpix::describe(node, inputs),
+        n if places::handles(n) => return places::describe(node, inputs),
         n if pctl::handles(n) => return pctl::describe(node, inputs, srcs),
         n if runstat::handles(n) => return runstat::describe(node, inputs, srcs),
         n if ymonarith::handles(n) => return ymonarith::describe(node, inputs),

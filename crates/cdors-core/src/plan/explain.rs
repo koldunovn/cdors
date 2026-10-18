@@ -344,6 +344,8 @@ pub fn to_json(plan: &Plan, cmd: &Command, threads: usize, io_threads: usize) ->
 
     let mut stages = Vec::new();
     let mut weights = Vec::new();
+    // per-level mesh areas (and other mesh weights) the kernels load
+    let mut mesh_bytes: u64 = 0;
     let mut warnings = plan.warnings.clone();
     let mut total_comp: Option<u64> = Some(0);
     let (mut budget, mut g_stored, mut g_dec) = (SAMPLE_TOTAL, 0u64, 0u64);
@@ -429,6 +431,13 @@ pub fn to_json(plan: &Plan, cmd: &Command, threads: usize, io_threads: usize) ->
         {
             weights.extend(w.iter().cloned());
         }
+        mesh_bytes += info
+            .as_ref()
+            .and_then(|i| i.get("mesh_weights"))
+            .and_then(Value::as_array)
+            .map_or(0, |w| {
+                w.iter().filter_map(|e| e["bytes"].as_u64()).sum::<u64>()
+            });
         if let Some(w) = info
             .as_ref()
             .and_then(|i| i.get("warnings"))
@@ -493,7 +502,7 @@ pub fn to_json(plan: &Plan, cmd: &Command, threads: usize, io_threads: usize) ->
         .unwrap_or_default();
     let tiles_mem = top.window as u64 * top.tile_bytes;
     let inter_mem = top_i.map_or(0, |i| plan.live_intermediate_bytes(i));
-    let peak = plan.peak_bytes() + weights_bytes;
+    let peak = plan.peak_bytes() + weights_bytes + mesh_bytes;
     let window = plan.stages.last().map_or(2, |s| s.sched.window);
     let lim = read_limit(cmd);
     let total_dec: u64 = stats.iter().map(|s| s.bytes_decoded).sum();
@@ -542,6 +551,7 @@ pub fn to_json(plan: &Plan, cmd: &Command, threads: usize, io_threads: usize) ->
                 "output_buffers": top.out_hold + top.wave_hold,
                 "intermediates": inter_mem,
                 "remap_weights": weights_bytes,
+                "mesh_weights": mesh_bytes,
             },
         },
         "remap_weights": weights,

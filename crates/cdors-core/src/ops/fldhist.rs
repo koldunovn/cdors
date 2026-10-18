@@ -287,6 +287,7 @@ impl State {
                 let w = match &p.weights {
                     Weights::Const(w) => *w,
                     Weights::Each(ws) => ws[f0 + k],
+                    Weights::PerLevel(_) => unreachable!("hist_weights refuses levels on a mesh"),
                 };
                 let row = &v[base + o * ostride + k * i_n..][..i_n];
                 for (i, &x) in row.iter().enumerate() {
@@ -383,6 +384,20 @@ fn hist_weights(
     srcs: &Sources,
     fraction: bool,
 ) -> Result<(Weights, Option<AreaSource>)> {
+    if let Some(m) = g.base.mesh.as_ref()
+        && m.vertical.is_some()
+        && v.dims.iter().any(|d| d.role == DimRole::Vertical)
+    {
+        return Err(Error::new(
+            ErrorCode::NotImplemented,
+            format!(
+                "fldhist of '{}' on the mesh {}: variables with levels need per-level areas, \
+                 which fldhist does not use yet",
+                v.name, m.name
+            ),
+        )
+        .with_hint("2-D variables on the mesh (e.g. a_ice) work"));
+    }
     if fraction {
         return fldstat::fld_weights(g, v, srcs, false);
     }

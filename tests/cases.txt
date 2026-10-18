@@ -220,10 +220,10 @@ json:(.out.places | map([.name, .size, (.area_sum | . * 1e-3 | round), (.lon_ran
 json:(.out.places | map([.name, .size, (.area_sum | . * 1e-3 | round), (.lon_range + .lat_range | map(. * 1e6 | round)), .wet_levels.min, .wet_levels.max])) == [["nodes", 3140, 339720478580, [-179963006, 179958769, -78516841, 89404840], 4, 45], ["elements", 5839, 339720478580, [-179936944, 179935174, -77865513, 89319950], 4, 45]] and .out.places[0].area_per_level.levels == 47 and .out.memory.lazy_loaded_bytes == 0 and .out.vertical.levels == 47 and .out.vertical.interfaces == [-6250, 0] and .out.topology[0].name == "elem_nodes" and (.out.cache.path | endswith(".zarr")) and (.out.units | startswith("degrees")) | --json mesh info fesom:{fix}/fesom_pi_deg | r36x18_std
 json:.out.units | startswith("radians (given: units=rad)") | --json mesh info fesom:{fix}/fesom_pi,units=rad | r36x18_std
 # -setgrid,fesom: the 2-D variables use the mesh's node areas (--plan says so); a grid that fits no
-# place is grid_mismatch; 3-D variables are refused until per-level weights exist (Task 5, other half)
+# place is grid_mismatch; zon*/vert* of 3-D variables on a mesh are refused (Tasks 8, 9)
 json:.out.stages[0].kernel.area_weights | map(.area_weights) == ["mesh", "mesh"] | --json --plan -fldmean -selname,a_ice,m_ice -setgrid,fesom:{fix}/fesom_pi_deg {in} {out} | fesom_pi_data
 err:grid_mismatch | -fldmean -setgrid,fesom:{fix}/fesom_pi {in} | hpz2_noleap
-err:not_implemented | -fldmean -selname,temp -setgrid,fesom:{fix}/fesom_pi {in} | fesom_pi_data
+err:not_implemented | -vertmean -selname,temp -setgrid,fesom:{fix}/fesom_pi {in} | fesom_pi_data
 err:bad_arguments | -fldmean -setgrid,fesom:{fix}/fesom_pi,unit=rad {in} | fesom_pi_data
 # fldint (cdo's Σ area·value) on cdo's grids
 ulp      | -fldint {in}                                | r36x18_std
@@ -293,3 +293,26 @@ err:bad_arguments    | -fldhist,bins=0/0.15/1 {in}     | r36x18_std   # bins= is
 # are those of the input, 2 variables x 648 cells x 1096 steps x 4 B and 3140 nodes x 24 steps x 4 B
 json:.out.totals.bytes_decoded == 5681664 | --plan --json -fldhist,bins=280/310/5 {in} | r36x18_std
 json:.out.totals.bytes_decoded == 301440 | --plan --json -fldhist,edges=0/0.15/1,out=fraction -selname,a_ice {in} | fesom_pi_data
+#
+# Task 5 (executor half): after -setgrid,fesom: values below each cell's bottom (stored as 0) are
+# missing, and fld* weigh layer k of the nodes by nod_area[k] (elements: elem_area), vs NumPy
+# (reference.py mesh_level_*, which leaves the dry levels out: fldmin would be 0 otherwise), in
+# both dimension orders (FESOM 2.0's (time, nod2, nz1) too); float32 data and output, measured
+# max rel diff 6e-8
+ref:numpy.mesh_level_mean | -fldmean -selname,temp,u,a_ice -setgrid,fesom:{fix}/fesom_pi {in}  | fesom_pi_data fesom_pi_data_v20
+ref:numpy.mesh_level_int  | -fldint -selname,temp,v -setgrid,fesom:{fix}/fesom_pi_deg {in}     | fesom_pi_data fesom_pi_data_v20
+ref:numpy.mesh_level_min  | -fldmin -selname,salt,u -setgrid,fesom:{fix}/fesom_pi {in}         | fesom_pi_data fesom_pi_data_v20
+ref:numpy.mesh_level_std  | -fldstd -selname,temp,u -setgrid,fesom:{fix}/fesom_pi {in}         | fesom_pi_data fesom_pi_data_v20
+ref:nereus.nereus_level_mean | -fldmean -selname,temp -setgrid,fesom:{fix}/fesom_pi {in}       | fesom_pi_data
+# --plan: per-level weights and the bytes of the 47 levels of nod_area (47 x 3140 x 8) in memory
+json:.out.stages[0].kernel.mesh_weights == [{"variable": "temp", "weights": "per_level", "mesh": "fesom2:fesom_pi", "place": "nodes", "levels": 47, "bytes": 1180640}] and .out.memory.parts.mesh_weights == 1180640 and .out.stages[0].kernel.area_weights[0].area_weights == "mesh_per_level" | --json --plan -fldmean -selname,temp -setgrid,fesom:{fix}/fesom_pi {in} {out} | fesom_pi_data
+# toelems (mean of the three nodes) and tonodes (elem_area-weighted mean of the elements around a
+# node) vs NumPy, dry levels of the target missing, output in the input's dimension order; a chain
+# through the result (per-level weights on the intermediate's nodes); the wrong place is refused.
+# tonodes on fesom_pi_data keeps 5 levels: the planner variant's --mem 1M does not hold two tiles
+# and a lane of all 5839 elements at 5 timesteps x 10 levels (its tiny chunks)
+ref:numpy.toelems | -toelems -selname,temp,a_ice -setgrid,fesom:{fix}/fesom_pi {in}             | fesom_pi_data fesom_pi_data_v20
+ref:numpy.tonodes | -tonodes -sellevel,2.5,95,975,3025,6125 -selname,u,v -setgrid,fesom:{fix}/fesom_pi_deg {in} | fesom_pi_data
+ref:numpy.tonodes | -tonodes -selname,u,v -setgrid,fesom:{fix}/fesom_pi_deg {in}                | fesom_pi_data_v20
+json:.out.stages[1].kernel.area_weights[0].area_weights == "mesh_per_level" | --json --plan -fldmean -sellevel,25,975 -tonodes -selname,u -setgrid,fesom:{fix}/fesom_pi {in} {out} | fesom_pi_data
+err:unsupported_grid | -tonodes -selname,temp -setgrid,fesom:{fix}/fesom_pi {in}               | fesom_pi_data

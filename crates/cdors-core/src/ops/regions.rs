@@ -348,6 +348,7 @@ impl MaskSource {
                 .zip(sizes)
                 .map(|(&d, n)| (d, IndexMap::identity(n)))
                 .collect(),
+            mask: None,
         }
     }
 }
@@ -877,6 +878,7 @@ fn maskregion(node: &OpNode, mut d: Desc, srcs: &mut Sources) -> Result<Desc> {
                     src: 0,
                     var: String::new(),
                     maps: vec![],
+                    mask: None,
                 }),
             );
             v.expr = Expr::Binary(

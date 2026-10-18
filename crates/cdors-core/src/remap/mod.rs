@@ -26,7 +26,7 @@ pub mod target;
 pub mod weights;
 
 pub use generate::{GenMethod, SourceIdentity, WeightCache, WeightRequest};
-pub use weights::{MapMethod, Normalization, RemapWeights, Value};
+pub use weights::{MapMethod, MissingRule, Normalization, RemapWeights, Value};
 
 use std::path::PathBuf;
 
