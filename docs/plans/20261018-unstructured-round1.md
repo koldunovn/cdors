@@ -605,9 +605,9 @@ The harness gains three capabilities (Task 2), so that every check in this plan 
 - Create: `crates/cdors-core/src/ops/fldhist.rs`.
 - Modify: `crates/cdors-core/src/ops/mod.rs`, `tests/ref/reference.py`, `tests/cases.txt`.
 
-- [ ] **`zonmean`, `zonsum`, `zonint` with `zonaldes=zonal_<DY>`** on unstructured and mesh grids, with cdo semantics
+- [x] **`zonmean`, `zonsum`, `zonint` with `zonaldes=zonal_<DY>`** on unstructured and mesh grids, with cdo semantics
       (band membership and output latitudes as cdo writes them). The other `zon*` keep refusing, with today's hint.
-- [ ] **`fldhist,bins=<lo>/<hi>/<step>|<e0>/<e1>/…[,out=area|fraction]`.**
+- [x] **`fldhist,bins=<lo>/<hi>/<step>|<e0>/<e1>/…[,out=area|fraction]`.**
   - Bins are [e_i, e_{i+1}), except the last, which is closed.
   - Values outside all bins go to the variables `below` and `above`; nothing is dropped silently.
   - `fraction` divides by the total valid area, including below and above.
@@ -619,7 +619,37 @@ The harness gains three capabilities (Task 2), so that every check in this plan 
   - the ice-extent recipe vs `ref:nereus.ice_extent`;
   - a value exactly on an edge;
   - the planner variant.
-- [ ] Run tests.
+- [x] Run tests (grids without a mesh).
+- ➕ Done without a mesh (2026-10-18), the mesh parts wait for Task 5:
+  - `zonmean,zonal_<DY>` (cdo's syntax: the description is the positional argument;
+    `zonaldes=zonal_<DY>` is accepted too) on unstructured/curvilinear grids with bounds, HEALPix
+    (cdo's corners) and regular grids: band membership, weights (`correct_weights`) and output
+    grid as cdo's `remap_weights_zonal`; the part of a cell inside a band is integrated along its
+    edges (`cdors_mesh::geom::band_area`, lon-lat cells `lonlat_band_area`) instead of yac's
+    clipping, equal up to rounding (f32 ulp vs cdo on all three fixtures, zonal_7 and zonal_10).
+    The cells → bands matrix is a `Csr` (`RowMap::Bands`) folded by fldstat's kernel in cell order.
+  - `fldhist` (`ops/fldhist.rs`) with `<var>(…, bin)`, `<var>_below`, `<var>_above`, coordinate
+    `bin` (centres) with `bin_bnds` (edges), a one-axis generic grid (writer: `exec/mod.rs`).
+  - Mesh hooks: per-level areas go into `fldhist::hist_weights` (the only place deciding the
+    weights; `Weights` per (level, cell) as for `fldmean`), and mesh cell polygons into
+    `fldstat::cell_corners` (today fixed `nv` per cell; median-dual node polygons have a varying
+    count, so `band_matrix` needs a CSR of corners there).
+- ⚠️ cdo 2.6.0 (the harness reference) accepts `zonal_<DY>` with `zonmean` only and has no
+  `zonint`; `zonsum`/`zonint` follow cdo 2.6.5's source (`Zonstat.cc`, `remap_conserv.cc:768-976`)
+  and are checked against NumPy (`ref:numpy.zonsum`, `ref:numpy.zonint` on unst_360). `zonint`
+  without bands (2.6.5: rows of regular grids) is refused (`bad_arguments`). cdo 2.6.0 segfaults on
+  a HEALPix subset with `zonal_<DY>`, so that row runs on unst_360 only.
+- ⚠️ `bins=` is always `<lo>/<hi>/<step>` (three numbers, as cdo's `first/last/inc` ranges);
+  explicit edges are `edges=<e0>/<e1>/…/<en>`, because three explicit edges and lo/hi/step cannot
+  be told apart.
+- ⚠️ `out=area` gives m² with `fldint`'s cell areas and refuses a grid without areas
+  (`unsupported_grid`/`no_coordinates`, as cdo's `fldint`); `out=fraction` uses `fldmean`'s weights,
+  including the equal-weights fallback with its warning. Each of the three output variables folds
+  its input separately (the planner computes output `i` from input `i`), so the input is read three
+  times.
+- ⚠️ Not done (needs Task 5's mesh): the ice-extent recipe vs `ref:nereus.ice_extent`, per-level
+  histograms with per-level areas, zonal bands on mesh grids. OpSpec has no `origin` yet: `fldhist`
+  carries "(cdors)" in its description and a TODO for Task 11 in `ops/mod.rs`.
 
 ### Task 9: Vertical geometry: `vert*` with bottoms, `vertint`, `volint`/`volmean`, `intlevel`, `bottomvalue`
 

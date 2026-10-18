@@ -5,6 +5,8 @@
 //! - **Spherical polygon areas** as cdo computes them: fans of triangles, each by L'Huilier's
 //!   theorem ([`huiliers_area`], [`huiliers_area_centre`]; moved here from cdors-core's
 //!   `model/area.rs`, which re-exports them unchanged).
+//! - **Latitude bands**: the part of a cell between two latitudes ([`band_area`] for
+//!   great-circle edges, [`lonlat_band_area`] for lon-lat cells), as cdo's `zonmean,zonal_<DY>`.
 //! - **Regions** ([`Region`], [`Regions`]): point in polygon in **planar lon/lat with straight
 //!   edges**, as regionmask, shapely, rasterize and cdo's `selregion` treat region outlines (a
 //!   long edge at high latitude is a straight line in lon/lat, not a great circle), with
@@ -15,6 +17,7 @@
 use crate::mesh::Csr;
 use crate::{MeshError, Result};
 use rayon::prelude::*;
+use std::f64::consts::PI;
 
 // ---------------------------------------------------------------------------------------------
 // Unit vectors and great circles
@@ -159,6 +162,138 @@ pub fn huiliers_area_centre(lon: &[f64], lat: &[f64], clon: f64, clat: f64) -> f
         sum += tri_area(&p1, &p2, &xyz(lon[0], lat[0]));
     }
     sum
+}
+
+// ---------------------------------------------------------------------------------------------
+// Latitude bands
+// ---------------------------------------------------------------------------------------------
+
+/// A vertex closer than this to the polar axis is at the pole (exact HEALPix corners have 0,
+/// stored ±90° about 6e-17).
+const POLE_EPS: f64 = 1e-12;
+
+/// `x` wrapped into (−π, π].
+fn wrap(x: f64) -> f64 {
+    let y = x.rem_euclid(2.0 * PI);
+    if y > PI { y - 2.0 * PI } else { y }
+}
+
+fn lam(p: &[f64; 3]) -> f64 {
+    p[1].atan2(p[0])
+}
+
+/// (∫ clamp(z, z_lo, z_hi) dλ, Δλ) along the great-circle arc from `p` to `q` (unit vectors,
+/// neither at a pole, less than π apart). The arc is split where z crosses a bound; inside the
+/// band ∫ z dλ = atan(r·sin(t − t0) / n_z) with z(t) = r·cos(t − t0) and n the arc's normal.
+fn arc_integral(p: &[f64; 3], q: &[f64; 3], z_lo: f64, z_hi: f64) -> (f64, f64) {
+    let c = cross(p, q);
+    let s = norm(&c);
+    if s < 1e-15 {
+        return (0.0, 0.0);
+    }
+    let n = [c[0] / s, c[1] / s, c[2] / s];
+    if n[2] == 0.0 {
+        // a meridian: λ does not change
+        return (0.0, 0.0);
+    }
+    let len = s.atan2(dot(p, q));
+    let u = cross(&n, p);
+    let (r, t0) = (p[2].hypot(u[2]), u[2].atan2(p[2]));
+    let at = |t: f64| -> [f64; 3] {
+        let (st, ct) = t.sin_cos();
+        [
+            p[0] * ct + u[0] * st,
+            p[1] * ct + u[1] * st,
+            p[2] * ct + u[2] * st,
+        ]
+    };
+    let mut ts = vec![0.0, len];
+    for zb in [z_lo, z_hi] {
+        if zb.abs() < r {
+            let d = (zb / r).acos();
+            for t in [t0 - d, t0 + d] {
+                let t = t.rem_euclid(2.0 * PI);
+                if t > 0.0 && t < len {
+                    ts.push(t);
+                }
+            }
+        }
+    }
+    ts.sort_by(f64::total_cmp);
+    let f = |t: f64| (r * (t - t0).sin() / n[2]).atan();
+    let (mut sum, mut dl) = (0.0, 0.0);
+    let mut a = *p;
+    for w in ts.windows(2) {
+        let b = if w[1] == len { *q } else { at(w[1]) };
+        let d = wrap(lam(&b) - lam(&a));
+        let zm = r * (0.5 * (w[0] + w[1]) - t0).cos();
+        sum += if zm >= z_hi {
+            z_hi * d
+        } else if zm <= z_lo {
+            z_lo * d
+        } else {
+            f(w[1]) - f(w[0])
+        };
+        dl += d;
+        a = b;
+    }
+    (sum, dl)
+}
+
+/// Area (unit sphere) of the part of a spherical polygon with great-circle edges between the
+/// latitudes whose sines are `z_lo` < `z_hi`: what `yac_cell_lat_clipping` followed by
+/// `yac_grid_cell_area` gives for a cell in cdo's `zonmean,zonal_<DY>`, up to rounding.
+///
+/// No clipping: by Green's theorem in (λ, φ) the area is −∮ (clamp(z, z_lo, z_hi) − z_lo) dλ
+/// along the boundary traversed with the polygon on its left, plus 2π·(z_hi − z_lo) if it winds
+/// around the north pole. A vertex at a pole contributes the turn of λ between the meridians of
+/// its neighbours, at z = ±1. `v` are unit vectors in either orientation.
+pub fn band_area(v: &[[f64; 3]], z_lo: f64, z_hi: f64) -> f64 {
+    let n = v.len();
+    if n < 3 || z_hi <= z_lo {
+        return 0.0;
+    }
+    // orientation: the normal Σ v_i × v_{i+1} points outwards for counter-clockwise vertices
+    let (mut nrm, mut mean) = ([0.0; 3], [0.0; 3]);
+    for i in 0..n {
+        let c = cross(&v[i], &v[(i + 1) % n]);
+        for k in 0..3 {
+            nrm[k] += c[k];
+            mean[k] += v[i][k];
+        }
+    }
+    let ccw = dot(&nrm, &mean) >= 0.0;
+    let at = |k: usize| -> &[f64; 3] { if ccw { &v[k % n] } else { &v[n - 1 - k % n] } };
+    let pole = |p: &[f64; 3]| p[0].hypot(p[1]) < POLE_EPS;
+    let (mut integral, mut dl) = (0.0, 0.0);
+    for k in 0..n {
+        let (p, q) = (at(k), at(k + 1));
+        if pole(p) {
+            let prev = at(k + n - 1);
+            if !pole(prev) && !pole(q) {
+                let d = wrap(lam(q) - lam(prev));
+                integral += p[2].signum().clamp(z_lo, z_hi) * d;
+                dl += d;
+            }
+        } else if !pole(q) {
+            let (s, d) = arc_integral(p, q, z_lo, z_hi);
+            integral += s;
+            dl += d;
+        }
+    }
+    let mut a = z_lo * dl - integral;
+    if dl > PI {
+        a += 2.0 * PI * (z_hi - z_lo);
+    }
+    a.max(0.0)
+}
+
+/// Area (unit sphere) of the part of a lon-lat cell (edges along meridians and circles of
+/// latitude; longitudinal extent `dlon`, latitudes `lat0`, `lat1`, radians) between the
+/// latitudes whose sines are `z_lo` < `z_hi` (`yac_lon_lat_cell_lat_clipping`).
+pub fn lonlat_band_area(dlon: f64, lat0: f64, lat1: f64, z_lo: f64, z_hi: f64) -> f64 {
+    let (lo, hi) = (lat0.min(lat1).sin(), lat0.max(lat1).sin());
+    dlon.abs() * (hi.clamp(z_lo, z_hi) - lo.clamp(z_lo, z_hi)).max(0.0)
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -608,5 +743,41 @@ mod tests {
                 assert_eq!(reg.contains(x, y), brute(x, y), "({x}, {y})");
             }
         }
+    }
+    #[test]
+    fn band_areas_add_up_to_the_cell() {
+        // quads with great-circle edges (one with a vertex at the north pole, one around the
+        // south pole, both orientations): the bands of a partition of [-1, 1] add up to the
+        // L'Huilier area, one band over everything is the whole cell
+        let d = std::f64::consts::PI / 180.0;
+        let cells: [(&[f64], &[f64]); 4] = [
+            (&[10.0, 40.0, 50.0, 5.0], &[-20.0, -25.0, 15.0, 30.0]),
+            (&[5.0, 50.0, 40.0, 10.0], &[30.0, 15.0, -25.0, -20.0]),
+            (&[0.0, 45.0, 90.0, 0.0], &[70.0, 65.0, 70.0, 90.0]),
+            (&[0.0, 120.0, 240.0], &[-70.0, -70.0, -70.0]),
+        ];
+        for (lon, lat) in cells {
+            let (lo, la): (Vec<f64>, Vec<f64>) =
+                lon.iter().zip(lat).map(|(&x, &y)| (x * d, y * d)).unzip();
+            let v: Vec<[f64; 3]> = lo.iter().zip(&la).map(|(&x, &y)| xyz(x, y)).collect();
+            let whole = if lon.len() == 3 {
+                // around the pole: three triangles from the pole
+                let s = xyz(0.0, -90.0 * d);
+                (0..3).map(|i| tri_area(&s, &v[i], &v[(i + 1) % 3])).sum()
+            } else {
+                huiliers_area(&lo, &la)
+            };
+            let full = band_area(&v, -1.0, 1.0);
+            assert!((full - whole).abs() < 1e-14, "{lon:?}: {full} {whole}");
+            let z: Vec<f64> = (0..=36)
+                .map(|k| (-90.0 + 5.0 * k as f64) * d)
+                .map(f64::sin)
+                .collect();
+            let sum: f64 = z.windows(2).map(|w| band_area(&v, w[0], w[1])).sum();
+            assert!((sum - whole).abs() < 1e-13, "{lon:?}: {sum} {whole}");
+        }
+        // a lon-lat cell: Δλ (sin φ1 − sin φ0) of the overlap
+        let a = lonlat_band_area(18.0 * d, -10.0 * d, 0.0, (-7.0 * d).sin(), (1.0 * d).sin());
+        assert!((a - 18.0 * d * (0.0 - (-7.0 * d).sin())).abs() < 1e-16);
     }
 }

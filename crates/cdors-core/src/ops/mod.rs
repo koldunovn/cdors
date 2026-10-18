@@ -18,6 +18,7 @@
 pub mod arith;
 pub mod catalog;
 pub mod files;
+pub mod fldhist;
 pub mod fldstat;
 pub mod healpix;
 pub mod info;
@@ -623,7 +624,24 @@ fn build_registry() -> Vec<OpSpec> {
     }
     // space statistics
     for (name, d) in fldstat::operators() {
-        r.push(op(&name, one, 1, vec![], Reduction, &d, true));
+        let args = if fldstat::takes_zonaldes(&name) {
+            vec![opt("zonaldes", Str, "none")]
+        } else {
+            vec![]
+        };
+        r.push(op(&name, one, 1, args, Reduction, &d, true));
+    }
+    // TODO(Task 11): origin "cdors" once OpSpec has an origin field
+    for (name, d) in fldhist::operators() {
+        r.push(op(
+            &name,
+            one,
+            1,
+            vec![arg("bins", Str), opt("out", Str, "area")],
+            Reduction,
+            &d,
+            true,
+        ));
     }
     for m in ["nn", "dis", "bil", "con", "ycon"] {
         r.push(op(
@@ -842,6 +860,7 @@ pub fn describe(node: &OpNode, inputs: Vec<Desc>, srcs: &mut Sources) -> Result<
         AccessClass::Reduction if fldstat::handles(&node.name) => {
             fldstat::describe(node, inputs, srcs)
         }
+        AccessClass::Reduction if node.name == "fldhist" => fldhist::describe(node, inputs, srcs),
         AccessClass::Reduction | AccessClass::WholeExtent => Err(Error::new(
             ErrorCode::NotImplemented,
             format!("operator '{}' is not implemented yet", node.name),

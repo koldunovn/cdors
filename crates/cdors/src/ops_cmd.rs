@@ -222,6 +222,12 @@ pub fn notes(name: &str) -> Vec<String> {
             "on HEALPix grids each ring is summed in nested order [Space statistics: HEALPix zon*]",
         );
     }
+    if cdors_core::ops::fldstat::takes_zonaldes(name) {
+        n.push(
+            "zonal_<DY> latitude bands as cdo (also zonaldes=zonal_<DY>; zonsum and zonint as cdo \
+             2.6.5) [Space statistics: Latitude bands zonal_<DY>]",
+        );
+    }
     if is(&["vert"]) {
         n.push("accumulates in double precision [Space statistics: vert*]");
     }

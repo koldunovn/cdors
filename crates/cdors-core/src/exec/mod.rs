@@ -650,6 +650,37 @@ pub fn out_meta(plan: &Plan, lay: &[OutVar], history: Option<&str>) -> Result<Ou
                 }
                 extra.push(("coordinates".into(), text(&format!("{yname} {xname}"))));
             }
+        } else if let (Some(f), Some(x), None) = (&g.fixed, &g.base.x, &g.base.y) {
+            // a one-axis grid made by an operator (the bins of `fldhist`): its coordinate
+            // variable and the bounds
+            let (c, mut xa) = (&f.coords, f.xattrs.clone());
+            if let Some(xb) = &c.xbounds {
+                add_dim(&mut dims, "bnds", 2, false)?;
+                let bname = format!("{}_bnds", x.var);
+                set_attr(&mut xa, "bounds", text(&bname));
+                push(
+                    &mut coords,
+                    OutCoord {
+                        name: bname,
+                        dims: vec![hd[0].clone(), "bnds".into()],
+                        shape: vec![c.xvals.len(), 2],
+                        dtype: DType::F64,
+                        values: xb.clone(),
+                        attrs: Attrs::default(),
+                    },
+                );
+            }
+            push(
+                &mut coords,
+                OutCoord {
+                    name: x.var.clone(),
+                    dims: vec![hd[0].clone()],
+                    shape: vec![c.xvals.len()],
+                    dtype: DType::F64,
+                    values: c.xvals.clone(),
+                    attrs: xa,
+                },
+            );
         } else if let Some(c) = g.coords()? {
             let (xname, yname, xa, ya, f32c) = if g.base.kind == crate::model::GridKind::Healpix {
                 let mut xa = Attrs::default();

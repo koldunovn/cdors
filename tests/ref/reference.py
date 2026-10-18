@@ -65,11 +65,21 @@ def triangle_area(a, b, c):
     return 2 * np.arctan2(num, den)
 
 
-def cell_areas(ds, name):
+def cell_areas(ds, name, equal_ok=False):
     """Cell areas (unit sphere) of the horizontal grid of variable `name`, as cdo weights cells:
-    lon-lat cells are quadrilaterals with great-circle edges; HEALPix cells are all equal."""
+    lon-lat cells are quadrilaterals with great-circle edges; HEALPix cells are all 4 pi / N;
+    unstructured cells with bounds are fans of great-circle triangles from their first vertex.
+    equal_ok: a grid without coordinates gets equal weights (ones), as cdo's fldmean."""
     v = ds[name]
     if getattr(v, "grid_mapping", "") and "healpix" in ds[v.grid_mapping].grid_mapping_name:
+        return np.full(v.shape[-1], 4 * np.pi / v.shape[-1])
+    coords = str(getattr(v, "coordinates", "")).split()
+    bnds = [str(getattr(ds[c], "bounds", "")) for c in coords if c in ds.variables]
+    if len(coords) == 2 and all(b in ds.variables for b in bnds):
+        lat, lon = sorted(coords, key=lambda c: "east" in getattr(ds[c], "units", ""))
+        p = unit(ds[ds[lon].bounds][:].astype("f8"), ds[ds[lat].bounds][:].astype("f8"))
+        return sum(triangle_area(p[:, 0], p[:, k], p[:, k + 1]) for k in range(1, p.shape[1] - 1))
+    if equal_ok and not coords and not any(d in ds.variables for d in v.dimensions[1:]):
         return np.ones(v.shape[-1])
     ylat, xlon = v.dimensions[-2:]
     if not (ylat in ds.variables and xlon in ds.variables
@@ -292,6 +302,121 @@ def mesh_fldint(args, inputs, out):
     mesh_fld(args, inputs, out, integral=True)
 
 
+R = 6371000.0  # cdo's planet radius (m)
+
+
+def op_args(args, name):
+    """Arguments of operator `name` in the row's arguments ('-fldhist,a=1,b=2' -> {a: 1, b: 2},
+    a positional argument under its index) and the variables of a -selname in the chain."""
+    opts, names = None, None
+    for a in args:
+        head, _, rest = a.lstrip("-").partition(",")
+        if head == name:
+            opts = {}
+            for i, x in enumerate(rest.split(",") if rest else []):
+                k, eq, val = x.partition("=")
+                opts[k if eq else i] = val if eq else x
+        elif head == "selname":
+            names = rest.split(",")
+    return opts, names
+
+
+def fldhist(args, inputs, out):
+    """Area-weighted histogram of every variable (or the -selname ones): <var>(time, [level,] bin)
+    with [e_i, e_i+1), the last bin closed, <var>_below and <var>_above; out=area in m2 (areas of
+    cell_areas() x R^2), out=fraction divided by the weight of all valid cells (equal weights on a
+    grid without coordinates, as fldmean)."""
+    opts, names = op_args(args, "fldhist")
+    if "bins" in opts:
+        lo, hi, step = map(float, opts["bins"].split("/"))
+        n = int(round((hi - lo) / step))
+        edges = np.append(lo + step * np.arange(n), hi)
+    else:
+        edges = np.array([float(x) for x in opts["edges"].split("/")])
+    frac = opts.get("out", "area") == "fraction"
+    nb = len(edges) - 1
+    with netCDF4.Dataset(inputs[0]) as src, netCDF4.Dataset(out, "w") as dst:
+        copy_time(src, dst)
+        dst.createDimension("bin", nb)
+        for n in names or data_vars(src):
+            v = src[n]
+            w = cell_areas(src, n, equal_ok=frac) * (1 if frac else R * R)
+            x = masked(v[:])
+            lead = x.shape[: x.ndim - w.ndim]
+            xf = x.reshape(-1, w.size)
+            res = np.zeros((xf.shape[0], nb + 2))     # below, bins, above
+            for r, row in enumerate(xf):
+                ok = ~np.ma.getmaskarray(row)
+                val, ww = row.data[ok], w.reshape(-1)[ok]
+                slot = np.where(val < edges[0], 0, np.where(
+                    val > edges[-1], nb + 1, np.minimum(np.searchsorted(edges, val, side="right"), nb)))
+                res[r] = np.bincount(slot, weights=ww, minlength=nb + 2)
+                if frac:
+                    res[r] = res[r] / ww.sum() if ww.sum() > 0 else np.nan
+            res = res.reshape(*lead, nb + 2)
+            dims = v.dimensions[: len(lead)]
+            for d in dims[1:]:
+                if d not in dst.dimensions:
+                    dst.createDimension(d, src.dimensions[d].size)
+            for suffix, vals, dd in [("", res[..., 1:nb + 1], dims + ("bin",)),
+                                     ("_below", res[..., 0], dims), ("_above", res[..., nb + 1], dims)]:
+                o = dst.createVariable(n + suffix, "f8", dd, fill_value=netCDF4.default_fillvals["f8"])
+                o[:] = np.ma.masked_invalid(vals)
+
+
+def zonal_bands(args, name):
+    """Band bounds (degrees) of the row's <name>,zonal_<DY> as cdo makes them."""
+    opts, _ = op_args(args, name)
+    inc = float(opts[0].split("zonal_")[1])
+    n = int(180 / inc + 0.5)
+    c = -90 + inc / 2 + inc * np.arange(n)
+    b = axis_bounds(c, False) if n > 1 else np.array([-90.0, 90.0])
+    return np.stack([b[:-1], b[1:]], axis=1)
+
+
+def zonal_ref(args, inputs, out, name):
+    """zonsum / zonint with zonal_<DY> on a grid of lon-lat cells stored as unstructured bounds
+    (unst_360): zonsum sums the cells whose centre latitude is in [lo, hi); zonint sums value x
+    the cell's area inside the band, Delta lon (sin(min(top, hi)) - sin(max(bottom, lo))) R^2. A
+    band without valid cells is missing."""
+    bands = zonal_bands(args, name)
+    with netCDF4.Dataset(inputs[0]) as src, netCDF4.Dataset(out, "w") as dst:
+        copy_time(src, dst)
+        dst.createDimension("lat", len(bands))
+        dst.createDimension("lon", 1)
+        for n in data_vars(src):
+            v = src[n]
+            lat, lon = "lat", "lon"
+            yb = np.deg2rad(src[src[lat].bounds][:].astype("f8"))
+            xb = np.deg2rad(src[src[lon].bounds][:].astype("f8"))
+            yc = src[lat][:].astype("f8")
+            x = masked(v[:])
+            w = np.zeros((len(bands), v.shape[-1]))
+            for b, (lo, hi) in enumerate(bands):
+                if name == "zonsum":
+                    w[b] = (yc >= lo) & (yc < hi)
+                else:
+                    s0, s1 = np.sin(np.deg2rad(lo)), np.sin(np.deg2rad(hi))
+                    top = np.clip(np.sin(yb.max(axis=1)), s0, s1)
+                    bot = np.clip(np.sin(yb.min(axis=1)), s0, s1)
+                    dlon = np.abs((xb[:, 1] - xb[:, 0] + np.pi) % (2 * np.pi) - np.pi)
+                    w[b] = dlon * (top - bot) * R * R
+            valid = (~np.ma.getmaskarray(x)).astype("f8")
+            s = np.einsum("tc,bc->tb", x.filled(0), w)
+            cnt = np.einsum("tc,bc->tb", valid, (w > 0).astype("f8"))
+            o = dst.createVariable(n, "f8", ("time", "lat", "lon"), fill_value=netCDF4.default_fillvals["f8"])
+            o[:] = np.ma.masked_where(cnt == 0, s)[..., None]
+
+
+def zonsum(args, inputs, out):
+    zonal_ref(args, inputs, out, "zonsum")
+
+
+def zonint(args, inputs, out):
+    zonal_ref(args, inputs, out, "zonint")
+
+
+# the functions a row can name (ref:<lib>.<fn>)
 REFERENCES = {
     "fldmean": fldmean,
     "fldmean_wrong": fldmean_wrong,
@@ -300,6 +425,9 @@ REFERENCES = {
     "mask_3D": mask_3D,
     "maskregion": maskregion,
     "selregion": selregion,
+    "fldhist": fldhist,
+    "zonsum": zonsum,
+    "zonint": zonint,
 }
 
 

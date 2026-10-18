@@ -261,3 +261,31 @@ exact    | -seltimestep,2 -maskregion,{fix}/regions/cdo_two.txt {in} | hpz2_nole
 err:bad_arguments   | -selregion,{fix}/regions/cdo_none.txt {in}   | r36x18_std
 err:not_implemented | -selregion,dcw:DE {in}                       | r36x18_std
 err:not_implemented | -maskregion,dcw:DE {in}                      | r36x18_std
+# Round 1, Task 8: latitude bands and area-weighted histograms.
+# zonmean,zonal_<DY> vs cdo (2.6.0 takes zonal_<DY> with zonmean only): cells cut by the bands on
+# HEALPix (great-circle edges) and on lon-lat cells (unst_360, r36x18_std); zonal_7 also ends its
+# last band at 92 deg (cdo uses its sine, so the band stops at 88). cdo segfaults on a HEALPix
+# subset with zonal_<DY>, so the subset row is unst_360 only.
+ulp      | -zonmean,zonal_10 {in}                      | hpz2_noleap unst_360 r36x18_std
+ulp      | -zonmean,zonal_7 {in}                       | hpz2_noleap unst_360
+ulp      | -zonmean,zonal_10 -sellonlatbox,-30,90,0,60 {in} | unst_360
+err:bad_arguments    | -zonmean,zonal_x {in}           | unst_360
+err:bad_arguments    | -zonint {in}                    | r36x18_std   # only with zonal_<DY>
+err:unsupported_grid | -zonmean {in}                   | unst_360     # hint: zonmean,zonal_<DY>
+# zonsum (cell centres in [lo, hi)) and zonint (band part of each lon-lat cell x R^2) as cdo 2.6.5
+# defines them, against NumPy (tests/ref/reference.py).
+ref:numpy.zonsum | -zonsum,zonal_7 {in}                | unst_360
+ref:numpy.zonint | -zonint,zonal_7 {in}                | unst_360
+# fldhist (cdors): areas in m2 (fldint's cell areas) or fractions (fldmean's weights) per bin,
+# <var>_below and <var>_above, vs NumPy with independently computed cell areas. a_ice of
+# fesom_pi_data is exactly 0 and exactly 1 on many nodes: 0 on an inner edge goes to [0, 0.15),
+# 1 on the last edge to the closed last bin, and above it with a last edge of 0.999. Without a
+# mesh fesom_pi_data has no areas: fractions with equal weights and the equal_weights warning,
+# out=area refuses.
+ref:numpy.fldhist | -fldhist,bins=280/310/5 -selname,tas {in} | r36x18_std hpz2_noleap unst_360
+ref:numpy.fldhist | -fldhist,edges=0/2/5/8/13,out=fraction -selname,pr {in} | r36x18_std hpz2_noleap unst_360
+ref:numpy.fldhist | -fldhist,edges=-1/0/0.15/1,out=fraction -selname,a_ice {in} | fesom_pi_data
+ref:numpy.fldhist | -fldhist,edges=0/0.15/0.999,out=fraction -selname,a_ice {in} | fesom_pi_data
+json:any(.stderr[]; .warning == "equal_weights") | --json -fldhist,edges=0/0.15/1,out=fraction -selname,a_ice {in} {out} | fesom_pi_data
+err:unsupported_grid | -fldhist,edges=0/0.15/1 -selname,a_ice {in} | fesom_pi_data
+err:bad_arguments    | -fldhist,bins=0/0.15/1 {in}     | r36x18_std   # bins= is lo/hi/step; edges go into edges=

@@ -147,6 +147,12 @@ output is created.
   for regular grids. The field mean of the EERIE IFS skin temperature of January 1950 on the
   O1280 grid (285.66658 K) agrees with that of the same field on the 0.25° grid (285.66653 K);
   equal weights give 287.31 K.
+- **Latitude bands `zonal_<DY>`.** As in cdo, `zonmean,zonal_<DY>` takes the part of each cell
+  inside a band (cdo clips the cells with yac, cdors integrates along their edges: equal up to
+  rounding). cdors also accepts `zonaldes=zonal_<DY>`, and `zonsum,zonal_<DY>` and
+  `zonint,zonal_<DY>` with cdo 2.6.5's meaning (cdo 2.6.0 has neither); `zonint` without bands
+  (cdo 2.6.5: the rows of regular grids) is refused. Other grid descriptions as the band
+  argument are refused. cdo 2.6.0 crashes on a HEALPix subset with `zonal_<DY>`; cdors does not.
 
 ## GRIB (gribscan references)
 

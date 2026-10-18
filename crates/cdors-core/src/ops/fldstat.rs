@@ -11,7 +11,14 @@
 //! - output grids as cdo writes them: `fld*` a 1-point lon-lat grid at (0, 0) (an unstructured
 //!   1-point grid for unstructured input, `gen_target_gridpoint`); `zon*` a lon-lat grid with
 //!   one longitude (0) and the latitudes of the rows or HEALPix rings; `vert*` drops the
-//!   vertical axis.
+//!   vertical axis;
+//! - `zonmean`, `zonsum`, `zonint` with cdo's latitude-band description `zonal_<DY>` (any grid
+//!   with cell corners: unstructured, curvilinear, HEALPix, regular): bands of DY degrees from
+//!   the south pole, a lon-lat grid with one longitude (0, bounds −180/180) and the band centres
+//!   with bounds; `zonmean` is the area-weighted mean of the cells' parts inside the band,
+//!   `zonint` Σ part area·R²·x, `zonsum` the plain sum over the cells whose centre is in the
+//!   band ([`band_matrix`]). cdo 2.6.0 accepts `zonal_<DY>` with `zonmean` only, 2.6.5 also
+//!   with `zonsum` and `zonint` (which has no row version in cdors).
 //!
 //! **Fold order.** A lane is one tile's worth of timesteps and levels (`fld*`, `zon*`) or of
 //! timesteps and cells (`vert*`); its tiles arrive in order along the folded dimension(s). Every
@@ -30,6 +37,7 @@ use crate::model::{AttrValue, Attrs, CoordAxis, DimRole, Grid, GridKind, VarDim}
 use crate::plan::stage::{FoldKernel, FoldState, Tile};
 use crate::plan::tiling::TileBox;
 use crate::plan::{Desc, FixedGrid, Fold, GridCoords, GridDesc, IndexMap, Sources, VarDesc};
+use cdors_mesh::Csr;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -60,7 +68,14 @@ pub fn operators() -> Vec<(String, String)> {
         ),
     ] {
         for (s, d) in stats {
-            out.push((format!("{fam}{s}"), what.replace("{}", d)));
+            let name = format!("{fam}{s}");
+            let mut desc = what.replace("{}", d);
+            if takes_zonaldes(&name) {
+                desc.push_str(
+                    "; zonal_<DY>: per latitude band of DY degrees, any grid with corners",
+                );
+            }
+            out.push((name, desc));
         }
     }
     out.push((
@@ -71,7 +86,17 @@ pub fn operators() -> Vec<(String, String)> {
         "vertint".into(),
         "Vertical integral (sum of layer thickness times value)".into(),
     ));
+    out.push((
+        "zonint".into(),
+        "Zonal integral (sum of cell area times value) per latitude band zonal_<DY>".into(),
+    ));
     out
+}
+
+/// Whether `name` accepts cdo's latitude-band description `zonal_<DY>` (`Zonstat.cc`:
+/// `operSupportsUnstruct`).
+pub fn takes_zonaldes(name: &str) -> bool {
+    matches!(name, "zonmean" | "zonsum" | "zonint")
 }
 
 /// Whether `name` is an operator of this module.
@@ -122,6 +147,9 @@ fn parse(name: &str) -> Option<(Family, Stat)> {
     }
     if name == "fldint" {
         return Some((Family::Fld, Stat::Int));
+    }
+    if name == "zonint" {
+        return Some((Family::Zon, Stat::Sum));
     }
     let (fam, rest) = if let Some(r) = name.strip_prefix("fld") {
         (Family::Fld, r)
@@ -296,7 +324,7 @@ impl Acc for VarAcc {
 
 /// Weight of each cell (level) of the folded block, by flat block index.
 #[derive(Debug, Clone)]
-enum Weights {
+pub(crate) enum Weights {
     Const(f64),
     Each(Arc<Vec<f64>>),
 }
@@ -309,6 +337,9 @@ enum RowMap {
     Div(usize),
     /// HEALPix rings.
     Each(Arc<Vec<u32>>),
+    /// Latitude bands (`zonal_<DY>`): cell `f` adds to the bands `col[range(f)]` with the
+    /// weights `w[range(f)]` (cells × bands, in band order).
+    Bands(Arc<Csr>),
 }
 
 /// How the tiles of one variable are folded.
@@ -508,7 +539,9 @@ const GROUP: usize = 8;
 #[allow(clippy::needless_range_loop)]
 fn fold_cells<T: Copy + Into<f64>, A: Acc>(v: &[T], c: &Cells, p: &VarPlan, acc: &mut [A]) {
     let (o_n, i_n, n, f0) = (c.o_n, c.i_n, c.n, c.f0);
-    if p.nrows == 1 && i_n == 1 {
+    // a single band still maps only some cells
+    let one_row = p.nrows == 1 && !matches!(p.rows, RowMap::Bands(_));
+    if one_row && i_n == 1 {
         // field statistics: one accumulator per timestep (and level), GROUP of them at a time,
         // the leftover ones in groups of 4, 2 and 1
         let mut o = 0;
@@ -527,7 +560,7 @@ fn fold_cells<T: Copy + Into<f64>, A: Acc>(v: &[T], c: &Cells, p: &VarPlan, acc:
         if o < o_n {
             fold_group::<T, A, 1>(v, c, p, &mut acc[o..o + 1], o);
         }
-    } else if p.nrows == 1 {
+    } else if one_row {
         // vertical statistics: cells (inner) side by side, levels in order
         for o in 0..o_n {
             let acc = &mut acc[o * i_n..(o + 1) * i_n];
@@ -625,11 +658,20 @@ fn fold_row<T: Copy + Into<f64>, A: Acc>(
                 }
             }
         }
+        (RowMap::Bands(m), _) => {
+            let w = m.w.as_deref().expect("band weights");
+            for k in 0..n {
+                let x = val(k);
+                for e in m.range(f0 + k) {
+                    acc[m.col[e] as usize].add(w[e], x);
+                }
+            }
+        }
         (rows, w) => {
             for k in 0..n {
                 let f = f0 + k;
                 let r = match rows {
-                    RowMap::One => 0,
+                    RowMap::One | RowMap::Bands(_) => 0,
                     RowMap::Div(nx) => f / nx,
                     RowMap::Each(m) => m[f] as usize,
                 };
@@ -714,11 +756,13 @@ fn axis(var: &str, dim: &str, std_name: &str, units: &str) -> CoordAxis {
     }
 }
 
-/// A grid made by the operator: a lon-lat grid with one longitude (0) and the latitudes `lats`,
-/// or (`unstructured_dim`) a 1-point unstructured grid over that dimension.
+/// A grid made by the operator: a lon-lat grid with one longitude (0) and the latitudes `lats`
+/// (with `lat_bounds`, two per latitude, also the longitude bounds −180, 180, as cdo writes
+/// `zonal_<DY>`), or (`unstructured_dim`) a 1-point unstructured grid over that dimension.
 fn made_grid(
     g: &GridDesc,
     lats: Vec<f64>,
+    lat_bounds: Option<Vec<f64>>,
     unstructured_dim: Option<&str>,
 ) -> (GridDesc, Vec<VarDim>) {
     let h = |name: &str, size: usize| VarDim {
@@ -773,9 +817,9 @@ fn made_grid(
             } else {
                 vec![0.0]
             },
-            xbounds: None,
-            ybounds: None,
-            nv: 0,
+            xbounds: lat_bounds.as_ref().map(|_| vec![-180.0, 180.0]),
+            nv: if lat_bounds.is_some() { 2 } else { 0 },
+            ybounds: lat_bounds,
             xunits: "degrees_east".into(),
             yunits: "degrees_north".into(),
         },
@@ -797,7 +841,7 @@ fn made_grid(
 }
 
 /// Flat indices into the stored grid of the selected cells, in output order.
-fn selected_cells(g: &GridDesc) -> Vec<usize> {
+pub(crate) fn selected_cells(g: &GridDesc) -> Vec<usize> {
     if g.sel.len() == 2 {
         let (ys, xs) = (g.sel[0].to_vec(), g.sel[1].to_vec());
         let nx = g.base.xsize;
@@ -813,7 +857,7 @@ fn selected_cells(g: &GridDesc) -> Vec<usize> {
 /// grid, or for a subset the stored-grid weights of the selected cells renormalised to sum 1;
 /// with where they come from (`None`: a single cell). `fldint` (`areas`): the cell areas (m²,
 /// `gridarea`) of the selected cells, not normalised.
-fn fld_weights(
+pub(crate) fn fld_weights(
     g: &GridDesc,
     var: &VarDesc,
     srcs: &Sources,
@@ -859,7 +903,7 @@ fn fld_weights(
 /// The warning when a weighted field statistic has to weight all cells equally: loud, since
 /// the result is then only right for grids whose cells all have the same area (cdo warns in one
 /// line, "Grid cell bounds not available, using constant grid cell area weights").
-fn equal_weights_warning(op: &str, g: &GridDesc, vars: &[String]) -> String {
+pub(crate) fn equal_weights_warning(op: &str, g: &GridDesc, vars: &[String]) -> String {
     let kind = g.base.kind;
     let what = match kind {
         GridKind::Generic => "has no coordinates",
@@ -883,7 +927,7 @@ fn equal_weights_warning(op: &str, g: &GridDesc, vars: &[String]) -> String {
 }
 
 /// Rows of the `zon*` operators: (row map, latitudes).
-fn zonal(g: &GridDesc) -> Result<(RowMap, Vec<f64>)> {
+fn zonal(g: &GridDesc, op: &str) -> Result<(RowMap, Vec<f64>)> {
     match g.kind {
         GridKind::Regular | GridKind::Gaussian => {
             let lats = g.base.yvals.clone().unwrap_or_default();
@@ -912,11 +956,314 @@ fn zonal(g: &GridDesc) -> Result<(RowMap, Vec<f64>)> {
                 }
             ),
         )
-        .with_hint("remap to a regular grid first (remapcon/remapbil)")),
+        .with_hint(if takes_zonaldes(op) {
+            format!(
+                "give latitude bands: {op},zonal_<DY> (DY the band width in degrees, e.g. \
+                 {op},zonal_10), or remap to a regular grid first (remapcon/remapbil)"
+            )
+        } else {
+            "remap to a regular grid first (remapcon/remapbil)".to_owned()
+        })),
     }
 }
 
-fn add_cell_method(v: &mut VarDesc, method: &str) {
+// ---------------------------------------------------------------------------------------------
+// Latitude bands: zonmean, zonsum, zonint with zonal_<DY>
+// ---------------------------------------------------------------------------------------------
+
+/// The latitude increment of cdo's predefined zonal description `zonal_<DY>`
+/// (`generate_grid_zonal`, `grid_from_name.cc:63`; an increment below 1e-9 becomes 1). cdo takes
+/// it as a grid description (`zonmean,zonal_10`); `zonaldes=zonal_10` is accepted as well.
+fn zonal_increment(op: &str, arg: &str) -> Result<f64> {
+    let bad = || {
+        Error::bad_arguments(format!(
+            "{op}: '{arg}' is not a latitude-band description zonal_<DY>"
+        ))
+        .with("operator", op.to_owned())
+        .with_hint(format!(
+            "{op},zonal_<DY> with DY the band width in degrees, e.g. {op},zonal_10 (other cdo \
+             grid descriptions are not supported here)"
+        ))
+    };
+    let v = arg.strip_prefix("zonaldes=").unwrap_or(arg);
+    let inc: f64 = v
+        .strip_prefix("zonal_")
+        .and_then(|d| d.parse().ok())
+        .filter(|d: &f64| d.is_finite())
+        .ok_or_else(bad)?;
+    let inc = if inc < 1e-9 { 1.0 } else { inc };
+    if inc > 180.0 {
+        return Err(Error::bad_arguments(format!(
+            "{op}: zonal latitude increment {inc} out of range (max=180)"
+        )));
+    }
+    Ok(inc)
+}
+
+/// Latitudes and their bounds (degrees, two per band) of `zonal_<DY>` as cdo makes them: round(180/DY)
+/// bands with centres −90 + DY/2 + i·DY and bounds between the centres (`grid_gen_bounds`, so the
+/// last bound passes 90° when DY does not divide 180: cdo then works with its sine, i.e. the
+/// band ends at 180° − bound).
+fn band_lats(inc: f64) -> (Vec<f64>, Vec<f64>) {
+    let n = ((90.0 - -90.0) / inc + 0.5) as usize;
+    let lats: Vec<f64> = (0..n).map(|i| -90.0 + inc / 2.0 + i as f64 * inc).collect();
+    let bnds = if n > 1 {
+        area::gen_axis_bounds(&lats)
+    } else {
+        vec![-90.0, 90.0]
+    };
+    (lats, bnds)
+}
+
+/// Corners (radians) of the written cells, `nv` per cell, as cdo's `generate_full_cell_grid`
+/// makes them: stored bounds (unstructured, curvilinear), the lon-lat boxes of regular and
+/// Gaussian grids, the HEALPix corners.
+fn cell_corners(g: &GridDesc, op: &str) -> Result<(usize, Vec<f64>, Vec<f64>)> {
+    let missing = || {
+        Error::new(
+            ErrorCode::NoCoordinates,
+            format!("{op} with zonal_<DY> needs the cell corners, and this grid has none"),
+        )
+        .with("grid", g.kind.name())
+        .with_hint("give the grid with cell bounds (-setgrid,<grid file>)")
+    };
+    match g.base.kind {
+        GridKind::Healpix => {
+            let c = g.healpix_cell_corners()?;
+            let lon = c.iter().flat_map(|q| q.map(|p| p.0)).collect();
+            let lat = c.iter().flat_map(|q| q.map(|p| p.1)).collect();
+            Ok((4, lon, lat))
+        }
+        GridKind::Regular | GridKind::Gaussian => {
+            let read = |name: &str| g.src.read_var(name);
+            let (xb, yb) =
+                area::reg2d_bounds(g.src.dataset(), &g.base, &read)?.ok_or_else(missing)?;
+            let (ys, xs) = (g.sel[0].to_vec(), g.sel[1].to_vec());
+            let (mut lon, mut lat) = (Vec::new(), Vec::new());
+            for &j in &ys {
+                for &i in &xs {
+                    let (x0, x1, y0, y1) = (xb[2 * i], xb[2 * i + 1], yb[2 * j], yb[2 * j + 1]);
+                    lon.extend([x0, x1, x1, x0]);
+                    lat.extend([y0, y0, y1, y1]);
+                }
+            }
+            Ok((4, lon, lat))
+        }
+        GridKind::Unstructured | GridKind::Curvilinear => {
+            let c = g.coords()?.ok_or_else(missing)?;
+            let (Some(mut lon), Some(mut lat)) = (c.xbounds, c.ybounds) else {
+                return Err(missing());
+            };
+            let d2r = std::f64::consts::PI / 180.0;
+            if area::is_degrees(Some(&c.xunits)) {
+                lon.iter_mut().for_each(|v| *v *= d2r);
+            }
+            if area::is_degrees(Some(&c.yunits)) {
+                lat.iter_mut().for_each(|v| *v *= d2r);
+            }
+            Ok((c.nv, lon, lat))
+        }
+        GridKind::Generic => Err(missing()),
+    }
+}
+
+/// Centre latitudes (radians) of the written cells.
+fn cell_center_lats(g: &GridDesc, op: &str) -> Result<Vec<f64>> {
+    let d2r = std::f64::consts::PI / 180.0;
+    match g.base.kind {
+        GridKind::Healpix => Ok(g.healpix_cell_centers()?.1),
+        GridKind::Regular | GridKind::Gaussian => {
+            let (nx, _) = g.xy_size();
+            let lats = g.base.yvals.clone().unwrap_or_default();
+            let deg = area::is_degrees(g.base.y.as_ref().and_then(|a| a.units.as_deref()));
+            Ok(g.sel[0]
+                .to_vec()
+                .iter()
+                .flat_map(|&j| std::iter::repeat_n(lats[j], nx))
+                .map(|y| if deg { y * d2r } else { y })
+                .collect())
+        }
+        _ => {
+            let c = g.coords()?.ok_or_else(|| {
+                Error::new(
+                    ErrorCode::NoCoordinates,
+                    format!(
+                        "{op} with zonal_<DY> needs the cell latitudes, and this grid has none"
+                    ),
+                )
+            })?;
+            let deg = area::is_degrees(Some(&c.yunits));
+            Ok(c.yvals
+                .into_iter()
+                .map(|y| if deg { y * d2r } else { y })
+                .collect())
+        }
+    }
+}
+
+/// Whether cdo treats the cells as lon-lat cells, edges along meridians and circles of latitude
+/// (`get_lonlat_circle_index`, `remap_conserv.cc:120`): four corners in one of the two lon-lat
+/// patterns, checked on a sample of the cells. `Some(true)` when the longitude edges are the
+/// corners (1,2) and (3,0), `Some(false)` when (0,1) and (2,3).
+fn lonlat_cells(nv: usize, lon: &[f64], lat: &[f64]) -> Option<bool> {
+    if nv != 4 {
+        return None;
+    }
+    let n = lon.len() / 4;
+    let incr = if n < 100 { 1 } else { n / 30 - 1 };
+    let (mut num, mut eq1, mut eq0) = (0, 0, 0);
+    for i in (0..n).step_by(incr) {
+        let (x, y) = (&lon[4 * i..4 * i + 4], &lat[4 * i..4 * i + 4]);
+        num += 1;
+        if x[1] == x[2] && x[3] == x[0] && y[0] == y[1] && y[2] == y[3] {
+            eq1 += 1;
+        } else if x[0] == x[1] && x[2] == x[3] && y[1] == y[2] && y[3] == y[0] {
+            eq0 += 1;
+        }
+    }
+    if num == eq1 {
+        Some(true)
+    } else if num == eq0 {
+        Some(false)
+    } else {
+        None
+    }
+}
+
+/// The band matrix of `zonal_<DY>` (bands × written cells) as cdo's `Zonstat.cc` builds it:
+/// - `zonmean`, `zonint` (`remap_weights_zonal`, `remap_conserv.cc:768`): the cells whose corner
+///   latitudes reach into the band (compared in units of 1e-9 rad, truncated as cdo does) with
+///   the area of their part inside the band (`yac_cell_lat_clipping`; here
+///   [`cdors_mesh::geom::band_area`] and [`cdors_mesh::geom::lonlat_band_area`], equal up to
+///   rounding), scaled so that they add up to the band's area (`correct_weights`), positive
+///   ones only; `zonint` multiplies them by R²;
+/// - `zonsum` (`gen_indices_zonal`): the cells whose centre latitude lies in [lo, hi), weight 1.
+///
+/// Missing values drop out when the matrix is applied: `zonmean` renormalises over the valid
+/// cells, `zonint` and `zonsum` sum them; a band without valid cells is missing.
+fn band_matrix(g: &GridDesc, op: &str, bnds: &[f64]) -> Result<Csr> {
+    let d2r = std::f64::consts::PI / 180.0;
+    let nb = bnds.len() / 2;
+    let n = g.size();
+    // calc_remap_indices: int latBounds = 1e9 * radians (truncated), swapped into order
+    let scale = 1e9;
+    let ibound = |b: usize| -> (i32, i32) {
+        let (a, c) = (
+            (scale * bnds[2 * b] * d2r) as i32,
+            (scale * bnds[2 * b + 1] * d2r) as i32,
+        );
+        (a.min(c), a.max(c))
+    };
+    let mut rows: Vec<Vec<(u32, f64)>> = vec![Vec::new(); nb];
+    if op == "zonsum" {
+        let lat = cell_center_lats(g, op)?;
+        for (b, row) in rows.iter_mut().enumerate() {
+            let (lo, hi) = ibound(b);
+            for (c, &y) in lat.iter().enumerate() {
+                let iy = (scale * y) as i32;
+                if iy < hi && iy >= lo {
+                    row.push((c as u32, 1.0));
+                }
+            }
+        }
+    } else {
+        let (nv, lon, lat) = cell_corners(g, op)?;
+        if nv < 2 || lon.len() != n * nv {
+            return Err(Error::new(
+                ErrorCode::NoCoordinates,
+                format!("{op} with zonal_<DY>: the grid has no usable cell corners"),
+            ));
+        }
+        let ll = lonlat_cells(nv, &lon, &lat);
+        let ilat: Vec<(i32, i32)> = (0..n)
+            .map(|c| {
+                let y = &lat[c * nv..(c + 1) * nv];
+                let (lo, hi) = y
+                    .iter()
+                    .fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), &v| {
+                        (a.min(v), b.max(v))
+                    });
+                ((scale * lo) as i32, (scale * hi) as i32)
+            })
+            .collect();
+        let xyz: Vec<[f64; 3]> = lon
+            .iter()
+            .zip(&lat)
+            .map(|(&x, &y)| cdors_mesh::geom::xyz(x, y))
+            .collect();
+        let radius = area::planet_radius(&crate::model::Grid::new(GridKind::Generic, vec![], 0, 0));
+        let factor = if op == "zonint" { radius * radius } else { 1.0 };
+        let half_pi = std::f64::consts::FRAC_PI_2;
+        for (b, row) in rows.iter_mut().enumerate() {
+            let (lo, hi) = ibound(b);
+            let (mut y0, mut y1) = (bnds[2 * b] * d2r, bnds[2 * b + 1] * d2r);
+            if y0 > y1 {
+                std::mem::swap(&mut y0, &mut y1);
+            }
+            // latitude_area: sphere segments 2π(1 − cos(π/2 − φ))
+            let seg = |phi: f64| 2.0 * std::f64::consts::PI * (1.0 - (half_pi - phi).cos());
+            let band = seg(y0) - seg(y1);
+            let (z0, z1) = (y0.sin(), y1.sin());
+            for c in 0..n {
+                let (cl, ch) = ilat[c];
+                if !(cl < hi && ch >= lo) {
+                    continue;
+                }
+                let a = match ll {
+                    Some(lonfirst) => {
+                        let x = &lon[c * 4..c * 4 + 4];
+                        let y = &lat[c * 4..c * 4 + 4];
+                        let dlon = if lonfirst { x[1] - x[0] } else { x[2] - x[1] };
+                        let dlon = (dlon + std::f64::consts::PI)
+                            .rem_euclid(2.0 * std::f64::consts::PI)
+                            - std::f64::consts::PI;
+                        let (ya, yb) = if lonfirst { (y[0], y[2]) } else { (y[1], y[3]) };
+                        cdors_mesh::geom::lonlat_band_area(dlon, ya, yb, z0, z1)
+                    }
+                    None => cdors_mesh::geom::band_area(&xyz[c * nv..(c + 1) * nv], z0, z1),
+                };
+                // drop touching cells (exactly 0 in yac; rounding here)
+                if a > 1e-14 * band {
+                    row.push((c as u32, a));
+                }
+            }
+            // correct_weights: w / A, yac_correct_weights (rescaled to sum 1, up to 10 times),
+            // then × A
+            let mut w: Vec<f64> = row.iter().map(|e| e.1 / band).collect();
+            for _ in 0..10 {
+                let sum: f64 = w.iter().sum();
+                if (1.0 - sum).abs() < 1e-12 || sum.abs() < 1e-12 {
+                    break;
+                }
+                let s = 1.0 / sum;
+                w.iter_mut().for_each(|x| *x *= s);
+            }
+            for (e, x) in row.iter_mut().zip(w) {
+                e.1 = x * band * factor;
+            }
+            row.retain(|e| e.1 > 0.0);
+        }
+    }
+    let mut row_ptr = vec![0usize];
+    let (mut col, mut w) = (Vec::new(), Vec::new());
+    for r in &rows {
+        for &(c, x) in r {
+            col.push(c);
+            w.push(x);
+        }
+        row_ptr.push(col.len());
+    }
+    Csr::new(row_ptr, col, Some(w), n).map_err(|e| Error::internal(e.to_string()))
+}
+
+/// Bands of `zonal_<DY>`: (row map of the cells, latitudes, latitude bounds).
+fn zonal_bands(g: &GridDesc, op: &str, inc: f64) -> Result<(RowMap, Vec<f64>, Vec<f64>)> {
+    let (lats, bnds) = band_lats(inc);
+    let m = band_matrix(g, op, &bnds)?;
+    Ok((RowMap::Bands(Arc::new(m.transpose())), lats, bnds))
+}
+
+pub(crate) fn add_cell_method(v: &mut VarDesc, method: &str) {
     let a = &mut v.attrs.0;
     a.retain(|(k, _)| k != "cell_measures");
     match a.iter_mut().find(|(k, _)| k == "cell_methods") {
@@ -929,7 +1276,7 @@ fn add_cell_method(v: &mut VarDesc, method: &str) {
     }
 }
 
-fn block_of(v: &VarDesc, role: DimRole) -> Result<(usize, usize)> {
+pub(crate) fn block_of(v: &VarDesc, role: DimRole) -> Result<(usize, usize)> {
     let idx: Vec<usize> = (0..v.dims.len())
         .filter(|&i| v.dims[i].role == role)
         .collect();
@@ -992,6 +1339,18 @@ pub fn describe(node: &OpNode, mut inputs: Vec<Desc>, srcs: &Sources) -> Result<
     let mut out = input.clone();
     let mut plans = Vec::with_capacity(out.vars.len());
     let mut info = None;
+    let zonaldes = match node.args.first() {
+        Some(a) if fam == Family::Zon => Some(zonal_increment(name, a)?),
+        _ => None,
+    };
+    if name == "zonint" && zonaldes.is_none() {
+        return Err(Error::bad_arguments(
+            "zonint needs latitude bands zonal_<DY> (cdo 2.6.5 also integrates the rows of \
+             regular grids; cdors does not)",
+        )
+        .with("operator", name.to_owned())
+        .with_hint("zonint,zonal_<DY> with DY the band width in degrees, e.g. zonint,zonal_10"));
+    }
     match fam {
         Family::Fld | Family::Zon => {
             let weighting = (fam == Family::Fld)
@@ -1031,13 +1390,22 @@ pub fn describe(node: &OpNode, mut inputs: Vec<Desc>, srcs: &Sources) -> Result<
                         Family::Fld => {
                             let ud =
                                 (g.kind == GridKind::Unstructured).then(|| v.dims[b0].name.clone());
-                            let (gd, dims) = made_grid(g, vec![0.0], ud.as_deref());
+                            let (gd, dims) = made_grid(g, vec![0.0], None, ud.as_deref());
                             (gd, dims, RowMap::One, 1)
                         }
                         _ => {
-                            let (rows, lats) = zonal(g)?;
+                            let (rows, lats, bnds) = match zonaldes {
+                                Some(inc) => {
+                                    let (r, l, b) = zonal_bands(g, name, inc)?;
+                                    (r, l, Some(b))
+                                }
+                                None => {
+                                    let (r, l) = zonal(g, name)?;
+                                    (r, l, None)
+                                }
+                            };
                             let n = lats.len();
-                            let (gd, dims) = made_grid(g, lats, None);
+                            let (gd, dims) = made_grid(g, lats, bnds, None);
                             (gd, dims, rows, n)
                         }
                     };

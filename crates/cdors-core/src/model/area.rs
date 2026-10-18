@@ -292,7 +292,7 @@ fn file_area(
 
 /// CDO's unit test `string_to_LonLatUnits` (`mpim_grid.cc:1586`): radians if the units start
 /// with `rad`, otherwise degrees.
-fn is_degrees(units: Option<&str>) -> bool {
+pub fn is_degrees(units: Option<&str>) -> bool {
     !units.unwrap_or("").starts_with("rad")
 }
 
@@ -404,6 +404,43 @@ pub fn check_lat_borders(b: &mut [f64]) {
             b[n - 2] = YMAX;
         }
     }
+}
+
+/// Cell bounds of a regular or Gaussian grid in radians, two per column and two per row, as cdo
+/// makes the corners of its cells (`gridToCurvilinear`): stored bounds, or bounds generated
+/// between the centres with the outer latitudes checked at the poles. `None` where cdo finds no
+/// corners (a single row or column without bounds).
+pub fn reg2d_bounds(
+    ds: &Dataset,
+    grid: &Grid,
+    read: ReadVar<'_>,
+) -> Result<Option<(Vec<f64>, Vec<f64>)>> {
+    let (nlon, nlat) = (grid.xsize.max(1), grid.ysize.max(1));
+    let xvals = grid.xvals.as_deref().unwrap_or(&[]);
+    let yvals = grid.yvals.as_deref().unwrap_or(&[]);
+    let xb = stored_bounds(ds, grid, true, 2 * nlon, read)?;
+    let yb = stored_bounds(ds, grid, false, 2 * nlat, read)?;
+    let gen_ok = |vals: &[f64], n: usize| n > 1 && vals.len() == n;
+    let Some(mut lon) = xb.or_else(|| gen_ok(xvals, nlon).then(|| gen_axis_bounds(xvals))) else {
+        return Ok(None);
+    };
+    let Some(mut lat) = yb.or_else(|| {
+        gen_ok(yvals, nlat).then(|| {
+            let mut b = gen_axis_bounds(yvals);
+            check_lat_borders(&mut b);
+            b
+        })
+    }) else {
+        return Ok(None);
+    };
+    let d2r = std::f64::consts::PI / 180.0;
+    if is_degrees(grid.x.as_ref().and_then(|a| a.units.as_deref())) {
+        lon.iter_mut().for_each(|v| *v *= d2r);
+    }
+    if is_degrees(grid.y.as_ref().and_then(|a| a.units.as_deref())) {
+        lat.iter_mut().for_each(|v| *v *= d2r);
+    }
+    Ok(Some((lon, lat)))
 }
 
 /// Stored bounds of an axis, if the axis names a bounds variable that exists and has `len`

@@ -17,10 +17,25 @@ pub fn rad2deg(x: f64) -> f64 {
 
 /// Centre (longitude in [0, 2π), latitude; radians) of the nested-order cell `nested`.
 pub fn center_nested(nside: u64, nested: u64) -> (f64, f64) {
+    let (bighp, x, y) = nested_xy(nside, nested);
+    hp_to_radec(bighp, x + 0.5, y + 0.5, nside as f64)
+}
+
+/// Corners (radians) of the nested-order cell `nested` as cdo makes them with
+/// `generate_full_cell_grid` (`hp_generate_kernel`: offsets (0,0), (1,0), (1,1), (0,1)).
+pub fn corners_nested(nside: u64, nested: u64) -> [(f64, f64); 4] {
+    let (bighp, x, y) = nested_xy(nside, nested);
+    let n = nside as f64;
+    [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)]
+        .map(|(dx, dy)| hp_to_radec(bighp, x + dx, y + dy, n))
+}
+
+/// Base pixel and (x, y) within it of a nested index (`healpixl_nested_to_xy`: x takes the
+/// even bits, y the odd bits).
+fn nested_xy(nside: u64, nested: u64) -> (i64, f64, f64) {
     let ns2 = nside * nside;
     let bighp = (nested / ns2) as i64;
     let mut index = nested % ns2;
-    // healpixl_nested_to_xy: x takes the even bits, y the odd bits
     let (mut x, mut y) = (0u64, 0u64);
     let mut i = 0;
     while index != 0 {
@@ -30,7 +45,7 @@ pub fn center_nested(nside: u64, nested: u64) -> (f64, f64) {
         index >>= 1;
         i += 1;
     }
-    hp_to_radec(bighp, x as f64 + 0.5, y as f64 + 0.5, nside as f64)
+    (bighp, x as f64, y as f64)
 }
 
 /// `hp_to_xyz` followed by `xyzarr2radec`; `x`, `y` already include dx, dy.

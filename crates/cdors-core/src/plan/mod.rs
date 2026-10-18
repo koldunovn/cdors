@@ -425,6 +425,30 @@ impl GridDesc {
     /// Centres (radians) of the written cells of a grid based on a HEALPix grid, in output order.
     pub fn healpix_cell_centers(&self) -> Result<(Vec<f64>, Vec<f64>)> {
         let hp = self.base.healpix.as_ref().expect("healpix grid");
+        Ok(healpix_centers(hp.nside, hp.order, &self.healpix_cells()?))
+    }
+
+    /// Corners (radians, as cdo's `generate_full_cell_grid`) of the written cells of a grid
+    /// based on a HEALPix grid, in output order.
+    pub fn healpix_cell_corners(&self) -> Result<Vec<[(f64, f64); 4]>> {
+        let hp = self.base.healpix.as_ref().expect("healpix grid");
+        let layer = cdshealpix::nested::get(hp.nside.trailing_zeros() as u8);
+        Ok(self
+            .healpix_cells()?
+            .into_iter()
+            .map(|c| {
+                let h = match hp.order {
+                    HealpixOrder::Nested => c,
+                    HealpixOrder::Ring => layer.from_ring(c),
+                };
+                crate::model::hpcoords::corners_nested(hp.nside, h)
+            })
+            .collect())
+    }
+
+    /// HEALPix indices (in the grid's order) of the written cells.
+    fn healpix_cells(&self) -> Result<Vec<u64>> {
+        let hp = self.base.healpix.as_ref().expect("healpix grid");
         let cells: Vec<u64> = match &hp.index_var {
             Some(iv) => {
                 let idx = self.src.read_var(iv)?;
@@ -436,7 +460,7 @@ impl GridDesc {
             }
             None => self.sel[0].to_vec().iter().map(|&i| i as u64).collect(),
         };
-        Ok(healpix_centers(hp.nside, hp.order, &cells))
+        Ok(cells)
     }
 
     /// Whether the written grid keeps the HEALPix grid mapping.
