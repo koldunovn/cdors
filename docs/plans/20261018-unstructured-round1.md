@@ -644,9 +644,14 @@ The harness gains three capabilities (Task 2), so that every check in this plan 
   be told apart.
 - ⚠️ `out=area` gives m² with `fldint`'s cell areas and refuses a grid without areas
   (`unsupported_grid`/`no_coordinates`, as cdo's `fldint`); `out=fraction` uses `fldmean`'s weights,
-  including the equal-weights fallback with its warning. Each of the three output variables folds
-  its input separately (the planner computes output `i` from input `i`), so the input is read three
-  times.
+  including the equal-weights fallback with its warning.
+- ➕ `fldhist` reads its input once (2026-10-18): `FoldKernel::outputs(var)` names the output
+  variables a fold's lanes emit tiles for (default: `var`), so one fold of each input variable
+  writes `<var>`, `<var>_below` and `<var>_above`; `plan::build` (written bytes per stage variable)
+  and `exec::layout` (lane-aligned output chunks) map outputs to their stage variable through it.
+  2 `json:` rows check the decoded bytes. FESOM2 `sst.fesom.1959.nc` (2.1M nodes, 28 steps,
+  238 MB): `--plan` bytes decoded 715 MB → 238 MB, warm wall time 1.10 s → 0.47 s (`-P 8`, login
+  node; `fldmean` 0.27 s), output identical.
 - ⚠️ Not done (needs Task 5's mesh): the ice-extent recipe vs `ref:nereus.ice_extent`, per-level
   histograms with per-level areas, zonal bands on mesh grids. OpSpec has no `origin` yet: `fldhist`
   carries "(cdors)" in its description and a TODO for Task 11 in `ops/mod.rs`.

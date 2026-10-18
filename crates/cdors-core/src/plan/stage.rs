@@ -52,6 +52,11 @@ pub trait FoldKernel: Send + Sync {
     fn plan_info(&self) -> Option<Value> {
         None
     }
+    /// Output variables whose tiles the lanes of input variable `var` emit (a tile's `var` is
+    /// the output index). Default: output `var` only.
+    fn outputs(&self, var: usize) -> Vec<usize> {
+        vec![var]
+    }
 }
 
 /// Running state of one lane.

@@ -162,6 +162,11 @@ pub fn out_dtype(cmd: &Command, v: &VarDesc) -> DType {
 /// (`plan::schedule`), unless `--chunks` says otherwise.
 pub fn layout(plan: &Plan, cmd: &Command) -> Vec<OutVar> {
     let last = plan.stages.last();
+    // the stage variable whose lanes compute output variable `i`
+    let src_var = |i: usize| match &plan.desc.fold {
+        Some(f) => (0..f.input.vars.len()).find(|&vi| f.kernel.outputs(vi).contains(&i)),
+        None => Some(i),
+    };
     plan.desc
         .vars
         .iter()
@@ -175,8 +180,9 @@ pub fn layout(plan: &Plan, cmd: &Command) -> Vec<OutVar> {
                 cmd.options.chunks.as_deref(),
             );
             let lane_chunks = last.and_then(|st| {
-                let sv = st.vars.get(i)?;
-                plan::schedule::out_chunks_for(sv, st.sched.vars.get(i)?, &v.dims, &usual)
+                let si = src_var(i)?;
+                let sv = st.vars.get(si)?;
+                plan::schedule::out_chunks_for(sv, st.sched.vars.get(si)?, &v.dims, &usual)
             });
             OutVar {
                 name: v.name.clone(),

@@ -24,9 +24,8 @@
 //! buffered and folded row by row, so the sums do not depend on the chunk layout or the
 //! threads.
 //!
-//! Each output variable folds its input on its own (the planner computes output variable `i`
-//! from input variable `i`), so the input is read three times; histograms are cheap and the
-//! fields of the target use (sea-ice concentration) are 2-D.
+//! One fold per input variable: its lanes emit the tiles of all three output variables
+//! ([`FoldKernel::outputs`]), so the input is read once.
 //!
 //! With a model mesh (Task 5 of the round-1 plan) the histogram is per level with per-level
 //! areas: [`hist_weights`] is the only place that decides the weights, and its per-cell
@@ -56,6 +55,7 @@ pub fn operators() -> Vec<(String, String)> {
 
 /// What the output variable holds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(usize)]
 enum Part {
     Bins,
     Below,
@@ -143,7 +143,7 @@ fn parse_args(op: &str, args: &[String]) -> Result<Args> {
 // Kernel
 // ---------------------------------------------------------------------------------------------
 
-/// How the tiles of one output variable are folded.
+/// How the tiles of one input variable are folded.
 #[derive(Debug)]
 struct HistPlan {
     /// First horizontal dimension of the input variable and their number (1 or 2).
@@ -153,8 +153,9 @@ struct HistPlan {
     bshape: Vec<usize>,
     weights: Weights,
     edges: Arc<Vec<f64>>,
-    part: Part,
     fraction: bool,
+    /// Output variables of the bins, of `_below` and of `_above` (in [`Part`] order).
+    outputs: [usize; 3],
 }
 
 impl HistPlan {
@@ -193,6 +194,10 @@ impl FoldKernel for HistKernel {
         self.info.clone()
     }
 
+    fn outputs(&self, var: usize) -> Vec<usize> {
+        self.vars[var].outputs.to_vec()
+    }
+
     fn state_bytes(&self, var: usize, lane: &TileBox) -> usize {
         let p = &self.vars[var];
         if p.nb == 2 {
@@ -210,7 +215,6 @@ impl FoldKernel for HistKernel {
         let outer: usize = shape[..p.b0].iter().product();
         let inner: usize = shape[p.b0 + p.nb..].iter().product();
         Box::new(State {
-            var,
             lane: lane.clone(),
             outer,
             inner,
@@ -223,7 +227,6 @@ impl FoldKernel for HistKernel {
 
 /// Running state of one lane: the slots of every (outer index, inner index).
 struct State {
-    var: usize,
     p: Arc<HistPlan>,
     lane: TileBox,
     outer: usize,
@@ -299,16 +302,17 @@ impl State {
         }
     }
 
-    fn output(&self) -> Tile {
+    /// The tile of one part of the histogram (output variable `p.outputs[part]`).
+    fn output(&self, part: Part) -> Tile {
         let p = &*self.p;
         let (ns, nbins) = (p.slots(), p.edges.len() - 1);
-        let (lo, n) = match p.part {
+        let (lo, n) = match part {
             Part::Bins => (1, nbins),
             Part::Below => (0, 1),
             Part::Above => (nbins + 1, 1),
         };
         let mut ranges = self.lane.ranges[..p.b0].to_vec();
-        if p.part == Part::Bins {
+        if part == Part::Bins {
             ranges.push(0..nbins);
         }
         ranges.extend(self.lane.ranges[p.b0 + p.nb..].iter().cloned());
@@ -331,7 +335,7 @@ impl State {
             }
         }
         Tile {
-            var: self.var,
+            var: p.outputs[part as usize],
             bx: TileBox { ranges },
             values: Values::F64(out),
         }
@@ -357,7 +361,9 @@ impl FoldState for State {
         if !self.strip.is_empty() {
             return Err(Error::internal("fldhist: incomplete row strip"));
         }
-        Ok(vec![self.output()])
+        Ok([Part::Bins, Part::Below, Part::Above]
+            .map(|part| self.output(part))
+            .to_vec())
     }
 }
 
@@ -458,8 +464,6 @@ pub fn describe(node: &OpNode, mut inputs: Vec<Desc>, srcs: &Sources) -> Result<
     let edges = Arc::new(args.edges);
     let nbins = edges.len() - 1;
     let (lo, hi) = (edges[0], edges[nbins]);
-    let mut fold_in = input.clone();
-    fold_in.vars.clear();
     let mut out = input.clone();
     out.vars.clear();
     let bin_gi = out.grids.len();
@@ -539,9 +543,6 @@ pub fn describe(node: &OpNode, mut inputs: Vec<Desc>, srcs: &Sources) -> Result<
                     "{op}: the output variable '{name}' would clash with an input variable"
                 )));
             }
-            let mut fv = v.clone();
-            fv.name = name.clone();
-            fold_in.vars.push(fv);
             let mut ov = v.clone();
             ov.name = name;
             ov.dtype = crate::model::DType::F64;
@@ -578,16 +579,17 @@ pub fn describe(node: &OpNode, mut inputs: Vec<Desc>, srcs: &Sources) -> Result<
                 },
             );
             out.vars.push(ov);
-            plans.push(Arc::new(HistPlan {
-                b0,
-                nb,
-                bshape: bshape.clone(),
-                weights: weights.clone(),
-                edges: edges.clone(),
-                part,
-                fraction: args.fraction,
-            }));
         }
+        let k = out.vars.len();
+        plans.push(Arc::new(HistPlan {
+            b0,
+            nb,
+            bshape,
+            weights,
+            edges: edges.clone(),
+            fraction: args.fraction,
+            outputs: [k - 3, k - 2, k - 1],
+        }));
     }
     let Some(first) = input.vars.iter().find_map(|v| v.grid) else {
         return Err(Error::new(
@@ -610,7 +612,7 @@ pub fn describe(node: &OpNode, mut inputs: Vec<Desc>, srcs: &Sources) -> Result<
     let info = (!winfo.is_empty())
         .then(|| serde_json::json!({"area_weights": winfo, "warnings": warnings}));
     out.fold = Some(Fold {
-        input: Box::new(fold_in),
+        input: Box::new(input),
         kernel: Arc::new(HistKernel { vars: plans, info }),
     });
     Ok(out)

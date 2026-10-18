@@ -608,7 +608,8 @@ pub struct Desc {
 }
 
 /// A reduction ending a stage: the description of its input and the kernel that folds it.
-/// Output variable `i` is computed from input variable `i`.
+/// Output variable `i` is computed from input variable `i`, unless the kernel says otherwise
+/// ([`stage::FoldKernel::outputs`]: one input variable folded once into several outputs).
 #[derive(Clone)]
 pub struct Fold {
     pub input: Box<Desc>,
@@ -1055,6 +1056,13 @@ pub fn build(cmd: &Command, cdo: CdoUse) -> Result<Plan> {
             n as u64 * crate::exec::out_dtype(cmd, v).size() as u64
         })
         .collect();
+    // per stage variable: the bytes of the outputs its lanes emit
+    let written: Vec<u64> = match &desc.fold {
+        Some(f) => (0..f.input.vars.len())
+            .map(|vi| f.kernel.outputs(vi).iter().map(|&o| written[o]).sum())
+            .collect(),
+        None => written,
+    };
     let out_stage = stages.len() - 1;
     for (i, st) in stages.iter_mut().enumerate() {
         let hold = intermediates.get(i).map_or(0, |im| im.bytes);
