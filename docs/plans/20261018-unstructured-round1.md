@@ -749,6 +749,29 @@ The harness gains three capabilities (Task 2), so that every check in this plan 
   - a path along a meridian through the pole;
   - the planner variant.
 - [ ] Run tests.
+- ➕ Library half done (Task 10 agent): `cdors-mesh/src/sample.rs` (stations from CSV or
+  `lon=…_lat=…`, waypoints and GeoJSON LineStrings, equal-arc sampling per segment, the default
+  step, `nn`/`linear` weights as `Csr`, wet levels and `bottom_depth` of sample points),
+  `KdTree::nearest_k_xyz`, unit tests (`sample.rs`, `cdors-core/tests/sample_mesh.rs` on pi and
+  hpz2), and the references `transect`, `selpoints`, `selpoints_cdo` in `tests/ref/reference.py`
+  (checked by hand against the library: identical rows, steps and bottom depths). Open: the
+  operators (`ops/sample.rs` on `RemapWeights::from_csr`, after Task 5) and the harness rows.
+- ⚠️ "A linear analytic field is reproduced exactly": on a sphere no weights of three cells that
+  sum to 1 reproduce a field linear in x, y, z at the point itself. `linear` is barycentric in
+  the plane of the triangle (as FESOM2's P1 elements) and exact there, at the point's central
+  projection; at the point the error is O(h²) relative. The tests check that (1e-12).
+- ⚠️ `linear` outside every triangle (land, beyond a regional grid) gives a missing value,
+  counted for a warning; `nn` always has a cell.
+- ⚠️ nereus' `transect` samples otherwise: `n_points` (default 100) on one segment by normalised
+  chord interpolation (not equal arcs), a flat-earth distance, no dry-level masking, and it
+  returns only a figure. `ref:nereus.transect` follows cdors' sampling with nereus' nearest-node
+  algorithm (scipy cKDTree on unit vectors). By hand against `nereus.transect` itself on pi:
+  Drake at 24 and 116 points identical (points ≤ 0.6 km apart); the pole path, 46 points, 2
+  columns differ (points ≤ 4.4 km apart).
+- ➕ Output order: the sample dimension replaces the horizontal one in place (the input's order,
+  as Task 5's executor keeps it). cdo reads `(time, nz1, distance)` and `(time, distance, nz1)`
+  alike, but only with the level coordinate variable (`nz1(nz1)`, axis Z) in the file: without it
+  cdo 2.6.0 skips the first levelled variable ("Unsupported array structure").
 
 ### Task 11: Agent surface: `ops --json` origin, guide recipes, warnings, tables
 

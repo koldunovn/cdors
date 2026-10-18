@@ -11,6 +11,8 @@
 //! - [`locate`]: a KD-tree on unit vectors for nearest-cell lookups.
 //! - [`regions`]: the region catalog (embedded sets and the regions directory), GeoJSON
 //!   parsing, and region membership of cells as a CSR table.
+//! - [`sample`]: stations, great-circle paths and their `nn`/`linear` weights, wet levels and
+//!   bottom depths of sample points (`selpoints`, `transect`).
 //! - [`reader`]: the [`ArrayReader`] interface through which loaders read mesh files; the
 //!   NetCDF and Zarr implementations live in cdors-core.
 //! - [`models`]: the model registry (one table: model → loader, rules, capabilities) and the
@@ -23,6 +25,7 @@ pub mod mesh;
 pub mod models;
 pub mod reader;
 pub mod regions;
+pub mod sample;
 pub mod ugrid;
 
 pub use mesh::{

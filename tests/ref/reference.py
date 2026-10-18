@@ -310,7 +310,6 @@ def selregion(args, inputs, out):
                 o[:] = x
 
 
-# the functions a row can name (ref:<lib>.<fn>)
 # 2-D field statistics on a FESOM2 mesh, weighted by the surface row of nod_area (nodes) or
 # elem_area (elements).
 def mesh_dir(args):
@@ -463,7 +462,320 @@ def zonint(args, inputs, out):
     zonal_ref(args, inputs, out, "zonint")
 
 
-# the functions a row can name (ref:<lib>.<fn>)
+# ---------------------------------------------------------------- sampling (selpoints, transect)
+# cdors' documented sampling (crates/cdors-mesh/src/sample.rs), written independently in NumPy:
+# great-circle paths cut into equal arcs per segment, the default step, nn by a KD-tree on unit
+# vectors (nereus' transect: scipy cKDTree on lonlat_to_cartesian), linear by brute force over all
+# mesh triangles, levels valid only where every cell of a point's row is wet.
+R_KM = 6371.0
+
+
+def wrap_lon(x):
+    w = np.mod(x, 360.0)
+    return np.where(w > 180.0, w - 360.0, w)
+
+
+def sample_path(wp, step_km):
+    """(distance km, lon, lat) of the path through the waypoints wp [(lon, lat), ...]."""
+    dist, lon, lat, cum = [0.0], [float(wrap_lon(wp[0][0]))], [wp[0][1]], 0.0
+    for (a, b) in zip(wp[:-1], wp[1:]):
+        u, v = unit(*a), unit(*b)
+        d = np.arctan2(np.linalg.norm(np.cross(u, v)), u @ v)
+        if d == 0:
+            continue
+        n = max(int(np.ceil(d / (step_km / R_KM))), 1)
+        for k in range(1, n + 1):
+            if k == n:
+                x, y = b
+            else:
+                f = k / n
+                p = (np.sin((1 - f) * d) * u + np.sin(f * d) * v) / np.sin(d)
+                x, y = np.rad2deg(np.arctan2(p[1], p[0])), np.rad2deg(np.arctan2(p[2], np.hypot(p[0], p[1])))
+            dist.append((cum + d * k / n) * R_KM)
+            lon.append(float(wrap_lon(x)))
+            lat.append(y)
+        cum += d
+    return np.array(dist), np.array(lon), np.array(lat)
+
+
+def nearest(clon, clat, lon, lat, k=1):
+    """Indices (and squared chords) of the k cells nearest to each point (scipy cKDTree)."""
+    from scipy.spatial import cKDTree
+    tree = cKDTree(unit(clon, clat))
+    d, i = tree.query(unit(np.asarray(lon), np.asarray(lat)), k=k)
+    return i, d * d
+
+
+def default_step(clon, clat, wp):
+    """Median cell spacing along the path: the distinct cells nearest to 1024 equal arcs of the
+    path, each cell's distance to its nearest other cell, the lower median (km)."""
+    length = sample_path(wp, 1e9)[0][-1]
+    _, lon, lat = sample_path(wp, length / 1024)
+    cells = np.unique(nearest(clon, clat, lon, lat)[0])
+    i, d2 = nearest(clon, clat, clon[cells], clat[cells], k=2)
+    d = np.sort(2 * np.arcsin(np.minimum(0.5 * np.sqrt(d2[:, 1]), 1)) * R_KM)
+    return d[(len(d) - 1) // 2]
+
+
+def linear_rows(clon, clat, tri, lon, lat):
+    """Barycentric rows [(cells, weights)] of each point in the first mesh triangle (ascending
+    index) containing it, by brute force; weights <= 1e-12 dropped and renormalised; [] outside."""
+    p = unit(clon, clat)
+    a, b, c = p[tri[:, 0]], p[tri[:, 1]], p[tri[:, 2]]
+    bc, ca, ab = np.cross(b, c), np.cross(c, a), np.cross(a, b)
+    det = np.einsum("ij,ij->i", a, bc)
+    rows = []
+    for q in unit(np.asarray(lon), np.asarray(lat)):
+        m = np.stack([bc @ q, ca @ q, ab @ q], axis=1)
+        s = m.sum(axis=1)
+        w = m / s[:, None]
+        ok = np.nonzero((s * det > 0) & (w >= -1e-12).all(axis=1))[0]
+        if len(ok) == 0:
+            rows.append(([], []))
+            continue
+        e = ok[0]
+        keep = w[e] > 1e-12
+        cells, ww = tri[e][keep], w[e][keep] / w[e][keep].sum()
+        o = np.argsort(cells)
+        rows.append((list(cells[o]), list(ww[o])))
+    return rows
+
+
+def fesom_mesh(mdir):
+    """Places of a FESOM2 mesh.diag: {size: (name, lon, lat, top, bottom)} and the triangles of
+    the nodes, zbar; nodes in radians or degrees as the cdors loader decides."""
+    with netCDF4.Dataset(os.path.join(mdir, "fesom.mesh.diag.nc")) as m:
+        nodes = m["nodes"][:].astype("f8")
+        if nodes.shape[0] != 2:
+            nodes = nodes.T
+        x, y = nodes
+        if np.abs(y).max() <= np.pi / 2 + 1e-6 and np.abs(x).max() <= 2 * np.pi + 1e-6:
+            x, y = np.rad2deg(x), np.rad2deg(y)
+        ev = next(n for n in ("elem", "elements", "face_nodes") if n in m.variables and m[n].ndim == 2)
+        el = m[ev][:].astype("i8")
+        if el.shape[0] == 3 and el.shape[1] != 3:
+            el = el.T
+        el = el - int(getattr(m[ev], "start_index", 1))
+        zbar = m["zbar"][:].astype("f8") if "zbar" in m.variables else m["nz"][:].astype("f8")
+        nl = {k: m[k][:].astype("i8") for k in ("nlevels_nod2D", "nlevels")}
+        ul = {k: (m[k][:].astype("i8") if k in m.variables else None) for k in ("ulevels_nod2D", "ulevels")}
+    e = unit(x[el], y[el]).sum(axis=1)
+    ex, ey = np.rad2deg(np.arctan2(e[:, 1], e[:, 0])), np.rad2deg(np.arctan2(e[:, 2], np.hypot(e[:, 0], e[:, 1])))
+    top = lambda u, n: (u - 1) if u is not None else np.zeros_like(n)
+    places = {len(x): ("nodes", x, y, top(ul["ulevels_nod2D"], nl["nlevels_nod2D"]), nl["nlevels_nod2D"] - 1),
+              len(ex): ("elements", ex, ey, top(ul["ulevels"], nl["nlevels"]), nl["nlevels"] - 1)}
+    return places, el, zbar
+
+
+def sample_rows(method, place, tri, lon, lat):
+    """Rows [(cells, weights)] of the points on one place; None for linear off the nodes (the
+    reference has no local Delaunay: rows with method=linear select node variables)."""
+    _, clon, clat, _, _ = place
+    if method == "nn":
+        i = nearest(clon, clat, lon, lat)[0]
+        return [([int(c)], [1.0]) for c in i]
+    if place[0] != "nodes":
+        return None
+    return linear_rows(clon, clat, tri, lon, lat)
+
+
+def write_sampled(src, dst, dim, rows_of, coords, wet_of=None, zbar=None, extra=None, first=None,
+                  names=None):
+    """Every data variable of src (or `names`) with a horizontal dimension sampled by its rows:
+    the horizontal dimension replaced by `dim` in place (the input's order), values sum w * x,
+    missing where any cell of the row is missing or dry at that level (wet_of[size] = (top, bottom) per cell); bottom_depth for
+    the place of size `first` (nodes), bottom_depth_<dim> for the others."""
+    copy_time(src, dst)
+    n = len(coords["lon"])
+    dst.createDimension(dim, n)
+    if dim == "distance":
+        o = dst.createVariable("distance", "f8", ("distance",))
+        o.units, o.long_name = "km", "distance along the path"
+        o[:] = coords["distance"]
+    for c, units in (("lon", "degrees_east"), ("lat", "degrees_north")):
+        o = dst.createVariable(c, "f8", (dim,))
+        o.units = units
+        o[:] = coords[c]
+    for k, v in (extra or {}).items():
+        v(dst)
+    done = set()
+    for name in names or data_vars(src):
+        v = src[name]
+        hd = next((d for d in v.dimensions if src.dimensions[d].size in rows_of), None)
+        if hd is None:
+            continue
+        if rows_of[src.dimensions[hd].size] is None:
+            raise SystemExit(f"reference: method=linear only for node variables, not {name}")
+        size = src.dimensions[hd].size
+        rows = rows_of[size]
+        ax = v.dimensions.index(hd)
+        x = np.moveaxis(masked(v[:]), ax, -1)
+        lev = next((i for i, d in enumerate(v.dimensions) if d not in ("time", hd)), None)
+        out = np.ma.masked_all(x.shape[:-1] + (n,))
+        for r, (cells, w) in enumerate(rows):
+            if not cells:
+                continue
+            val = (x[..., cells] * np.array(w)).sum(axis=-1)
+            bad = np.ma.getmaskarray(x[..., cells]).any(axis=-1)
+            if wet_of is not None and lev is not None:
+                top, bot = wet_of[size]
+                t, b = max(top[c] for c in cells), min(bot[c] for c in cells)
+                k = np.arange(src.dimensions[v.dimensions[lev]].size)
+                dry = (k < t) | (k >= b)
+                shape = [1] * (x.ndim - 1)
+                shape[lev - (1 if lev > ax else 0)] = len(k)
+                bad = bad | dry.reshape(shape)
+            out[..., r] = np.ma.masked_where(bad, val)
+        for d in v.dimensions:
+            if d != hd and d not in dst.dimensions:
+                dst.createDimension(d, src.dimensions[d].size)
+                if d in src.variables:      # the level coordinate (cdo needs it to see a z-axis)
+                    c = dst.createVariable(d, src[d].dtype, (d,))
+                    c.setncatts({a: src[d].getncattr(a) for a in src[d].ncattrs()})
+                    c[:] = src[d][:]
+        dims = tuple(dim if d == hd else d for d in v.dimensions)
+        o = dst.createVariable(name, "f8", dims, fill_value=netCDF4.default_fillvals["f8"])
+        o.coordinates = "lat lon"
+        o[:] = np.moveaxis(out, -1, ax)
+        if wet_of is not None and size not in done:
+            done.add(size)
+            top, bot = wet_of[size]
+            dep = [abs(zbar[min(bot[c] for c in cells)]) if cells and max(top[c] for c in cells) < min(bot[c] for c in cells)
+                   else np.nan for cells, _ in rows]
+            bn = "bottom_depth" if size == first else f"bottom_depth_{hd}"
+            o = dst.createVariable(bn, "f8", (dim,), fill_value=netCDF4.default_fillvals["f8"])
+            o.units, o.standard_name, o.coordinates = "m", "sea_floor_depth_below_sea_surface", "lat lon"
+            o[:] = np.ma.masked_invalid(dep)
+
+
+@reference()
+def transect(args, inputs, out):
+    """transect,lon0,lat0,lon1,lat1[,...][,step=<km>][,method=nn|linear] or file=<geojson> on a
+    FESOM2 mesh (-setgrid,fesom:<dir>): every node and element variable of IN1 along the path."""
+    opts, _ = op_args(args, "transect")
+    method = opts.get("method", "nn")
+    if "file" in opts:
+        import json
+        with open(opts["file"]) as f:
+            g = json.load(f)
+        if g["type"] == "FeatureCollection":
+            g = g["features"][0]
+        g = g.get("geometry", g)
+        wp = [tuple(p[:2]) for p in g["coordinates"]]
+    else:
+        nums = [float(opts[i]) for i in sorted(k for k in opts if isinstance(k, int))]
+        wp = list(zip(nums[0::2], nums[1::2]))
+    places, tri, zbar = fesom_mesh(mesh_dir(args))
+    nodes = next(p for p in places.values() if p[0] == "nodes")
+    step = float(opts["step"]) if "step" in opts else default_step(nodes[1], nodes[2], wp)
+    dist, lon, lat = sample_path(wp, step)
+    rows_of = {s: sample_rows(method, p, tri, lon, lat) for s, p in places.items()}
+    wet_of = {s: (p[3], p[4]) for s, p in places.items()}
+    with netCDF4.Dataset(inputs[0]) as src, netCDF4.Dataset(out, "w") as dst:
+        write_sampled(src, dst, "distance", rows_of, {"distance": dist, "lon": lon, "lat": lat},
+                      wet_of, zbar, first=len(nodes[1]), names=op_args(args, "transect")[1])
+
+
+def stations(args, opname):
+    """Stations of <opname>,file=<csv>|lon=<x>_lat=<y>[,...]: [(name, lon, lat)], method."""
+    import re
+    op = next(a for a in args if a.lstrip("-").startswith(opname + ","))
+    st, method = [], "nn"
+    for t in op.lstrip("-").split(",")[1:]:
+        if t.startswith("method="):
+            method = t[7:]
+        elif t.startswith("file="):
+            first = True
+            with open(t[5:]) as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or line.startswith("#"):
+                        continue
+                    n, x, y = [s.strip() for s in line.split(",")]
+                    try:
+                        st.append((n, float(x), float(y)))
+                    except ValueError:
+                        if not first:
+                            raise
+                    first = False
+        else:
+            m = re.fullmatch(r"lon=([-+0-9.eE]+)[_/x]lat=([-+0-9.eE]+)", t.lower())
+            st.append((t, float(m.group(1)), float(m.group(2))))
+    return st, method
+
+
+@reference()
+def selpoints(args, inputs, out):
+    """selpoints on a grid (cell centres of cell_centres(); nn by brute force, ties to the smallest
+    index) or a FESOM2 mesh (-setgrid,fesom:<dir>; nn or linear): (time, [level,] station)."""
+    st, method = stations(args, "selpoints")
+    lon, lat = np.array([s[1] for s in st]), np.array([s[2] for s in st])
+    names = np.array([s[0] for s in st], dtype=object)
+
+    def name_var(dst):
+        o = dst.createVariable("station_name", str, ("station",))
+        o[:] = names
+    with netCDF4.Dataset(inputs[0]) as src, netCDF4.Dataset(out, "w") as dst:
+        if any(a.startswith("-setgrid,fesom:") for a in args):
+            places, tri, zbar = fesom_mesh(mesh_dir(args))
+            rows_of = {s: sample_rows(method, p, tri, lon, lat) for s, p in places.items()}
+            wet_of = {s: (p[3], p[4]) for s, p in places.items()}
+            first = next(s for s, p in places.items() if p[0] == "nodes")
+        else:
+            clon, clat, hdims = cell_centres(src, data_vars(src)[0])
+            if len(hdims) == 2:
+                raise SystemExit("reference: selpoints on lon-lat grids: use ref:numpy.selpoints_cdo")
+            q, p = unit(lon, lat), unit(clon, clat)
+            d = ((p[None, :, :] - q[:, None, :]) ** 2).sum(axis=2)
+            rows = [([int(c)], [1.0]) for c in d.argmin(axis=1)]
+            rows_of, wet_of, zbar, first = {len(clon): rows}, None, None, None
+        write_sampled(src, dst, "station", rows_of, {"lon": lon, "lat": lat}, wet_of, zbar,
+                      {"station_name": name_var}, first, op_args(args, "selpoints")[1])
+
+
+@reference()
+def selpoints_cdo(args, inputs, out):
+    """cdo's remapnn,lon=<x>_lat=<y> ($CDO) for each station of the row's selpoints, the station
+    replacing cdo's 1 x 1 grid: (time, [level,] station). cdo's outputs stay in OUT.d/."""
+    import subprocess
+    cdo = os.environ.get("CDO", "cdo")
+    st, _ = stations(args, "selpoints")
+    work = out + ".d"
+    os.makedirs(work, exist_ok=True)
+    i = next(k for k, a in enumerate(args) if a.lstrip("-").startswith("selpoints,"))
+    parts = []
+    for k, (n, x, y) in enumerate(st):
+        f = os.path.join(work, f"st{k}.nc")
+        cmd = [a for a in args[:i] if not a.startswith("--")] + [f"-remapnn,lon={x!r}_lat={y!r}"] + args[i + 1:]
+        subprocess.run([cdo, "-s", "-O"] + cmd + [f], check=True)
+        parts.append(f)
+    with netCDF4.Dataset(parts[0]) as p0, netCDF4.Dataset(out, "w") as dst:
+        copy_time(p0, dst)
+        dst.createDimension("station", len(st))
+        for c, units, j in (("lon", "degrees_east", 1), ("lat", "degrees_north", 2)):
+            o = dst.createVariable(c, "f8", ("station",))
+            o.units = units
+            o[:] = [s[j] for s in st]
+        o = dst.createVariable("station_name", str, ("station",))
+        o[:] = np.array([s[0] for s in st], dtype=object)
+        for name in data_vars(p0):
+            if name in ("lon", "lat"):
+                continue
+            v = p0[name]
+            lead = [d for d in v.dimensions if d not in ("lat", "lon")]
+            for d in lead[1:]:
+                if d not in dst.dimensions:
+                    dst.createDimension(d, p0.dimensions[d].size)
+            vals = []
+            for f in parts:
+                with netCDF4.Dataset(f) as p:
+                    vals.append(masked(p[name][:]).reshape(p[name].shape[: len(lead)]))
+            o = dst.createVariable(name, "f8", tuple(lead) + ("station",),
+                                   fill_value=netCDF4.default_fillvals["f8"])
+            o.coordinates = "lat lon"
+            o[:] = np.ma.stack(vals, axis=-1)
+
+
 # Field statistics per level and node <-> element mapping on a FESOM2 mesh, in both dimension
 # orders: (time, nz1, nod2|elem) and FESOM 2.0's (time, nod2|elem, nz1). Levels outside a cell's
 # wet range (nlevels - 1 layers from the top) are missing whatever the file stores (0).

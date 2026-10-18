@@ -156,6 +156,52 @@ impl KdTree {
             .collect()
     }
 
+    /// The `k` cells nearest to a unit vector, nearest first (equal distances: smallest index
+    /// first), with their squared chord lengths; fewer if the tree has fewer points.
+    pub fn nearest_k_xyz(&self, q: [f64; 3], k: usize) -> Vec<(usize, f64)> {
+        let mut best: Vec<(f64, u32)> = Vec::with_capacity(k + 1);
+        if k > 0 && !self.pts.is_empty() {
+            self.search_k(0, self.pts.len(), &q, k, &mut best);
+        }
+        best.into_iter().map(|(d, i)| (i as usize, d)).collect()
+    }
+
+    fn consider_k(&self, i: usize, q: &[f64; 3], k: usize, best: &mut Vec<(f64, u32)>) {
+        let p = &self.pts[i];
+        let d = (p[0] - q[0]).powi(2) + (p[1] - q[1]).powi(2) + (p[2] - q[2]).powi(2);
+        let key = (d, self.idx[i]);
+        let less = |a: &(f64, u32), b: &(f64, u32)| a.0 < b.0 || (a.0 == b.0 && a.1 < b.1);
+        if best.len() == k && !less(&key, &best[k - 1]) {
+            return;
+        }
+        let at = best.partition_point(|b| less(b, &key));
+        best.insert(at, key);
+        best.truncate(k);
+    }
+
+    fn search_k(&self, lo: usize, hi: usize, q: &[f64; 3], k: usize, best: &mut Vec<(f64, u32)>) {
+        let n = hi - lo;
+        if n <= LEAF {
+            for i in lo..hi {
+                self.consider_k(i, q, k, best);
+            }
+            return;
+        }
+        let mid = lo + n / 2;
+        let a = self.axis[mid] as usize;
+        self.consider_k(mid, q, k, best);
+        let d = q[a] - self.pts[mid][a];
+        let (near, far) = if d < 0.0 {
+            ((lo, mid), (mid + 1, hi))
+        } else {
+            ((mid + 1, hi), (lo, mid))
+        };
+        self.search_k(near.0, near.1, q, k, best);
+        if best.len() < k || d * d <= best[k - 1].0 {
+            self.search_k(far.0, far.1, q, k, best);
+        }
+    }
+
     fn consider(&self, i: usize, q: &[f64; 3], best: &mut (f64, u32)) {
         let p = &self.pts[i];
         let d = (p[0] - q[0]).powi(2) + (p[1] - q[1]).powi(2) + (p[2] - q[2]).powi(2);
@@ -294,6 +340,22 @@ mod tests {
                     })
                     .min_by(|a, b| a.1.total_cmp(&b.1).then(a.0.cmp(&b.0)))
                     .unwrap();
+                let mut all: Vec<(usize, f64)> = (0..lon.len())
+                    .map(|i| {
+                        let p = unit_vector(lon[i], lat[i]);
+                        (
+                            i,
+                            (p[0] - q[0]).powi(2) + (p[1] - q[1]).powi(2) + (p[2] - q[2]).powi(2),
+                        )
+                    })
+                    .collect();
+                all.sort_by(|a, b| a.1.total_cmp(&b.1).then(a.0.cmp(&b.0)));
+                let knn = tree.nearest_k_xyz(q, 12);
+                assert_eq!(
+                    knn.iter().map(|p| p.0).collect::<Vec<_>>(),
+                    all[..12].iter().map(|p| p.0).collect::<Vec<_>>(),
+                    "query {k}"
+                );
                 let (i, ang) = tree.nearest(x, y).unwrap();
                 assert_eq!(i, bi, "query {k}");
                 assert!((ang - 2.0 * (0.5 * bd.sqrt()).asin()).abs() < 1e-15);
