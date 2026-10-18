@@ -5,7 +5,10 @@
 //! - `fldmean`, `fldavg`, `fldstd`, `fldstd1`, `fldvar`, `fldvar1` weight by the normalised cell
 //!   areas (Σw·x/Σw over the non-missing cells); `fldmin`, `fldmax`, `fldrange`, `fldsum` are
 //!   unweighted; every `zon*` is unweighted within its row; `vertmean`-like operators weight by
-//!   the layer thickness (constant without layer bounds), `vertint` sums thickness·x;
+//!   the layer thickness (constant without layer bounds), `vertint` sums thickness·x
+//!   (`vertint,z0/z1`: the layers cut at those depths); on a model mesh the thickness of the
+//!   mesh's layers, each cell's dry levels being missing ([`super::vertical`]); `bottomvalue`
+//!   keeps the valid value nearest the bottom (cdo `Selsurface.cc`; on a mesh the cell's own);
 //! - missing values are skipped; a result without any valid value is missing; the `avg`
 //!   variants are missing as soon as one value is missing (`varray_weighted_avg_mv`);
 //! - output grids as cdo writes them: `fld*` a 1-point lon-lat grid at (0, 0) (an unstructured
@@ -34,6 +37,7 @@ use crate::error::{Error, ErrorCode, Result};
 use crate::io::Values;
 use crate::model::area::{self, SpaceWeighting, VertWeighting, WeightedSums};
 use crate::model::{AttrValue, Attrs, CoordAxis, DimRole, Grid, GridKind, VarDim};
+use crate::ops::vertical;
 use crate::plan::stage::{FoldKernel, FoldState, Tile};
 use crate::plan::tiling::TileBox;
 use crate::plan::{Desc, FixedGrid, Fold, GridCoords, GridDesc, IndexMap, Sources, VarDesc};
@@ -84,7 +88,15 @@ pub fn operators() -> Vec<(String, String)> {
     ));
     out.push((
         "vertint".into(),
-        "Vertical integral (sum of layer thickness times value)".into(),
+        "Vertical integral (sum of layer thickness times value; vertint,<z0>/<z1>: the layers \
+         cut at depths z0 and z1; on a model mesh the mesh's layers, dry levels skipped)"
+            .into(),
+    ));
+    out.push((
+        "bottomvalue".into(),
+        "Value at the bottom level: the valid value nearest the bottom (CF attribute positive; \
+         on a model mesh each cell's own bottom)"
+            .into(),
     ));
     out.push((
         "zonint".into(),
@@ -125,6 +137,12 @@ pub(crate) enum Stat {
     Std1,
     /// Σ area·value (`fldint`).
     Int,
+    /// Σ thickness·value over the valid values of the layers inside the depth range
+    /// (`vertint`): levels of weight 0 do not count.
+    VertInt,
+    /// The valid value of the level with the largest weight (`bottomvalue`: the weights rank the
+    /// levels from the top).
+    Bottom,
 }
 
 impl Stat {
@@ -134,7 +152,8 @@ impl Stat {
             Self::Min => "minimum",
             Self::Max => "maximum",
             Self::Range => "range",
-            Self::Sum | Self::Int => "sum",
+            Self::Sum | Self::Int | Self::VertInt => "sum",
+            Self::Bottom => "point",
             Self::Var | Self::Var1 => "variance",
             Self::Std | Self::Std1 => "standard_deviation",
         }
@@ -143,7 +162,10 @@ impl Stat {
 
 fn parse(name: &str) -> Option<(Family, Stat)> {
     if name == "vertint" {
-        return Some((Family::Vert, Stat::Sum));
+        return Some((Family::Vert, Stat::VertInt));
+    }
+    if name == "bottomvalue" {
+        return Some((Family::Vert, Stat::Bottom));
     }
     if name == "fldint" {
         return Some((Family::Fld, Stat::Int));
@@ -266,6 +288,55 @@ impl Acc for SumAcc {
     }
 }
 
+/// Σw·x over the valid values whose weight is not 0 (the levels inside a depth range); missing
+/// without any.
+#[derive(Clone, Copy)]
+struct CutSumAcc {
+    sum: f64,
+    n: u64,
+}
+
+impl Acc for CutSumAcc {
+    fn new() -> Self {
+        Self { sum: 0.0, n: 0 }
+    }
+    #[inline(always)]
+    fn add(&mut self, w: f64, x: f64) {
+        let valid = !x.is_nan() && w != 0.0;
+        self.sum += if valid { w * x } else { -0.0 };
+        self.n += u64::from(valid);
+    }
+    fn value(&self, _: Stat) -> f64 {
+        if self.n == 0 { f64::NAN } else { self.sum }
+    }
+}
+
+/// The valid value of the largest weight seen (ties: the first).
+#[derive(Clone, Copy)]
+struct RankAcc {
+    rank: f64,
+    x: f64,
+}
+
+impl Acc for RankAcc {
+    fn new() -> Self {
+        Self {
+            rank: f64::NEG_INFINITY,
+            x: f64::NAN,
+        }
+    }
+    #[inline(always)]
+    fn add(&mut self, w: f64, x: f64) {
+        if !x.is_nan() && w > self.rank {
+            self.rank = w;
+            self.x = x;
+        }
+    }
+    fn value(&self, _: Stat) -> f64 {
+        self.x
+    }
+}
+
 #[derive(Clone, Copy)]
 pub(crate) struct MinMaxAcc {
     min: f64,
@@ -339,9 +410,9 @@ pub(crate) enum Weights {
 /// (a subset), loaded when a lane first needs them, so `--plan` loads nothing.
 pub(crate) struct LevelWeights {
     dim: usize,
-    mesh: Arc<cdors_mesh::Mesh>,
-    place: String,
-    levels: IndexMap,
+    pub(crate) mesh: Arc<cdors_mesh::Mesh>,
+    pub(crate) place: String,
+    pub(crate) levels: IndexMap,
     /// Stored cells of the block, `None` for the whole place in order.
     cells: Option<Arc<Vec<usize>>>,
     normalise: bool,
@@ -363,7 +434,7 @@ impl std::fmt::Debug for LevelWeights {
 
 impl LevelWeights {
     /// Areas and scale of output level `j`.
-    fn level(&self, j: usize) -> Result<(Arc<Vec<f64>>, f64)> {
+    pub(crate) fn level(&self, j: usize) -> Result<(Arc<Vec<f64>>, f64)> {
         if let Some(v) = self.loaded[j].get() {
             return Ok(v.clone());
         }
@@ -491,6 +562,8 @@ impl FoldKernel for SpaceKernel {
             Stat::Mean => Box::new(State::<MeanAcc>::new(var, p, self.stat, lane)),
             Stat::Avg => Box::new(State::<AvgAcc>::new(var, p, self.stat, lane)),
             Stat::Sum | Stat::Int => Box::new(State::<SumAcc>::new(var, p, self.stat, lane)),
+            Stat::VertInt => Box::new(State::<CutSumAcc>::new(var, p, self.stat, lane)),
+            Stat::Bottom => Box::new(State::<RankAcc>::new(var, p, self.stat, lane)),
             Stat::Min | Stat::Max | Stat::Range => {
                 Box::new(State::<MinMaxAcc>::new(var, p, self.stat, lane))
             }
@@ -892,7 +965,7 @@ fn axis(var: &str, dim: &str, std_name: &str, units: &str) -> CoordAxis {
 /// A grid made by the operator: a lon-lat grid with one longitude (0) and the latitudes `lats`
 /// (with `lat_bounds`, two per latitude, also the longitude bounds −180, 180, as cdo writes
 /// `zonal_<DY>`), or (`unstructured_dim`) a 1-point unstructured grid over that dimension.
-fn made_grid(
+pub(crate) fn made_grid(
     g: &GridDesc,
     lats: Vec<f64>,
     lat_bounds: Option<Vec<f64>>,
@@ -1434,11 +1507,11 @@ pub(crate) fn block_of(v: &VarDesc, role: DimRole) -> Result<(usize, usize)> {
     }
 }
 
-/// Space statistics of variables with levels on a mesh with a vertical: `fld*` work on the
-/// levels whose dry cells `setgrid` masked (per-level areas where the place has them); `zon*`
-/// (latitude bands) and `vert*` (each cell's own bottom) are not implemented on meshes yet, and
-/// levels the mesh's rules do not recognise (no dry-level mask) are refused. 2-D variables are
-/// fine.
+/// Space statistics of variables with levels on a mesh with a vertical: `fld*` and `vert*` work
+/// on the levels whose dry cells `setgrid` masked (`fld*` with per-level areas where the place
+/// has them, `vert*` with the mesh's layers, each cell's dry levels missing); `zon*` (latitude
+/// bands) are not implemented on mesh levels yet, and levels the mesh's rules do not recognise
+/// (no dry-level mask) are refused. 2-D variables are fine.
 fn refuse_mesh_levels(op: &str, fam: Family, input: &Desc) -> Result<()> {
     for v in &input.vars {
         let Some(m) = v.grid.and_then(|g| input.grids[g].base.mesh.as_ref()) else {
@@ -1447,10 +1520,10 @@ fn refuse_mesh_levels(op: &str, fam: Family, input: &Desc) -> Result<()> {
         if m.vertical.is_some()
             && let Some(z) = v.dims.iter().find(|d| d.role == DimRole::Vertical)
         {
-            if fam == Family::Fld && v.expr.wet_mask().is_some() {
+            if fam != Family::Zon && v.expr.wet_mask().is_some() {
                 continue;
             }
-            let (what, hint) = if fam == Family::Fld {
+            let (what, hint) = if fam != Family::Zon {
                 (
                     format!(
                         "its levels ('{}', {}) are not the mesh's layers or interfaces, so the \
@@ -1465,8 +1538,8 @@ fn refuse_mesh_levels(op: &str, fam: Family, input: &Desc) -> Result<()> {
                         "{op} of variables with levels ('{}') on a mesh is not implemented yet",
                         z.name
                     ),
-                    "fld* statistics work per level on the mesh; for 2-D variables all \
-                     statistics work",
+                    "fld* and vert* statistics work on the mesh's levels; for 2-D variables \
+                     all statistics work",
                 )
             };
             return Err(Error::new(
@@ -1480,10 +1553,47 @@ fn refuse_mesh_levels(op: &str, fam: Family, input: &Desc) -> Result<()> {
     Ok(())
 }
 
+/// `bottomvalue`: weights that rank the levels from the top, so that the valid value of the
+/// largest weight is the one nearest the bottom. On a mesh the deeper mesh level ranks higher (so
+/// each cell's own bottom, its dry levels being missing); otherwise cdo's rule (`Selsurface.cc`):
+/// low level values are the bottom, high values when the levels decrease, and the other way
+/// round when the levels are not negative and the axis is `positive = down`.
+fn bottom_ranks(
+    za: Option<&crate::model::ZAxis>,
+    nlev: usize,
+    mesh: Option<&vertical::MeshLevels>,
+) -> Weights {
+    if let Some(m) = mesh {
+        return Weights::Each(Arc::new(m.levels.iter().map(|&k| (k + 1) as f64).collect()));
+    }
+    let Some(lev) = za
+        .map(|z| &z.values)
+        .filter(|l| l.len() == nlev && nlev > 1)
+    else {
+        return Weights::Const(1.0);
+    };
+    let positive = lev[0] >= 0.0 || lev[nlev - 1] >= 0.0;
+    let reverse = lev[0] > lev[nlev - 1];
+    let down = za.and_then(|z| z.positive.as_deref()) == Some("down");
+    // bottom at the first index (cdo: layer_value_min) or at the last (layer_value_max)
+    let first = !reverse != (positive && down);
+    Weights::Each(Arc::new(
+        (0..nlev)
+            .map(|j| {
+                if first {
+                    (nlev - j) as f64
+                } else {
+                    (j + 1) as f64
+                }
+            })
+            .collect(),
+    ))
+}
+
 /// Per-level weights of `v` on grid `g` if it has levels on a mesh place with per-level areas;
 /// with the bytes of the mesh levels it reads that `loaded` (mesh name, place, level) does not
 /// hold yet.
-fn level_weights(
+pub(crate) fn level_weights(
     g: &GridDesc,
     v: &VarDesc,
     normalise: bool,
@@ -1710,17 +1820,49 @@ pub fn describe(node: &OpNode, mut inputs: Vec<Desc>, srcs: &Sources) -> Result<
         }
         Family::Vert => {
             let weighting = area::vertstat_weighting(name).unwrap_or(VertWeighting::None);
+            let range = match node.args.first() {
+                Some(a) if name == "vertint" => Some(vertical::depth_range(name, a)?),
+                _ => None,
+            };
             for v in &mut out.vars {
                 let (b0, nb) = block_of(v, DimRole::Vertical)?;
                 let nlev = if nb == 1 { v.dims[b0].size } else { 1 };
                 let za = v.zaxis.map(|z| &input.zaxes[z].axis);
+                let zdim = v.dims.get(b0).map_or(String::new(), |d| d.name.clone());
+                let mesh = (nb == 1).then(|| vertical::mesh_levels(v, b0)).flatten();
                 let lw = area::layer_weights(za, nlev, true, false);
-                let weights = match weighting {
-                    VertWeighting::None => Weights::Const(1.0),
-                    VertWeighting::Weights => Weights::Each(Arc::new(lw.weights)),
-                    VertWeighting::Thickness => Weights::Each(Arc::new(lw.thickness)),
+                let weights = if stat == Stat::Bottom {
+                    bottom_ranks(za, nlev, mesh.as_ref())
+                } else if weighting == VertWeighting::None || nb == 0 {
+                    Weights::Const(1.0)
+                } else if let Some(m) = &mesh {
+                    // the mesh's layers; dry levels are missing and drop out
+                    let layers = m
+                        .layers()
+                        .ok_or_else(|| vertical::no_layers(name, v, &zdim, Some(m)))?;
+                    let dz = vertical::cut_thickness(&layers, range);
+                    if weighting == VertWeighting::Weights {
+                        let mean = dz.iter().sum::<f64>() / nlev as f64;
+                        Weights::Each(Arc::new(dz.iter().map(|t| t / mean).collect()))
+                    } else {
+                        Weights::Each(Arc::new(dz))
+                    }
+                } else if range.is_some() {
+                    let layers = vertical::axis_layers(za, nlev)
+                        .ok_or_else(|| vertical::no_layers(name, v, &zdim, None))?;
+                    Weights::Each(Arc::new(vertical::cut_thickness(&layers, range)))
+                } else {
+                    match weighting {
+                        VertWeighting::Weights => Weights::Each(Arc::new(lw.weights)),
+                        _ => Weights::Each(Arc::new(lw.thickness)),
+                    }
                 };
-                if lw.status == 0 && nlev > 1 && weighting != VertWeighting::None {
+                if lw.status == 0
+                    && nlev > 1
+                    && weighting != VertWeighting::None
+                    && mesh.is_none()
+                    && stat != Stat::Bottom
+                {
                     crate::exec::threads::warn(
                         "equal_vertical_weights",
                         &format!(
@@ -1739,10 +1881,11 @@ pub fn describe(node: &OpNode, mut inputs: Vec<Desc>, srcs: &Sources) -> Result<
                     out_block: vec![],
                 }));
                 if nb == 1 {
-                    let zdim = v.dims[b0].name.clone();
                     v.dims.remove(b0);
                     v.zaxis = None;
-                    add_cell_method(v, &format!("{zdim}: {}", stat.cell_method()));
+                    if stat != Stat::Bottom {
+                        add_cell_method(v, &format!("{zdim}: {}", stat.cell_method()));
+                    }
                 }
             }
         }

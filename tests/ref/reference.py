@@ -777,14 +777,18 @@ def selpoints_cdo(args, inputs, out):
 # orders: (time, nz1, nod2|elem) and FESOM 2.0's (time, nod2|elem, nz1). Levels outside a cell's
 # wet range (nlevels - 1 layers from the top) are missing whatever the file stores (0).
 def read_mesh(args):
-    """Per-level node areas (nl, nod), element areas, elem -> nodes (ne, 3, 0-based) and the
-    number of wet layers of nodes and elements."""
+    """Per-level node areas (nl, nod), element areas, elem -> nodes (ne, 3, 0-based), the end
+    (number of wet layers from the surface) and the first wet layer (0-based; 0 without
+    ulevels, i.e. without cavities) of nodes and elements, and the interface depths |zbar|."""
     with netCDF4.Dataset(os.path.join(mesh_dir(args), "fesom.mesh.diag.nc")) as m:
         el = m["elem" if "elem" in m.variables else "elements"][:].astype("i8")
         el = el.T if el.shape[0] == 3 else el
+        top = {k: (m[v][:].astype("i8") - 1 if v in m.variables else np.zeros(len(m[n][:]), "i8"))
+               for k, v, n in (("top_nod", "ulevels_nod2D", "nlevels_nod2D"), ("top_elem", "ulevels", "nlevels"))}
         return {"nod_area": m["nod_area"][:].astype("f8"), "elem_area": m["elem_area"][:].astype("f8"),
                 "elem": el - el.min(), "wet_nod": m["nlevels_nod2D"][:].astype("i8") - 1,
-                "wet_elem": m["nlevels"][:].astype("i8") - 1}
+                "wet_elem": m["nlevels"][:].astype("i8") - 1,
+                "zbar": np.abs(m["zbar" if "zbar" in m.variables else "nz"][:].astype("f8")), **top}
 
 
 def selected(args, names):
@@ -814,8 +818,10 @@ def to_tlc(v, args):
 
 def wet(mesh, ncell, lev, surface):
     """(levels, ncell) wet mask at the mesh levels lev; 2-D variables are wet everywhere."""
-    w = mesh["wet_nod"] if ncell == len(mesh["wet_nod"]) else mesh["wet_elem"]
-    return np.ones((1, ncell), bool) if surface else lev[:, None] < w[None, :]
+    nodes = ncell == len(mesh["wet_nod"])
+    w = mesh["wet_nod"] if nodes else mesh["wet_elem"]
+    t = mesh["top_nod"] if nodes else mesh["top_elem"]
+    return np.ones((1, ncell), bool) if surface else (lev[:, None] < w[None, :]) & (lev[:, None] >= t[None, :])
 
 
 def mesh_level_stat(args, inputs, out, stat):
@@ -896,6 +902,211 @@ def mesh_place_map(args, inputs, out, to):
             o = dst.createVariable(n, "f8", dims, fill_value=netCDF4.default_fillvals["f8"])
             o[:] = np.ma.masked_invalid(y)
 
+
+
+# Vertical geometry on a FESOM2 mesh (Task 9): full layers between the interfaces (depth |zbar|),
+# cut at the depth range z0/z1 of the operator (the part of each layer inside it), dry levels
+# (below each cell's bottom and above its top) left out.
+def op_range(args, names):
+    """(operator, (z0, z1) or None) of the first of the operators `names` in the arguments."""
+    for a in args:
+        head, _, rest = a.lstrip("-").partition(",")
+        if head in names:
+            return head, (tuple(float(x) for x in rest.split("/")) if rest else None)
+    raise SystemExit(f"reference: none of {names} in the arguments")
+
+
+def layer_dz(mesh, lev, rng):
+    """Thickness of the layers lev inside the depth range rng (all of them without)."""
+    top, bot = mesh["zbar"][lev], mesh["zbar"][lev + 1]
+    if rng is None:
+        return bot - top
+    return np.clip(np.minimum(bot, rng[1]) - np.maximum(top, rng[0]), 0, None)
+
+
+def outer_mulc(args):
+    """The constant of a -mulc,<c> applied last (the first argument), 1 without."""
+    return float(args[0].split(",")[1]) if args and args[0].startswith("-mulc,") else 1.0
+
+
+def mesh_columns(args, inputs):
+    """Per 3-D variable of the row: name, values (time, level, cell) with the dry levels
+    missing, levels, areas per level (level, cell), and the mesh."""
+    mesh = read_mesh(args)
+    with netCDF4.Dataset(inputs[0]) as src:
+        for n in selected(args, data_vars(src)):
+            v = src[n]
+            if v.ndim != 3:
+                continue
+            x, lev, _ = to_tlc(v, args)
+            nc = x.shape[2]
+            nodes = nc == mesh["nod_area"].shape[1]
+            a = mesh["nod_area"][lev] if nodes else np.broadcast_to(mesh["elem_area"], (len(lev), nc))
+            yield n, np.where(wet(mesh, nc, lev, False)[None], x, np.nan), lev, a, mesh
+
+
+def write_time_series(inputs, out, series, cells=None):
+    """Variables (time,) or (time, cell) of {name: values}, time axis of IN1."""
+    with netCDF4.Dataset(inputs[0]) as src, netCDF4.Dataset(out, "w") as dst:
+        copy_time(src, dst)
+        for n, y in series.items():
+            cell = f"cell{y.shape[-1]}"
+            dims = ("time",) if y.ndim == 1 else ("time", cell)
+            if y.ndim == 2 and cell not in dst.dimensions:
+                dst.createDimension(cell, y.shape[1])
+            o = dst.createVariable(n, "f8", dims, fill_value=netCDF4.default_fillvals["f8"])
+            o[:] = np.ma.masked_invalid(y)
+
+
+@reference()
+def mesh_vol(args, inputs, out):
+    """volint (sum of area(level) * dz * value) and volmean (that over the volume of the valid
+    cells and levels) per timestep, times an outer -mulc."""
+    op, rng = op_range(args, ("volint", "volmean"))
+    res = {}
+    for n, x, lev, a, mesh in mesh_columns(args, inputs):
+        w = a * layer_dz(mesh, lev, rng)[:, None]
+        ok = ~np.isnan(x) & (w > 0)[None]
+        s = np.where(ok, x * w, 0).sum(axis=(1, 2))
+        vol = np.where(ok, w, 0).sum(axis=(1, 2))
+        with np.errstate(invalid="ignore", divide="ignore"):
+            y = s if op == "volint" else s / vol
+        res[n] = np.where(ok.any(axis=(1, 2)), y, np.nan) * outer_mulc(args)
+    write_time_series(inputs, out, res)
+
+
+def nereus_args(mesh, lev, rng):
+    """thickness, depth and depth_min/max for nereus: it takes whole layers by their mid-depth,
+    so a range must lie on the interfaces to mean the same as the operator's cut."""
+    z = mesh["zbar"]
+    kw = {}
+    if rng is not None:
+        if not all(np.isclose(z, r).any() for r in rng):
+            raise SystemExit(f"reference: nereus needs a depth range on the interfaces, not {rng}")
+        kw = {"depth_min": rng[0], "depth_max": rng[1]}
+    return z[lev + 1] - z[lev], (z[lev] + z[lev + 1]) / 2, kw
+
+
+@reference()
+def nereus_volume_mean(args, inputs, out):
+    """nereus.volume_mean with the mesh's per-level node areas (nl rows: nereus drops the last)."""
+    import warnings
+    import nereus
+    _, rng = op_range(args, ("volmean",))
+    res = {}
+    for n, x, lev, a, mesh in mesh_columns(args, inputs):
+        dz, depth, kw = nereus_args(mesh, lev, rng)
+        area = mesh["nod_area"] if a.shape[1] == mesh["nod_area"].shape[1] else a[0]
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            res[n] = np.asarray(nereus.volume_mean(x, area, dz, depth, **kw))
+    write_time_series(inputs, out, res)
+
+
+@reference()
+def nereus_heat_content(args, inputs, out):
+    """nereus.heat_content (total) for -mulc,<rho*cp> -volint[,z0/z1]: rho = 1000, cp = c / 1000."""
+    import warnings
+    import nereus
+    _, rng = op_range(args, ("volint",))
+    c = outer_mulc(args)
+    res = {}
+    for n, x, lev, a, mesh in mesh_columns(args, inputs):
+        dz, depth, kw = nereus_args(mesh, lev, rng)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            res[n] = np.asarray(nereus.heat_content(x, mesh["nod_area"], dz, depth, rho=1000.0,
+                                                    cp=c / 1000.0, **kw))
+    write_time_series(inputs, out, res)
+
+
+@reference()
+def mesh_vert(args, inputs, out):
+    """vertmean, vertstd (layer-thickness weights), vertsum, vertint[,z0/z1] (sum of dz * value,
+    the layers cut) per cell over its wet levels."""
+    op, rng = op_range(args, ("vertmean", "vertstd", "vertsum", "vertint"))
+    res = {}
+    for n, x, lev, a, mesh in mesh_columns(args, inputs):
+        w = layer_dz(mesh, lev, rng if op == "vertint" else None)[None, :, None]
+        w = np.ones_like(w) if op == "vertsum" else w
+        ok = ~np.isnan(x) & (w > 0)
+        xs = np.where(ok, x, 0)
+        sw = np.where(ok, w, 0).sum(axis=1)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            mean = (xs * w).sum(axis=1) / sw
+            y = {"vertmean": mean, "vertsum": xs.sum(axis=1), "vertint": (xs * w).sum(axis=1),
+                 "vertstd": np.sqrt((np.where(ok, w, 0) * (xs - mean[:, None]) ** 2).sum(axis=1) / sw)}[op]
+        res[n] = np.where(ok.any(axis=1), y, np.nan)
+    write_time_series(inputs, out, res)
+
+
+@reference()
+def mesh_bottomvalue(args, inputs, out):
+    """The value of each cell's deepest wet level (its bottom)."""
+    res = {}
+    for n, x, lev, a, mesh in mesh_columns(args, inputs):
+        ok = ~np.isnan(x)
+        last = x.shape[1] - 1 - np.argmax(ok[:, ::-1], axis=1)
+        y = np.take_along_axis(x, last[:, None], axis=1)[:, 0]
+        res[n] = np.where(ok.any(axis=1), y, np.nan)
+    write_time_series(inputs, out, res)
+
+
+@reference()
+def analytic_vertint(args, inputs, out):
+    """vertint,z0/z1 of a field that is 1 in the water (-addc,1 -mulc,1e-30): the depth of water
+    inside [z0, z1] in each cell's column, min(z1, bottom) - max(z0, top); missing without any."""
+    _, (z0, z1) = op_range(args, ("vertint",))
+    res = {}
+    for n, x, lev, a, mesh in mesh_columns(args, inputs):
+        nodes = x.shape[2] == mesh["nod_area"].shape[1]
+        top = mesh["zbar"][mesh["top_nod" if nodes else "top_elem"]]
+        bot = mesh["zbar"][mesh["wet_nod" if nodes else "wet_elem"]]
+        d = np.minimum(bot, z1) - np.maximum(top, z0)
+        res[n] = np.broadcast_to(np.where(d > 0, d, np.nan), (x.shape[0], x.shape[2]))
+    write_time_series(inputs, out, res)
+
+
+@reference()
+def mesh_intlevel(args, inputs, out):
+    """intlevel,<depths> with cdo's rule (float32 weights between the two levels around the
+    target; with one of them missing the other if its weight is >= 0.5; outside the levels
+    missing), then missing where the target lies above the cell's top or below its bottom
+    interface. Levels: the depths of nz1 (ascending)."""
+    t = [float(z) for z in next(a for a in args if a.startswith("-intlevel,")).split(",")[1:]]
+    with netCDF4.Dataset(inputs[0]) as src:
+        zc = np.abs(src["nz1"][:].astype("f8"))
+    with netCDF4.Dataset(inputs[0]) as src, netCDF4.Dataset(out, "w") as dst:
+        copy_time(src, dst)
+        dst.createDimension("lev", len(t))
+        for n, x, lev, a, mesh in mesh_columns(args, inputs):
+            nodes = x.shape[2] == mesh["nod_area"].shape[1]
+            top = mesh["zbar"][mesh["top_nod" if nodes else "top_elem"]]
+            bot = mesh["zbar"][mesh["wet_nod" if nodes else "wet_elem"]]
+            z = zc[lev]
+            ys = []
+            for tz in t:
+                if tz == z[0]:
+                    y = x[:, 0]
+                elif tz < z[0] or tz > z[-1]:
+                    y = np.full_like(x[:, 0], np.nan)
+                else:
+                    k = np.searchsorted(z, tz) - 1          # z[k] < tz <= z[k + 1]
+                    w1 = np.float32((z[k + 1] - tz) / (z[k + 1] - z[k]))
+                    w2 = np.float32(1) - w1
+                    p, q = x[:, k], x[:, k + 1]
+                    y = np.where(np.isnan(p), np.where(w2 >= 0.5, q, np.nan),
+                                 np.where(np.isnan(q), np.where(w1 >= 0.5, p, np.nan),
+                                          p * np.float64(w1) + q * np.float64(w2)))
+                ys.append(np.where((top <= tz) & (tz <= bot), y, np.nan))
+            cell = f"cell{x.shape[2]}"
+            if cell not in dst.dimensions:
+                dst.createDimension(cell, x.shape[2])
+            y = np.stack(ys, axis=1)
+            last = src[n].dimensions[2].startswith("nz")       # FESOM 2.0: (time, cell, level)
+            dims = ("time", cell, "lev") if last else ("time", "lev", cell)
+            o = dst.createVariable(n, "f8", dims, fill_value=netCDF4.default_fillvals["f8"])
+            o[:] = np.ma.masked_invalid(np.swapaxes(y, 1, 2) if last else y)
 
 
 REFERENCES.update({f"mesh_level_{s}": (lambda s: lambda a, i, o: mesh_level_stat(a, i, o, s))(s)

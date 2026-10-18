@@ -17,6 +17,12 @@ writes into OUTDIR, each atomically (temporary name, then rename) and never over
                  elem), float32; levels below each node's / element's bottom stored as 0;
 - fesom_pi_data_v20.nc  the same values in FESOM 2.0's layout: temp, salt (time, nod2, nz1),
                  u, v (time, elem, nz1) (horizontal dimension before the levels);
+- fesom_pi_cav/  the pi mesh with ice-shelf cavities added: ulevels_nod2D / ulevels (first wet
+                 layer, 1-based) = CAV_TOP for the nodes south of CAV_LAT that are at least
+                 CAV_MIN_LEVELS interfaces deep and for the elements whose nodes are all such nodes,
+                 1 elsewhere (synthetic: no pi mesh has cavities);
+- fesom_pi_cav_data.nc  fesom_pi_data's fields on fesom_pi_cav, (time, nz1, nod2) layout, 0 above
+                 each cell's top as well as below its bottom;
 - r1x1_edges.nc  a 1 deg lon-lat grid with centres on integer degrees (lon -180..179, lat -90..90),
                  so cell centres fall exactly on AR6 outlines, at -180 and at the poles; 2 steps.
 The Zarr copies of fesom_pi_data (.zarr2, .zarr3 and _tiny.zarr2, whose chunks split nod2/elem
@@ -48,6 +54,9 @@ DT = 3600                               # model step: FESOM stamps a mean one st
 NT = 24
 NC_PARTS = 8                            # NetCDF chunks: one step, 1/8 of the cells, all levels (--mem 1M)
 MESH_FILES = ("fesom.mesh.diag.nc", "pi_griddes_nodes.nc", "pi_griddes_elements.nc")
+CAV_LAT = -65.0                         # fesom_pi_cav: cavities south of this latitude (degrees)
+CAV_MIN_LEVELS = 10                     # ... at nodes at least this many interfaces deep
+CAV_TOP = 4                             # ... whose first wet layer is this one (1-based)
 
 
 def done(path):
@@ -110,6 +119,29 @@ def deg_mesh(tmp):
             out[:] = lonlat[i]
 
 
+def cavity_tops(m):
+    """(ulevels_nod2D, ulevels) of fesom_pi_cav from the mesh.diag dataset m."""
+    lat = np.rad2deg(m["nodes"][1])
+    deep = (lat < CAV_LAT) & (np.asarray(m["nlevels_nod2D"][:]) >= CAV_MIN_LEVELS)
+    u_nod = np.where(deep, CAV_TOP, 1).astype("i4")
+    tri = m["elem"][:] - 1
+    u_elem = np.where(deep[tri].all(axis=0) & (np.asarray(m["nlevels"][:]) >= CAV_MIN_LEVELS),
+                      CAV_TOP, 1).astype("i4")
+    return u_nod, u_elem
+
+
+def cav_mesh(tmp):
+    dst = os.path.join(tmp, "fesom.mesh.diag.nc")
+    shutil.copy2(os.path.join(MESH, "fesom.mesh.diag.nc"), dst)
+    with netCDF4.Dataset(dst, "a") as m:
+        u_nod, u_elem = cavity_tops(m)
+        for name, dim, val, long in (("ulevels_nod2D", "nod_n", u_nod, "first wet layer below nodes"),
+                                     ("ulevels", "elem_n", u_elem, "first wet layer below elements")):
+            v = m.createVariable(name, "i4", (dim,))
+            v.long_name = long
+            v[:] = val
+
+
 # ---------------------------------------------------------------- data
 def month_ends():
     """Seconds since 2000-01-01 at the end of each of the NT months, minus one model step."""
@@ -168,8 +200,9 @@ def v_vel(lon, lat, z, m):
     return 0.05 * np.sin(2 * lo) * np.cos(la) * np.exp(-z / 1500) + 0.01 * np.sin(la) * season(m, 3)
 
 
-def fesom_data(tmp, order_node=ORDER_NODE, order_elem=ORDER_ELEM):
+def fesom_data(tmp, order_node=ORDER_NODE, order_elem=ORDER_ELEM, cavities=False):
     with netCDF4.Dataset(os.path.join(MESH, "fesom.mesh.diag.nc")) as m:
+        u_nod, u_elem = cavity_tops(m) if cavities else (1, 1)
         lon, lat = np.rad2deg(m["nodes"][:])
         tri = m["elem"][:] - 1                      # (3, elem), 1-based in the file
         z = -np.asarray(m["Z"][:])                  # layer mid-depths, positive down
@@ -182,6 +215,8 @@ def fesom_data(tmp, order_node=ORDER_NODE, order_elem=ORDER_ELEM):
     assert ((area[:nz1] > 0) == (k[:, None] < nlev_n[None, :] - 1)).all(), "nod_area vs nlevels_nod2D"
     wet_n = k[None, :] < nlev_n[:, None] - 1        # (nod2, nz1)
     wet_e = k[None, :] < nlev_e[:, None] - 1        # (elem, nz1)
+    wet_n &= k[None, :] >= np.reshape(u_nod, (-1, 1)) - 1   # below the top (cavities)
+    wet_e &= k[None, :] >= np.reshape(u_elem, (-1, 1)) - 1
     elon, elat = lonlat_elem(lon, lat, tri)
     t = month_ends()
 
@@ -253,3 +288,5 @@ atomic_dir("fesom_pi_deg", deg_mesh)
 atomic_file("fesom_pi_data.nc", fesom_data)
 atomic_file("fesom_pi_data_v20.nc", lambda tmp: fesom_data(tmp, ORDER_NODE_V20, ORDER_ELEM_V20))
 atomic_file("r1x1_edges.nc", edges_grid)
+atomic_dir("fesom_pi_cav", cav_mesh)
+atomic_file("fesom_pi_cav_data.nc", lambda tmp: fesom_data(tmp, cavities=True))

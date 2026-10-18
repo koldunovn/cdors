@@ -38,6 +38,12 @@ pub trait FoldKernel: Send + Sync {
     /// Dimension folded in order: [`DimRole::Time`] (time statistics: cells in parallel) or
     /// [`DimRole::Horizontal`] (field statistics: timesteps in parallel).
     fn fold_dim(&self) -> DimRole;
+    /// Whether the kernel folds the dimensions of `role`: those of [`FoldKernel::fold_dim`] by
+    /// default; a kernel may fold several roles at once (`volint`: levels and cells), its tiles
+    /// then arrive in C order over all folded dimensions.
+    fn folds(&self, role: DimRole) -> bool {
+        role == self.fold_dim()
+    }
     /// Starts the running state of one lane of variable `var`; `lane` is the lane's box with the
     /// folded dimension spanning the whole extent.
     fn start(&self, var: usize, lane: &TileBox) -> Box<dyn FoldState>;

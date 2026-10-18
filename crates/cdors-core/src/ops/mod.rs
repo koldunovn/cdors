@@ -32,6 +32,7 @@ pub mod runstat;
 pub mod sample;
 pub mod select;
 pub mod timstat;
+pub mod vertical;
 pub mod ymonarith;
 
 use crate::chain::OpNode;
@@ -685,10 +686,27 @@ fn build_registry() -> Vec<OpSpec> {
     for (name, d) in fldstat::operators() {
         let args = if fldstat::takes_zonaldes(&name) {
             vec![opt("zonaldes", Str, "none")]
+        } else if name == "vertint" {
+            vec![opt("z0/z1", Str, "none")]
         } else {
             vec![]
         };
         r.push(op(&name, one, 1, args, Reduction, &d, true));
+        if name == "vertint" {
+            // cdo has no vertint
+            r.last_mut().expect("pushed").origin = "cdors";
+        }
+    }
+    // vertical geometry
+    for (name, d, origin) in vertical::operators() {
+        let (args, class) = if name == "intlevel" {
+            (vec![args_of("levels", Str)], WholeExtent)
+        } else {
+            (vec![opt("z0/z1", Str, "none")], Reduction)
+        };
+        let mut o = op(name, one, 1, args, class, d, true);
+        o.origin = origin;
+        r.push(o);
     }
     // TODO(Task 11): origin "cdors" once OpSpec has an origin field
     for (name, d) in fldhist::operators() {
@@ -907,6 +925,7 @@ pub fn describe(node: &OpNode, inputs: Vec<Desc>, srcs: &mut Sources) -> Result<
         n if ymonarith::handles(n) => return ymonarith::describe(node, inputs),
         n if regions::handles(n) => return regions::describe(node, inputs, srcs),
         n if regstat::handles(n) => return regstat::describe(node, inputs, srcs),
+        n if vertical::handles(n) => return vertical::describe(node, inputs, srcs),
         _ => {}
     }
     match spec.class {

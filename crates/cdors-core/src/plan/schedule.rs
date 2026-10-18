@@ -314,7 +314,6 @@ pub fn schedule(
             budget,
         ));
     }
-    let fold_role = kernel.fold_dim();
     // largest wave state of long-lived lanes; largest lane state and largest total state of
     // short-lived lanes
     let (mut long_state, mut short_lane, mut short_all) = (0u64, 0u64, 0u64);
@@ -322,7 +321,7 @@ pub fn schedule(
     for (vi, sv) in stage.vars.iter().enumerate() {
         let nd = sv.dims.len();
         let segs = &sv.tiling.segments;
-        let fold: Vec<bool> = sv.dims.iter().map(|d| d.role == fold_role).collect();
+        let fold: Vec<bool> = sv.dims.iter().map(|d| kernel.folds(d.role)).collect();
         let full = TileBox {
             ranges: sv.dims.iter().map(|d| 0..d.size).collect(),
         };
@@ -478,7 +477,10 @@ pub fn schedule(
             waves.push(a..nlanes);
             vs.waves = waves;
             vs.out_chunks = Some(lane_chunks(sv, &vs));
-            let held = vs.waves.iter().map(|w| lane_out[w.clone()].iter().sum::<u64>());
+            let held = vs
+                .waves
+                .iter()
+                .map(|w| lane_out[w.clone()].iter().sum::<u64>());
             wave_hold = wave_hold.max(held.max().unwrap_or(0));
         }
         let wave_state = vs
@@ -729,18 +731,33 @@ mod tests {
     fn output_chunks_span_lanes_within_waves() {
         // W4 ydaymean in small: 48 lanes of 8 cells in two waves -> one chunk per wave
         let vs = sched(&[100, 384], &[1, 8], &[0..24, 24..48]);
-        assert_eq!(widen_in_waves(&[100, 384], &vs, &[1, 8], &[1, 384]), vec![1, 192]);
+        assert_eq!(
+            widen_in_waves(&[100, 384], &vs, &[1, 8], &[1, 384]),
+            vec![1, 192]
+        );
         // a smaller usual chunk: the largest multiple of the lane that divides the waves
-        assert_eq!(widen_in_waves(&[100, 384], &vs, &[1, 8], &[1, 100]), vec![1, 96]);
+        assert_eq!(
+            widen_in_waves(&[100, 384], &vs, &[1, 8], &[1, 100]),
+            vec![1, 96]
+        );
         // W4 timpctl in small: waves of 5 lanes, the last one shorter
         let vs = sched(&[9, 96], &[1, 4], &[0..5, 5..10, 10..15, 15..20, 20..24]);
-        assert_eq!(widen_in_waves(&[9, 96], &vs, &[1, 4], &[1, 96]), vec![1, 20]);
+        assert_eq!(
+            widen_in_waves(&[9, 96], &vs, &[1, 4], &[1, 96]),
+            vec![1, 20]
+        );
         // two horizontal dimensions: rows of lanes, two rows per wave
         let vs = sched(&[10, 8, 18], &[1, 2, 3], &[0..12, 12..24]);
-        assert_eq!(widen_in_waves(&[10, 8, 18], &vs, &[1, 2, 3], &[1, 8, 18]), vec![1, 4, 18]);
+        assert_eq!(
+            widen_in_waves(&[10, 8, 18], &vs, &[1, 2, 3], &[1, 8, 18]),
+            vec![1, 4, 18]
+        );
         // a wave boundary inside a row: x stays split where the waves cut it
         let vs = sched(&[10, 8, 18], &[1, 2, 3], &[0..9, 9..24]);
         assert!(!chunks_within_waves(&[10, 8, 18], &vs, &[1, 2, 18]));
-        assert_eq!(widen_in_waves(&[10, 8, 18], &vs, &[1, 2, 3], &[1, 8, 18]), vec![1, 2, 9]);
+        assert_eq!(
+            widen_in_waves(&[10, 8, 18], &vs, &[1, 2, 3], &[1, 8, 18]),
+            vec![1, 2, 9]
+        );
     }
 }

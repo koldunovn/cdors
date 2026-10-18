@@ -707,14 +707,14 @@ The harness gains three capabilities (Task 2), so that every check in this plan 
 - Create: `crates/cdors-core/src/ops/vertical.rs`.
 - Modify: `crates/cdors-core/src/ops/mod.rs`, `tests/ref/reference.py`, `tests/cases.txt`.
 
-- [ ] **`vertmean`, `vertsum`, `vertstd` on a mesh** skip each cell's dry levels. Without a mesh they behave exactly
+- [x] **`vertmean`, `vertsum`, `vertstd` on a mesh** skip each cell's dry levels. Without a mesh they behave exactly
       as now.
-- [ ] **`vertint[,z0/z1]`** = Σ value·dz, with layers cut at z0 and z1.
-- [ ] **`volint[,z0/z1]`** = Σ value·area(level)·dz, and **`volmean`** = volint / volume. This is deliberately not
+- [x] **`vertint[,z0/z1]`** = Σ value·dz, with layers cut at z0 and z1.
+- [x] **`volint[,z0/z1]`** = Σ value·area(level)·dz, and **`volmean`** = volint / volume. This is deliberately not
       `fldmean -vertmean`. Folding order is fixed.
-- [ ] **`intlevel`** keeps cdo semantics and gives NaN below each cell's bottom. **`bottomvalue`** keeps cdo
+- [x] **`intlevel`** keeps cdo semantics and gives NaN below each cell's bottom. **`bottomvalue`** keeps cdo
       semantics and uses each cell's own bottom level.
-- [ ] Write tests:
+- [x] Write tests:
   - `volmean`, `volint,0/700` and the OHC recipe vs `ref:nereus.volume_mean` and `ref:nereus.heat_content` on
     `fesom_pi_data`;
   - an analytic field with a known integral;
@@ -723,7 +723,25 @@ The harness gains three capabilities (Task 2), so that every check in this plan 
   - `bottomvalue` vs NumPy;
   - a synthetic cavity case (top level > 1);
   - the planner variant.
-- [ ] Run tests.
+- [x] Run tests.
+- ➕ `FoldKernel::folds(role)` (default: `fold_dim`): a kernel may fold several roles; `volint`
+  folds levels and cells in one lane, tiles in C order over both. Its fold keeps one accumulator
+  per (timestep, level, grid row), each fed its cells ascending, and adds them level by level at
+  the end, so the planner variant is bit-identical. Off a mesh `volint` takes the grid's cell
+  areas and the axis bounds (checked by hand on r36x18_2lev with `cdo genlevelbounds`: equal to
+  NumPy to float32 precision; no fixture has level bounds).
+- ➕ `bottomvalue` is a `vert*` fold whose weights rank the levels (`RankAcc`: the valid value
+  of the largest rank): cdo's direction off a mesh (level order, `positive = down`), the mesh
+  level on a mesh. `vertint` counts only levels of non-zero thickness in the range (`CutSumAcc`).
+- ➕ Fixture `fesom_pi_cav/` + `fesom_pi_cav_data.nc` (tests/make_fesom_fixtures.py): the pi
+  mesh with `ulevels_nod2D`/`ulevels` = 4 at the 354 nodes (549 elements) south of 65°S that
+  are at least 10 interfaces deep; generated into this task's target fixtures (the shared
+  fixtures directory needs `make_fixtures.sh` once more).
+- ⚠️ nereus selects whole layers by mid-depth, so the nereus rows use 0/680 (an interface);
+  `volint,0/700` (a cut layer) and the OHC recipe at 700 m are checked against NumPy. nereus is
+  given the mesh's own `nod_area`, so its R = 6371 km does not enter.
+- ⚠️ An analytic constant needs `-addc,1 -mulc,1e-30`: cdo's `mulc,0` of a missing value is 0
+  (MULM), so `-mulc,0` would erase the dry levels.
 
 ### Task 10: Sampling of scalar fields: `selpoints` and `transect`
 

@@ -171,8 +171,44 @@ valid). After `-setgrid,<mesh spec>` cdors uses the mesh:
   a grid description, would weight every level by one 2-D area. `--plan` names the weights
   (`area_weights: "mesh_per_level"`) and counts the per-level areas in its memory estimate
   (`memory.parts.mesh_weights`).
-- **`zon*` and `vert*` of variables with levels on a mesh are refused** (`not_implemented`)
-  until latitude bands and per-cell bottoms exist; 2-D variables behave as without a mesh.
+- **`vert*` use the mesh's layers.** `vertmean`, `vertavg`, `vertstd`, `vertvar` (and their `1`
+  forms) weight level k by the thickness of the full layer between the mesh interfaces k and
+  k + 1 (FESOM2 `zbar`), normalised as cdo normalises layer weights; `vertint` multiplies by it.
+  cdo, without layer bounds in the file, weights all levels equally. Dry levels are missing and
+  drop out, so each cell is averaged over its own wet levels. **Full layers only**: FESOM2's
+  partial bottom cells (`use_partial_cell`) and zstar layer thickness are not modelled. The
+  thickness-weighted operators refuse variables on the interfaces (`nz`).
+- **`bottomvalue` takes each cell's own bottom**: the value of its deepest wet level (the deeper
+  mesh level is the bottom, whatever the axis's `positive` attribute says). cdo takes the deepest
+  stored value of the column, the 0 that FESOM2 writes into the ground.
+- **`intlevel` does not interpolate into the ground.** A target above a cell's top interface or
+  below its bottom interface is missing. cdo's rule alone (a missing neighbour level is replaced
+  by the other one if that one's weight is at least 0.5) would carry the deepest wet value up to
+  half a layer into the ground.
+- **`zon*` of variables with levels on a mesh are refused** (`not_implemented`); 2-D variables
+  behave as without a mesh.
+
+## Vertical geometry
+
+- **`vertint` (cdo has none)** is Σ thickness·value over the valid values, the thickness from the
+  layer bounds of the vertical axis (1 without bounds, with the `equal_vertical_weights`
+  warning), on a mesh from its interfaces. `vertint,<z0>/<z1>` cuts the layers at the depths z0
+  and z1 (positive down: absolute values of the bounds; metres on a mesh) and counts the part of
+  each layer inside the range; without layer bounds it is refused (`no_coordinates`). A cell
+  without a valid value inside the range is missing.
+- **`volint`, `volmean`, `volint,<z0>/<z1>`, `volmean,<z0>/<z1>` (cdors).** Per timestep
+  Σ area·dz·value over all cells and levels with valid values, and that divided by their volume
+  Σ area·dz; areas per level on a mesh place that has them (FESOM2 nodes: `nod_area[k]`),
+  otherwise the cell areas of `fldint`. `volmean` is not `fldmean -vertmean`: every wet cell
+  counts with its volume. Variables without levels are refused (`unsupported_dimension`).
+- **`intlevel`** interpolates as cdo does (float32 weights, cdo's missing-value rule, targets
+  outside the levels missing unless `extrapolate=true`), from positional targets or `level=`;
+  `zdescription=` and `zvarname=` are not implemented. Every variable with more than one level
+  is interpolated on its own vertical axis (cdo: the variables on the first z-axis with more than
+  one level, or with as many levels). The output axis has the target values and no bounds.
+- **`bottomvalue`** reduces every variable with levels (cdo: only those on the first z-axis with
+  more than one level, the others are copied) and copies a file without levels (cdo aborts with
+  "No processable variable found!").
 
 ## GRIB (gribscan references)
 

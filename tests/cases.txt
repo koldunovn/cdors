@@ -220,10 +220,10 @@ json:(.out.places | map([.name, .size, (.area_sum | . * 1e-3 | round), (.lon_ran
 json:(.out.places | map([.name, .size, (.area_sum | . * 1e-3 | round), (.lon_range + .lat_range | map(. * 1e6 | round)), .wet_levels.min, .wet_levels.max])) == [["nodes", 3140, 339720478580, [-179963006, 179958769, -78516841, 89404840], 4, 45], ["elements", 5839, 339720478580, [-179936944, 179935174, -77865513, 89319950], 4, 45]] and .out.places[0].area_per_level.levels == 47 and .out.memory.lazy_loaded_bytes == 0 and .out.vertical.levels == 47 and .out.vertical.interfaces == [-6250, 0] and .out.topology[0].name == "elem_nodes" and (.out.cache.path | endswith(".zarr")) and (.out.units | startswith("degrees")) | --json mesh info fesom:{fix}/fesom_pi_deg | r36x18_std
 json:.out.units | startswith("radians (given: units=rad)") | --json mesh info fesom:{fix}/fesom_pi,units=rad | r36x18_std
 # -setgrid,fesom: the 2-D variables use the mesh's node areas (--plan says so); a grid that fits no
-# place is grid_mismatch; zon*/vert* of 3-D variables on a mesh are refused (Tasks 8, 9)
+# place is grid_mismatch; zon* of 3-D variables on a mesh are refused
 json:.out.stages[0].kernel.area_weights | map(.area_weights) == ["mesh", "mesh"] | --json --plan -fldmean -selname,a_ice,m_ice -setgrid,fesom:{fix}/fesom_pi_deg {in} {out} | fesom_pi_data
 err:grid_mismatch | -fldmean -setgrid,fesom:{fix}/fesom_pi {in} | hpz2_noleap
-err:not_implemented | -vertmean -selname,temp -setgrid,fesom:{fix}/fesom_pi {in} | fesom_pi_data
+err:not_implemented | -zonmean,zonal_10 -selname,temp -setgrid,fesom:{fix}/fesom_pi {in} | fesom_pi_data
 err:bad_arguments | -fldmean -setgrid,fesom:{fix}/fesom_pi,unit=rad {in} | fesom_pi_data
 # fldint (cdo's Σ area·value) on cdo's grids
 ulp      | -fldint {in}                                | r36x18_std
@@ -376,3 +376,48 @@ err:bad_arguments  | -transect,0,0,180,0 -setgrid,fesom:{fix}/fesom_pi {in}     
 err:bad_arguments  | -transect,1,2,3 {in}                                                     | r36x18_std
 err:bad_arguments  | -selpoints,lon=1_lat=95 {in}                                              | r36x18_std
 err:no_coordinates | -transect,0,0,10,10 {in}                                                  | nocoord_360
+# Task 9: vertical geometry. Off a mesh vert* are unchanged (vertmean row above); bottomvalue and
+# intlevel vs cdo (bottom from the level order and positive=down: 100000 Pa on r36x18_2lev, the
+# deepest stored level (0 in the ground) on fesom_pi_data without a mesh; intlevel outside the
+# levels missing, extrapolate=true the nearest level)
+exact    | -bottomvalue {in}                           | r36x18_2lev fesom_pi_data
+exact    | -intlevel,80000,90000,92500,100000 {in}     | r36x18_2lev
+exact    | -intlevel,10,100,700,6125,6200 -selname,temp,u {in} | fesom_pi_data
+exact    | -intlevel,level=1,700,6200,extrapolate=true -selname,salt {in} | fesom_pi_data_v20
+# On the FESOM2 mesh (-setgrid,fesom:) vs NumPy (reference.py mesh_*): vert* weigh the mesh's
+# layer thickness (|zbar| differences) over each cell's wet levels; vertint,z0/z1 cuts the layers
+# at z0 and z1 (the part of the 680-790 m layer above 700 m counts); volint = sum of nod_area[k]
+# (elements: elem_area) x dz x value, volmean = volint / wet volume; OHC = 4.09e6 x volint
+ref:numpy.mesh_vert | -vertmean -selname,temp,u -setgrid,fesom:{fix}/fesom_pi {in} | fesom_pi_data fesom_pi_data_v20
+ref:numpy.mesh_vert | -vertstd -selname,salt -setgrid,fesom:{fix}/fesom_pi {in} | fesom_pi_data
+ref:numpy.mesh_vert | -vertsum -selname,temp -setgrid,fesom:{fix}/fesom_pi_deg {in} | fesom_pi_data
+ref:numpy.mesh_vert | -vertint,0/700 -selname,temp,v -setgrid,fesom:{fix}/fesom_pi {in} | fesom_pi_data fesom_pi_data_v20
+ref:numpy.mesh_vol | -volmean -selname,temp,u -setgrid,fesom:{fix}/fesom_pi {in} | fesom_pi_data fesom_pi_data_v20
+ref:numpy.mesh_vol | -volint,0/700 -selname,temp,salt -setgrid,fesom:{fix}/fesom_pi {in} | fesom_pi_data fesom_pi_data_v20
+ref:numpy.mesh_vol | -mulc,4.09e6 -volint,0/700 -selname,temp -setgrid,fesom:{fix}/fesom_pi {in} | fesom_pi_data
+# vs nereus (volume_mean, heat_content with rho x cp = 1000 x 4090) with the mesh's nod_area:
+# nereus takes whole layers by their mid-depth, so its ranges end on an interface (680 m)
+ref:nereus.nereus_volume_mean | -volmean -selname,temp -setgrid,fesom:{fix}/fesom_pi {in} | fesom_pi_data
+ref:nereus.nereus_volume_mean | -volmean,0/680 -selname,temp -setgrid,fesom:{fix}/fesom_pi {in} | fesom_pi_data
+ref:nereus.nereus_heat_content | -mulc,4.09e6 -volint,0/680 -selname,temp -setgrid,fesom:{fix}/fesom_pi {in} | fesom_pi_data
+# a field that is 1 in the water (temp x 1e-30 + 1; mulc,0 would keep cdo's 0 x missing = 0):
+# vertint,0/700 is the water depth above 700 m, exactly
+ref:numpy.analytic_vertint:exact | -vertint,0/700 -addc,1 -mulc,1e-30 -setgrid,fesom:{fix}/fesom_pi -selname,temp,u {in} | fesom_pi_data
+# bottomvalue: each cell's deepest wet level; intlevel: cdo's interpolation, missing above each
+# cell's top and below its bottom interface (not the value half a layer into the ground)
+ref:numpy.mesh_bottomvalue:exact | -bottomvalue -selname,temp,u -setgrid,fesom:{fix}/fesom_pi {in} | fesom_pi_data fesom_pi_data_v20
+ref:numpy.mesh_intlevel | -intlevel,10,100,700,3000,6200 -selname,temp,u -setgrid,fesom:{fix}/fesom_pi {in} | fesom_pi_data fesom_pi_data_v20
+# ice-shelf cavities (fesom_pi_cav: the first wet layer is 4 at 354 nodes south of 65 S): the
+# levels above the top are dry too
+ref:numpy.mesh_vert | -vertmean -selname,temp -setgrid,fesom:{fix}/fesom_pi_cav {in} | fesom_pi_cav_data
+ref:numpy.analytic_vertint:exact | -vertint,0/700 -addc,1 -mulc,1e-30 -setgrid,fesom:{fix}/fesom_pi_cav -selname,temp,u {in} | fesom_pi_cav_data
+ref:numpy.mesh_vol | -volmean,0/700 -selname,temp,u -setgrid,fesom:{fix}/fesom_pi_cav {in} | fesom_pi_cav_data
+ref:numpy.mesh_bottomvalue:exact | -bottomvalue -selname,temp -setgrid,fesom:{fix}/fesom_pi_cav {in} | fesom_pi_cav_data
+ref:numpy.mesh_intlevel | -intlevel,5,20,700 -selname,temp -setgrid,fesom:{fix}/fesom_pi_cav {in} | fesom_pi_cav_data
+# --plan: volmean lists the per-level areas (47 x 3140 x 8 B) and the layers; origin cdors;
+# refusals: 2-D variables, layers without bounds off a mesh, a bad range
+json:.out.memory.parts.mesh_weights == 1180640 and .out.stages[0].kernel.mesh_weights[0].levels == 47 and .out.stages[0].kernel.area_weights[0].layers.thickness == 700 | --json --plan -volmean,0/700 -selname,temp -setgrid,fesom:{fix}/fesom_pi {in} {out} | fesom_pi_data
+json:[.out.operators[] | select(.name == "vertint" or .name == "volint" or .name == "volmean") | .origin] == ["cdors", "cdors", "cdors"] | --json ops | r36x18_std
+err:unsupported_dimension | -volmean -setgrid,fesom:{fix}/fesom_pi {in} | fesom_pi_data
+err:no_coordinates | -vertint,0/700 -selname,temp {in}  | fesom_pi_data
+err:bad_arguments  | -volint,700/0 -selname,temp -setgrid,fesom:{fix}/fesom_pi {in} | fesom_pi_data

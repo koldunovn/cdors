@@ -12,7 +12,7 @@
 #   <f>_ymonmean / _ydaymean / _yseasmean   climatologies of r36x18_std and hpz2_noleap (cdo)
 #   weights_con_r36x18_r18x9.nc  SCRIP weights of cdo gencon,r18x9 for r36x18_std (remap,<grid>,<weights> rows)
 #   nocoord_360   unst_360 without horizontal coordinates (FESOM-like; written by xarray)
-#   fesom_pi/ fesom_pi_deg/ fesom_pi_data r1x1_edges   tests/make_fesom_fixtures.py (FESOM_PYTHON; details
+#   fesom_pi/ fesom_pi_deg/ fesom_pi_data fesom_pi_cav/ fesom_pi_cav_data r1x1_edges   tests/make_fesom_fixtures.py (FESOM_PYTHON; details
 #                 in its header): the pi mesh directory (radians, nod_n), the same mesh.diag in ng5's
 #                 layout (degrees, nod2, ...), 24 monthly FESOM2-layout fields on pi (temp, salt (time,
 #                 nod2, nz1), a_ice, m_ice (time, nod2), u, v (time, elem, nz1); 0 below the bottom),
