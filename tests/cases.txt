@@ -348,3 +348,31 @@ ref:numpy.tonodes | -tonodes -sellevel,2.5,95,975,3025,6125 -selname,u,v -setgri
 ref:numpy.tonodes | -tonodes -selname,u,v -setgrid,fesom:{fix}/fesom_pi_deg {in}                | fesom_pi_data_v20
 json:.out.stages[1].kernel.area_weights[0].area_weights == "mesh_per_level" | --json --plan -fldmean -sellevel,25,975 -tonodes -selname,u -setgrid,fesom:{fix}/fesom_pi {in} {out} | fesom_pi_data
 err:unsupported_grid | -tonodes -selname,temp -setgrid,fesom:{fix}/fesom_pi {in}               | fesom_pi_data
+#
+# Task 10: sampling (selpoints, transect; cdors_mesh::sample). transect on the pi mesh vs
+# reference.py transect (cdors' documented path sampling, nn by nereus' cKDTree on unit vectors,
+# linear by brute force over all triangles; the elements by nn, linear_as_nn), both dimension
+# orders, levels below the bottom of any sampled cell missing (masks must match), bottom_depth;
+# a path through the pole (a waypoint on it), across +-180, from a GeoJSON file, the default step;
+# linear values in f64 from float32 data, measured max rel diff 6e-8
+ref:nereus.transect | -transect,-65,-55,-60,-65,step=50 -setgrid,fesom:{fix}/fesom_pi {in}    | fesom_pi_data fesom_pi_data_v20
+ref:nereus.transect | -transect,-65,-55,-60,-65 -selname,temp,a_ice,u -setgrid,fesom:{fix}/fesom_pi_deg {in} | fesom_pi_data
+ref:numpy.transect  | -transect,10,80,-170,80,method=linear -selname,temp,salt,a_ice,u -setgrid,fesom:{fix}/fesom_pi {in} | fesom_pi_data fesom_pi_data_v20
+ref:nereus.transect | -transect,-62,-60,-60,-65,step=20 -selname,temp -setgrid,fesom:{fix}/fesom_pi {in} | fesom_pi_data
+ref:nereus.transect | -transect,0,80,0,90,180,80,step=100 -setgrid,fesom:{fix}/fesom_pi {in}  | fesom_pi_data
+ref:nereus.transect | -transect,170,-60,-170,-65,-150,-70 -setgrid,fesom:{fix}/fesom_pi {in} | fesom_pi_data
+ref:nereus.transect | -transect,file={fix}/samples/drake.geojson -selname,temp,a_ice -setgrid,fesom:{fix}/fesom_pi_deg {in} | fesom_pi_data
+# selpoints vs cdo remapnn,lon=<x>_lat=<y> per station (reference.py selpoints_cdo; a missing cell
+# of hpz2_noleap stays missing), and with linear weights on the mesh
+ref:numpy.selpoints_cdo:exact | -selpoints,lon=12.3_lat=21.7,lon=-170.4_lat=-80.2,lon=359_lat=89.9 -selname,tas,pr {in} | r36x18_std hpz2_noleap
+ref:numpy.selpoints_cdo:exact | -selpoints,file={fix}/samples/stations.csv {in}               | r36x18_std hpz2_noleap unst_360
+ref:numpy.selpoints | -selpoints,file={fix}/samples/stations.csv,method=linear -setgrid,fesom:{fix}/fesom_pi {in} | fesom_pi_data fesom_pi_data_v20
+# one weight matrix per place (24 points on the nodes and on the elements) in --plan; warnings
+# points_outside (a path over Africa) and linear_as_nn (elements), in --plan too
+json:(.out.stages[0].kernel.mesh_weights | map([.source, .weights, .rows, .links])) == [["nodes", "nn", 24, 24], ["elements", "nn", 24, 24]] | --json --plan -transect,-65,-55,-60,-65,step=50 -setgrid,fesom:{fix}/fesom_pi {in} {out} | fesom_pi_data
+json:any(.stderr[]; .warning == "points_outside" and .points == 12 and .of == 18) | --json -transect,-30,0,20,40,method=linear -selname,temp -setgrid,fesom:{fix}/fesom_pi {in} {out} | fesom_pi_data
+json:(.out.warnings | map(.warning)) == ["linear_as_nn"] and .out.stages[0].kernel.mesh_weights[0].weights == "nn" | --json --plan -selpoints,lon=-63_lat=-58,method=linear -selname,u -setgrid,fesom:{fix}/fesom_pi {in} {out} | fesom_pi_data
+err:bad_arguments  | -transect,0,0,180,0 -setgrid,fesom:{fix}/fesom_pi {in}                    | fesom_pi_data   # antipodal
+err:bad_arguments  | -transect,1,2,3 {in}                                                     | r36x18_std
+err:bad_arguments  | -selpoints,lon=1_lat=95 {in}                                              | r36x18_std
+err:no_coordinates | -transect,0,0,10,10 {in}                                                  | nocoord_360

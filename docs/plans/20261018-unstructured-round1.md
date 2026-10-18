@@ -733,29 +733,40 @@ The harness gains three capabilities (Task 2), so that every check in this plan 
 - Create: `crates/cdors-core/src/ops/sample.rs`.
 - Modify: `crates/cdors-core/src/ops/mod.rs`, `tests/ref/reference.py`, `tests/cases.txt`.
 
-- [ ] **`selpoints,file=<csv: name,lon,lat>|lon=…_lat=…[,method=nn|linear]`** gives dimension `station` with
+- [x] **`selpoints,file=<csv: name,lon,lat>|lon=…_lat=…[,method=nn|linear]`** gives dimension `station` with
       `station_name`.
-- [ ] **`transect,lon0,lat0,lon1,lat1[,…][,step=<km>][,method=nn|linear]`** or `file=<geojson LineString>`, for
+- [x] **`transect,lon0,lat0,lon1,lat1[,…][,step=<km>][,method=nn|linear]`** or `file=<geojson LineString>`, for
       scalar fields.
   - The default step is the median cell spacing along the path.
   - It samples model levels; there is no vertical interpolation.
   - It gives NaN below the bottom and outputs `bottom_depth(distance)`, `lon(distance)` and `lat(distance)`.
   - It takes one path per call.
-- [ ] Write tests:
+- [x] Write tests:
   - a linear analytic field is reproduced exactly by `method=linear`;
   - `transect` on `fesom_pi_data` vs `ref:nereus.transect` for `nn`;
   - `selpoints` vs `remapnn,lon=…_lat=…` on regular grids;
   - a NaN-below-bottom row;
   - a path along a meridian through the pole;
   - the planner variant.
-- [ ] Run tests.
+- [x] Run tests.
 - ➕ Library half done (Task 10 agent): `cdors-mesh/src/sample.rs` (stations from CSV or
   `lon=…_lat=…`, waypoints and GeoJSON LineStrings, equal-arc sampling per segment, the default
   step, `nn`/`linear` weights as `Csr`, wet levels and `bottom_depth` of sample points),
   `KdTree::nearest_k_xyz`, unit tests (`sample.rs`, `cdors-core/tests/sample_mesh.rs` on pi and
   hpz2), and the references `transect`, `selpoints`, `selpoints_cdo` in `tests/ref/reference.py`
-  (checked by hand against the library: identical rows, steps and bottom depths). Open: the
-  operators (`ops/sample.rs` on `RemapWeights::from_csr`, after Task 5) and the harness rows.
+  (checked by hand against the library: identical rows, steps and bottom depths).
+- ➕ Operators (`ops/sample.rs`): weights computed while describing, one `from_csr` matrix per
+  input place with `MissingRule::AllOrNothing` (a value is missing if any cell of its point is
+  missing or dry there; the point's wet-level intersection masks the output as well), pruned to
+  the cells the weights read, `mesh_weights` in `--plan`. Warnings `points_outside` (stderr JSON,
+  `--plan` `warnings[]`, attribute) and `linear_as_nn`: a mesh place without triangles of its own
+  (FESOM2 elements, a subset of the nodes) is sampled by `nn` (decision 2026-10-18; Delaunay stays
+  for built-in grids). Layout: `station` with `lon`, `lat`, `station_name`; `distance(distance)`
+  (km) with `lon`, `lat`, `bottom_depth` (the mesh's first place) and `bottom_depth_<dim>`
+  (others), written through `FixedGrid::aux`/`labels` (new: variables along an operator's grid);
+  attributes `sampling`, `sampling_method`, `transect_path`, `transect_step_km`,
+  `transect_step_source`, `points_outside`. Fixtures `samples/stations.csv` and
+  `samples/drake.geojson` (`make_fixtures.sh`). 17 rows (46 cases with their fixtures) in `cases.txt`.
 - ⚠️ "A linear analytic field is reproduced exactly": on a sphere no weights of three cells that
   sum to 1 reproduce a field linear in x, y, z at the point itself. `linear` is barycentric in
   the plane of the triangle (as FESOM2's P1 elements) and exact there, at the point's central

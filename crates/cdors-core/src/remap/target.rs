@@ -276,6 +276,43 @@ pub fn mesh_place(
     finish(origin, vec![(dim.to_owned(), n)], vars, values)
 }
 
+/// Sample points (`selpoints`, `transect`) as an unstructured grid over `dim`: `lon(dim)`,
+/// `lat(dim)` (degrees) and `const(dim)` naming them in `coordinates`.
+pub fn points(origin: &str, dim: &str, lon: &[f64], lat: &[f64]) -> Result<GridSource> {
+    let n = lon.len();
+    let attrs = |std: &str, units: &str| {
+        Attrs(vec![
+            ("standard_name".into(), text(std)),
+            ("units".into(), text(units)),
+        ])
+    };
+    let vars = vec![
+        variable(
+            "lon",
+            DType::F64,
+            &[(dim, n)],
+            attrs("longitude", "degrees_east"),
+        ),
+        variable(
+            "lat",
+            DType::F64,
+            &[(dim, n)],
+            attrs("latitude", "degrees_north"),
+        ),
+        variable(
+            "const",
+            DType::F32,
+            &[(dim, n)],
+            Attrs(vec![("coordinates".into(), text("lon lat"))]),
+        ),
+    ];
+    let values = HashMap::from([
+        ("lon".to_owned(), lon.to_vec()),
+        ("lat".to_owned(), lat.to_vec()),
+    ]);
+    finish(origin, vec![(dim.to_owned(), n)], vars, values)
+}
+
 /// A grid known by its shape only (no coordinates): `const(y, x)` or `const(ncells)`.
 fn shape_only(origin: &str, xsize: usize, ysize: usize) -> Result<GridSource> {
     let vdims: Vec<(&str, usize)> = if ysize > 0 {

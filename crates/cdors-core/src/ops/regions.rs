@@ -259,7 +259,7 @@ fn to_degrees(v: &mut [f64], units: &str) {
 }
 
 /// Cell centres (degrees) of a grid description, in output order.
-pub(super) fn centres(op: &str, g: &GridDesc) -> Result<(Vec<f64>, Vec<f64>)> {
+pub(crate) fn centres(op: &str, g: &GridDesc) -> Result<(Vec<f64>, Vec<f64>)> {
     if let Some(f) = &g.fixed {
         let (mut x, mut y) = (f.coords.xvals.clone(), f.coords.yvals.clone());
         if x.len() != g.size() {
@@ -817,7 +817,7 @@ fn selregion(node: &OpNode, mut d: Desc) -> Result<Desc> {
             },
             xattrs,
             yattrs,
-            labels: Vec::new(),
+            ..FixedGrid::default()
         }));
         g.sel = vec![IndexMap::from_list(flat)];
         g.kind = GridKind::Unstructured;

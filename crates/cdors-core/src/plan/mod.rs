@@ -378,13 +378,16 @@ pub struct GridDesc {
 }
 
 /// Coordinates of a grid an operator made, as written.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct FixedGrid {
     pub coords: GridCoords,
     pub xattrs: Attrs,
     pub yattrs: Attrs,
-    /// String variables along a one-axis grid (`region_name`, `region_abbrev` of the region
-    /// statistics).
+    /// Further variables along the grid's (single) dimension, written with the coordinates
+    /// (`distance` and `bottom_depth` of `transect`): name, values (NaN: missing), attributes.
+    pub aux: Vec<(String, Vec<f64>, Attrs)>,
+    /// String variables along the grid's dimension (`region_name`, `region_abbrev` of the region
+    /// statistics, `station_name` of `selpoints`).
     pub labels: Vec<Labels>,
 }
 

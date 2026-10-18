@@ -21,6 +21,8 @@
 #   fesom_pi_data_tiny.zarr2       tiny chunks (5 steps x 400 nodes / 700 elements x 10 levels)
 #   regions/      fixture-local region catalog for CDORS_REGIONS (tools/export_regions.py:
 #                 ne.<set>, basins, moc GeoJSON) and the cdo region files cdo_{two,one,none}.txt
+#   samples/      stations.csv (name,lon,lat, for selpoints) and drake.geojson (a LineString in a
+#                 FeatureCollection, for transect,file=)
 #   grb_ll / grb_gg / grb_rgg   GRIB2 files written with ecCodes (tests/make_grib_fixtures.py: regular
 #                 lon-lat 10 deg on 2 pressure levels with CCSDS packing and a bit-map, regular Gaussian
 #                 N16, reduced Gaussian N32), gribscan's references to them (<name>.json, read by cdors in
@@ -226,4 +228,25 @@ region_file cdo_none.txt <<'TXT'
 0.1 0.1
 0.2 0.1
 0.2 0.2
+TXT
+
+# sampling: stations (a header line, a comment, points away from cell boundaries of r36x18 and
+# from equal distances on hpz2; one near the north pole, one west of the date line) and a path
+mkdir -p samples
+sample_file() {  # sample_file NAME: the lines on stdin, written atomically unless it exists
+  if [[ -e samples/$1 ]]; then echo "exists: $FIX/samples/$1"; cat > /dev/null; return; fi
+  cat > "samples/$1.tmp$$" && mv "samples/$1.tmp$$" "samples/$1" && echo "made:   $FIX/samples/$1"
+}
+sample_file stations.csv <<'TXT'
+name,lon,lat
+# a comment
+Drake,-63.3,-58.6
+South Atlantic,-21.7,-38.2
+Fram Strait,2.6,78.9
+Near pole,123.4,88.7
+Date line,-178.9,12.3
+TXT
+sample_file drake.geojson <<'TXT'
+{"type": "FeatureCollection", "features": [{"type": "Feature", "properties": {"name": "Drake"},
+ "geometry": {"type": "LineString", "coordinates": [[-65.0, -55.0], [-62.0, -60.0], [-60.0, -65.0]]}}]}
 TXT

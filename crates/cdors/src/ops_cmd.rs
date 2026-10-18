@@ -261,6 +261,25 @@ pub fn notes(name: &str) -> Vec<String> {
              (regionmask's rules), a cdors extension [Regions: maskregion,regions=]",
         );
     }
+    if matches!(name, "selpoints" | "transect") {
+        n.push(
+            "a cdors operator: nn takes the nearest cell (ties: the smallest index); linear the \
+             barycentric weights in the mesh's own triangles (FESOM2 nodes) or, on built-in \
+             grids, in the local spherical Delaunay triangle of the nearest cells; a mesh place \
+             without triangles (FESOM2 elements) is sampled by nn (warning linear_as_nn), a \
+             point in no triangle is missing (warning points_outside); a value is missing if any \
+             cell of its point is missing or dry there; levels are kept, no vertical \
+             interpolation",
+        );
+    }
+    if name == "transect" {
+        n.push(
+            "great-circle segments through the waypoints, each cut into equal arcs of at most \
+             step km (default: the median cell spacing along the path), both ends included; \
+             distance (km, sphere of 6371 km), lon in (-180, 180], lat; on a model mesh \
+             bottom_depth (m) of the levels wet at every cell of the point; one path per call",
+        );
+    }
     if name == "hpdegrade" {
         n.push("zoom=0 degrades to nside 1, as cdo 2.6.5 [Remapping: hpdegrade,zoom=0]");
     }

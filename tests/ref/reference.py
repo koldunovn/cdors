@@ -568,15 +568,14 @@ def fesom_mesh(mdir):
 
 
 def sample_rows(method, place, tri, lon, lat):
-    """Rows [(cells, weights)] of the points on one place; None for linear off the nodes (the
-    reference has no local Delaunay: rows with method=linear select node variables)."""
+    """Rows [(cells, weights)] of the points on one place: linear in the mesh triangles of the
+    nodes; the elements have no triangles of their own and are sampled by nn (cdors'
+    linear_as_nn)."""
     _, clon, clat, _, _ = place
-    if method == "nn":
-        i = nearest(clon, clat, lon, lat)[0]
-        return [([int(c)], [1.0]) for c in i]
-    if place[0] != "nodes":
-        return None
-    return linear_rows(clon, clat, tri, lon, lat)
+    if method == "linear" and place[0] == "nodes":
+        return linear_rows(clon, clat, tri, lon, lat)
+    i = nearest(clon, clat, lon, lat)[0]
+    return [([int(c)], [1.0]) for c in i]
 
 
 def write_sampled(src, dst, dim, rows_of, coords, wet_of=None, zbar=None, extra=None, first=None,
@@ -604,8 +603,6 @@ def write_sampled(src, dst, dim, rows_of, coords, wet_of=None, zbar=None, extra=
         hd = next((d for d in v.dimensions if src.dimensions[d].size in rows_of), None)
         if hd is None:
             continue
-        if rows_of[src.dimensions[hd].size] is None:
-            raise SystemExit(f"reference: method=linear only for node variables, not {name}")
         size = src.dimensions[hd].size
         rows = rows_of[size]
         ax = v.dimensions.index(hd)

@@ -958,7 +958,7 @@ fn made_grid(
         },
         xattrs,
         yattrs,
-        labels: Vec::new(),
+        ..FixedGrid::default()
     };
     debug_assert!(kind != GridKind::Regular || ny >= 1);
     (

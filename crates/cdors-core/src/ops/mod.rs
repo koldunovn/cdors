@@ -29,6 +29,7 @@ pub mod regions;
 pub mod regstat;
 pub mod remap;
 pub mod runstat;
+pub mod sample;
 pub mod select;
 pub mod timstat;
 pub mod ymonarith;
@@ -248,6 +249,8 @@ const IMPLEMENTED: &[&str] = &[
     "hpupgrade",
     "toelems",
     "tonodes",
+    "selpoints",
+    "transect",
     "mergetime",
     "cat",
     "selregion",
@@ -591,6 +594,27 @@ fn build_registry() -> Vec<OpSpec> {
             false,
         ),
         op(
+            "selpoints",
+            one,
+            1,
+            vec![args_of("params", Str)],
+            WholeExtent,
+            "Values at stations (cdors operator): file=<csv: name,lon,lat>|lon=<x>_lat=<y>[,...]\
+             [,method=nn|linear]; dimension station with station_name",
+            false,
+        ),
+        op(
+            "transect",
+            one,
+            1,
+            vec![args_of("params", Str)],
+            WholeExtent,
+            "Values along a great-circle path (cdors operator): <lon0>,<lat0>,<lon1>,<lat1>[,...] \
+             or file=<GeoJSON LineString>[,step=<km>][,method=nn|linear]; dimension distance \
+             (km) with lon, lat and, on a model mesh, bottom_depth; missing below the bottom",
+            false,
+        ),
+        op(
             "hpupgrade",
             one,
             1,
@@ -734,7 +758,10 @@ fn build_registry() -> Vec<OpSpec> {
         if o.name == "outputtab" {
             o.aliases.push("outputkey");
         }
-        if o.name == "regmask" || regstat::handles(&o.name) {
+        if o.name == "regmask"
+            || regstat::handles(&o.name)
+            || matches!(o.name.as_str(), "selpoints" | "transect")
+        {
             o.origin = "cdors";
         }
     }
@@ -874,6 +901,7 @@ pub fn describe(node: &OpNode, inputs: Vec<Desc>, srcs: &mut Sources) -> Result<
         n if remap::handles(n) => return remap::describe(node, inputs, srcs),
         "hpdegrade" | "hpupgrade" => return healpix::describe(node, inputs),
         n if places::handles(n) => return places::describe(node, inputs),
+        n if sample::handles(n) => return sample::describe(node, inputs, srcs),
         n if pctl::handles(n) => return pctl::describe(node, inputs, srcs),
         n if runstat::handles(n) => return runstat::describe(node, inputs, srcs),
         n if ymonarith::handles(n) => return ymonarith::describe(node, inputs),

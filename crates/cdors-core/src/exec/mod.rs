@@ -812,6 +812,32 @@ pub fn out_meta(plan: &Plan, lay: &[OutVar], history: Option<&str>) -> Result<Ou
                 }
             }
         }
+        // variables an operator puts along its grid (`distance`, `station_name` of sampling)
+        if let (Some(f), Some(dim)) = (&g.fixed, hd.first()) {
+            for (name, values, attrs) in &f.aux {
+                push(
+                    &mut coords,
+                    OutCoord {
+                        name: name.clone(),
+                        dims: vec![dim.clone()],
+                        shape: vec![values.len()],
+                        dtype: DType::F64,
+                        values: values.clone(),
+                        attrs: attrs.clone(),
+                    },
+                );
+            }
+            for l in &f.labels {
+                if !texts.iter().any(|t: &OutText| t.name == l.name) {
+                    texts.push(OutText {
+                        name: l.name.clone(),
+                        dim: dim.clone(),
+                        values: l.values.clone(),
+                        attrs: l.attrs.clone(),
+                    });
+                }
+            }
+        }
         for &u in &users {
             for (k, a) in &extra {
                 set_attr(&mut var_attrs[u], k, a.clone());

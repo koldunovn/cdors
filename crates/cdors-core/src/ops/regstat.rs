@@ -239,6 +239,7 @@ fn region_grid(src: &GridDesc, set: &cdors_mesh::regions::RegionSet) -> GridDesc
             label("region_name", &set.names, "region name"),
             label("region_abbrev", &set.abbrevs, "region abbreviation"),
         ],
+        ..FixedGrid::default()
     };
     GridDesc {
         kind: GridKind::Generic,
