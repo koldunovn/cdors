@@ -1,7 +1,54 @@
 # Unstructured round 1 on real data: cdors vs nereus on dart (Task 13)
 
-Status (2026-10-19): two compute-node jobs (28230544, 28230657; 8 min 24 s together, 0.14 node-h) on master
-`be0136d`. Dataset, sets and pass marks: `docs/unstructured-baseline.md`.
+Status (2026-10-19): re-run after the Task 13 fixes on master `d47d8fc`, as job 28231368 (3 min 40 s, 0.06 node-h).
+The first measurement, before the fixes on `be0136d`, is kept below as "before": jobs 28230544 and 28230657.
+Dataset, sets and pass marks: `docs/unstructured-baseline.md`.
+
+> **Every speed mark passes except one.** The natural OHC chain misses the warm ≤ 10 s mark by 0.2 s; it still
+> runs 2.0× faster than nereus warm, which meets that row's factor. **Values equal nereus to 9e-15 (OHC) and
+> 3e-14 (ice extent).** The `--mem 2G` bound is still exceeded, by 6–9 % of RSS.
+> - **Atlantic OHC 0–700 m, 3 years**, natural chain
+>   `-mulc,4089750 -volint,0/700 -maskregion,regions=basins,select=Atlantic_Basin -setgrid,fesom:dart -selname,temp`,
+>   which no longer needs `-sellevel`:
+>   - cold: **8.3 s**, **8.3×** faster than nereus (68.6 s); before the fixes 15.4 s, 4.5×;
+>   - warm: 10.2 s, 2.0× faster than nereus warm. The old chain with `-sellevel` takes 8.4 s;
+>   - both chains read the same 16.38 GB and give bit-identical series.
+> - **NH ice extent, 3 years of daily a_ice:** cold **7.1 s**, **17.8×** faster than nereus (126 s); warm 7.8 s.
+> - **On par with the read probe.** OHC now takes about as long as reading its bytes. This run's probe took 9.4 s
+>   cold and 7.6–8.7 s warm; OHC took 0.9× the probe cold and 1.0–1.3× warm.
+>   - `volint` now folds in 1296 lanes instead of 36, and 42–64 cores are busy instead of 10–15.
+>   - The ceiling is cdors' read path for these uncompressed NetCDF-4 files: 1.5–2.2 GB/s on this node. The
+>     probe's warm runs were no faster than its cold run.
+> - **First use of the dart mesh**, with a fresh cache and the Atlantic region, plus one step: **16.3 s**.
+>   nereus needs 343 s for this. With the cache the mesh path adds **1.1 s** (before: 2.5 s).
+> - **Memory:**
+>   - Peak RSS with the default 4 GB budget: OHC 2.4–3.9 GB, ice 1.1–1.6 GB.
+>   - Under `--mem 2G`: OHC peaks at 2.13–2.18 GB, ice at 1.03 GB. The plan estimates 1.62 GB for OHC, including
+>     0.34 GB of resident mesh arrays, so 0.5 GB of RSS is still not in the estimate.
+>
+> | 3 years, dart, 128 cores | cdors now | cdors before | nereus (Task 1) | read probe (this run) |
+> |---|---|---|---|---|
+> | OHC 0–700 m Atlantic, cold | 8.30 s (natural), 10.41 s (`-sellevel`) | 15.39 s | 68.6 s | 9.39 s |
+> | OHC, warm | 10.20 s (natural), 8.41 s (`-sellevel`) | 13.92 s | 20.5 s | 7.63 s |
+> | NH ice extent, cold | 7.11 s | 7.15 s | 126.3 s | 6.22 s |
+> | ice extent, warm | 7.82 s | 6.15 s | 16.3 s | 6.43 s |
+> | first use of the mesh + Atlantic | 16.3 s | 19.7 s | 343 s | – |
+> | values vs nereus with `nod_area` | OHC 9.1e-15, extent 3.0e-14 | 2.9e-8, 3.0e-14 | – | – |
+
+## Pass marks (job 28231368, master `d47d8fc`)
+
+| | metric | mark | result | | note |
+|---|---|---|---|---|---|
+| 1 | OHC, 3 years, cold | ≤ 13 s (≥ 5× nereus 68.6 s) | natural 8.30 s (A), 11.13 s (C); `-sellevel` 10.41 s (B) | pass | 8.3× nereus; 0.88× this run's cold probe (9.39 s). Before: 15.39 s, miss |
+| 2 | NH ice extent, cold | ≤ 12 s (≥ 10× nereus 126 s) | 7.11 s (A), 8.61 s (B) | pass | 17.8× nereus |
+| 3 | warm: OHC / ice | ≤ 10 s / ≤ 8 s (≥ 2× nereus 20.5 s / 16.3 s) | OHC natural 10.20 s, `-sellevel` 8.41 s / ice 7.82 s | natural: **miss by 0.2 s**; `-sellevel` and ice: pass | 2.0× / 2.4× / 2.1× nereus warm. The warm probe of the same bytes took 7.6–8.7 s, so the warm runs were bound by the read path, and the two OHC chains swapped places between the repeats (10.2/11.5 s vs 8.4/10.6 s). Before: 13.92 s, miss |
+| 4 | first use of the dart mesh (fresh `CDORS_CACHE`, Atlantic region, one step) | ≤ 60 s | 16.34 s | pass | timed before any `--plan`; `--plan` no longer writes the cache |
+| 4b | the same with the cache | ≤ 5 s overhead | 1.06 s | pass | 1.30 s for one step vs 0.24 s for the probe. Before: 2.5 s |
+| 5 | peak RSS, any row | ≤ 2 GB | ice 1.0–1.6 GB; OHC 2.4–3.9 GB at the default 4 GB budget; OHC under `--mem 2G` 2.13–2.18 GB | **miss** (OHC) | Under `--mem 2G` the plan estimates 1.62 GB, with 39 tiles in flight and 0.34 GB resident mesh. RSS is 6–9 % over the budget. One OHC step at the default budget peaks at 3.8 GB. Unaccounted: ~0.5 GB (HDF5/netCDF buffers, allocator, the tile copies in flight) |
+| 6 | values vs nereus with the mesh's `nod_area` | rel 1e-6 | OHC 9.1e-15 (36 months, both chains), extent 3.0e-14 (1096 days) | pass | against job 28230544's nereus reference on set A; timestamps equal; `volint` now writes f64 |
+
+## Before the fixes (master `be0136d`, jobs 28230544 and 28230657)
+
 
 > **Values agree with nereus: OHC to 2.9e-8 and ice extent to 3e-14 relative. Ice passes every speed mark.
 > OHC misses its speed and memory marks, and the cause is one kernel, `volint`.**
@@ -30,7 +77,7 @@ Status (2026-10-19): two compute-node jobs (28230544, 28230657; 8 min 24 s toget
 > | first use of the mesh + Atlantic weights | 19.7 s | 343 s | – |
 > | values vs nereus with `nod_area` | OHC 2.9e-8, extent 3.0e-14 rel | – | – |
 
-## Pass marks
+### Pass marks before
 
 | | metric | mark | result | | cause / note |
 |---|---|---|---|---|---|
@@ -43,6 +90,10 @@ Status (2026-10-19): two compute-node jobs (28230544, 28230657; 8 min 24 s toget
 | 6 | values vs nereus with the mesh's `nod_area` | rel 1e-6 | OHC 2.9e-8 (36 months), extent 3.0e-14 (1096 days) | pass | timestamps equal; outputs bit-identical across runs, nodes and `--mem` |
 
 ## Values
+
+- **Now (job 28231368):** OHC agrees to 9.1e-15, because `volint` now writes f64; the extent agrees to 3.0e-14.
+  Both OHC chains, natural and `-sellevel`, give bit-identical series. The bullets below describe the definitions and the
+  "before" run.
 
 - **nereus reference:** `baseline.py --area nod_area` on set A.
   - Node centres come from mesh.diag `nodes`. On them `nr.get_region_mask(…, "Atlantic_Basin", "oceanBasins")` gives
@@ -61,7 +112,12 @@ Status (2026-10-19): two compute-node jobs (28230544, 28230657; 8 min 24 s toget
 - **Surface area only.** nereus with `nod_area[0]` for every layer is 0.40 % higher than cdors' per-level areas.
   Comparing per-level against surface areas is therefore wrong at the 4e-3 level.
 
-## Where the OHC time goes (cheap splits, job 28230657)
+## Where the OHC time went before the fixes (cheap splits, job 28230657)
+
+All four causes below are fixed on master: the two-fold `volint`, the `maskregion` flag node, the z0/z1 push-down, and
+the mesh memory in `--mem`. Now `volint` has 1296 lanes and keeps 42–64 cores busy, and the natural chain reads
+16.38 GB.
+
 
 | run (set A, warm unless noted) | wall s | CPU % | lanes | note |
 |---|---|---|---|---|
@@ -100,36 +156,43 @@ Status (2026-10-19): two compute-node jobs (28230544, 28230657; 8 min 24 s toget
 - **References:** NumPy on the same slice with mesh.diag's per-level `nod_area`, `nlevels_nod2D` and `nodes`. Also
   nereus' own Atlantic mask (Task 1's cache), regionmask 0.13 in the aqua environment, and scipy's cKDTree for the
   nearest node.
-- **Cost:** each case took ≤ 1.7 s of cdors and ≤ 1.3 GB RSS, with default threads (≤ 16 outside Slurm).
-- **Result:** all 10 cases identical or within tolerance. The float32 outputs (fldmean, regmean, volint, fldint)
-  differ by ≤ 3.6e-8, which is float32 rounding.
+- **Re-run on `d47d8fc`** (fresh cache, so the loader-version-2 entry is rebuilt by the first case):
+  - all 10 cases identical or within tolerance;
+  - each case took ≤ 1.4 s of cdors, except the cache build in `dart_mesh_info` (14.7 s), and ≤ 1.4 GB RSS;
+  - default threads (≤ 16 outside Slurm).
+- `volint` now writes f64 (rel 7.9e-15). The remaining float32 outputs (fldmean, regmean, fldint) differ by ≤ 3.6e-8,
+  which is float32 rounding.
 
 | case | status | cdors s | note |
 |---|---|---|---|
-| dart_mesh_info | identical | 0.96 | 3 160 340 nodes, area sum 3.600464e14 m² (rel 1e-15), wet levels 2..79 |
-| dart_fldmean_lev | within tolerance | 1.27 | 3 levels, rel 2.4e-8 |
-| dart_regmask_atl | identical | 0.88 | 924 967 nodes in both, 0 differ from nereus |
-| dart_regmask_ar6 | identical | 1.08 | regionmask ar6.ocean on every 10th node: 316 034 nodes × 15 regions, 0 differ |
-| dart_regmean_atl | within tolerance | 0.92 | 10 days, rel 3.6e-8 |
-| dart_volint_atl | within tolerance | 1.67 | Atlantic OHC 0–100 m, rel 2.7e-8 |
-| dart_extent | within tolerance | 0.73 | 10 days, rel 1.2e-14; `a_ice_above` 0 |
-| dart_icearea | within tolerance | 0.68 | 10 days, rel 2.7e-8 |
-| dart_transect | identical | 1.35 | Drake, 117 points × 3 levels, nearest node, dry levels missing |
-| dart_selpoints | identical | 1.26 | 3 stations × 3 levels |
+| dart_mesh_info | identical | 14.67 | 3 160 340 nodes, area sum 3.600464e14 m² (rel 1e-15), wet levels 2..79; cache built |
+| dart_fldmean_lev | within tolerance | 0.83 | 3 levels, rel 2.4e-8 |
+| dart_regmask_atl | identical | 0.72 | 924 967 nodes in both, 0 differ from nereus |
+| dart_regmask_ar6 | identical | 0.86 | regionmask ar6.ocean on every 10th node: 316 034 nodes × 15 regions, 0 differ |
+| dart_regmean_atl | within tolerance | 0.71 | 10 days, rel 3.6e-8 |
+| dart_volint_atl | within tolerance | 0.83 | Atlantic OHC 0–100 m, rel 7.9e-15 (before: 2.7e-8, float32 output) |
+| dart_extent | within tolerance | 0.68 | 10 days, rel 1.2e-14; `a_ice_above` 0 |
+| dart_icearea | within tolerance | 0.67 | 10 days, rel 2.7e-8 |
+| dart_transect | identical | 1.43 | Drake, 117 points × 3 levels, nearest node, dry levels missing |
+| dart_selpoints | identical | 1.31 | 3 stations × 3 levels |
 
-Runs: `/work/ab0995/a270088/cdors-target-r1-t13/realdata/20261019-000820-3886069/` (the first `dart_regmask_ar6` run
-failed in the reference, because pyproj had no `PROJ_DATA`; fixed) and `…/20261019-000905-3903852/`.
+Runs:
+- now: `/work/ab0995/a270088/cdors-target-r1-t13/realdata/20261019-012145-2061170/`;
+- before: `…/20261019-000820-3886069/` and `…/20261019-000905-3903852/`. In the first of these, the
+  `dart_regmask_ar6` reference failed because pyproj had no `PROJ_DATA`; that is fixed.
 
 ## Scripts and records
 
 - `bench/unstructured/validate.sh`:
   - `sbatch` runs the node measurement;
+  - `sbatch -t 25 … v2` runs the re-run after the fixes: both OHC chains, fresh-cache first use, `--mem 2G`, and the
+    comparison with 28230544's nereus reference;
   - `sbatch -t 15 … extra` runs the first use without a plan before it, plus the timing splits.
   - Job 28230544 timed its "first use" after a `--plan` that had already built the cache (2.7 s). Its row 4 value
     is therefore from 28230657, and the script now times that run before its plan.
 - `bench/unstructured/baseline.py --area nod_area`: the nereus reference with the mesh's own areas.
 - `bench/unstructured/compare.py`: writes `compare.json`.
-- Records: `/scratch/a/a270088/cdors-bench/unst-validate-28230544/` and `…-28230657/` (`runs.tsv`, `*.time`, `*.plan.json`,
+- Records: `/scratch/a/a270088/cdors-bench/unst-validate-28231368/` (now), `…-28230544/` and `…-28230657/` (`runs.tsv`, `*.time`, `*.plan.json`,
   outputs, `nereus_ref_A/`, `compare.json`).
   - nereus reference run: 142 s, RSS 11.1 GB (mask 52 s, OHC 32 s + 27 s with surface areas, ice 20 s).
 
@@ -139,4 +202,5 @@ failed in the reference, because pyproj had no `PROJ_DATA`; fixed) and `…/2026
 |---|---|---|---|---|
 | 28230544 | 1 exclusive compute node, `--mem=0 --hint=nomultithread`, account ab0995 | 40 min | 6 min 05 s | 0.10 |
 | 28230657 | the same (`extra`) | 15 min | 2 min 19 s | 0.04 |
-| total | | | 8 min 24 s | 0.14 (plan: ≤ 0.25) |
+| 28231368 | the same (`v2`, re-run after the fixes) | 25 min | 3 min 40 s | 0.06 |
+| total | | | 12 min 04 s | 0.20 (plan: ≤ 0.25) |

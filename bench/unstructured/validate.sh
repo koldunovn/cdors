@@ -4,6 +4,8 @@
 # docs/unstructured-baseline.md, results in docs/unstructured-results.md).
 #
 #   sbatch bench/unstructured/validate.sh    compute node, 128 cores, limit 40 min (job 28230544: 6 min)
+#   sbatch -t 25 bench/unstructured/validate.sh v2
+#                                            the re-run after the Task 13 fixes (both OHC chains)
 #   sbatch -t 15 bench/unstructured/validate.sh extra
 #                                            first use of the mesh without a plan before it, and
 #                                            timing splits of the OHC chain (job: see the results doc)
@@ -49,6 +51,8 @@ THREADS=128
 LV=2.5,7.5,15,25,35,45,55,65,75,85,95,106,118.5,132.5,147.5,162.5,177.5,192.5,207.5,222.5,240,262.5,287.5,312.5,337.5,362.5,387.5,415,445,475,505,535,565,600,640,680
 RHOCP=4089750          # nereus' rho x cp = 1025 x 3990
 OHC="-mulc,$RHOCP -volint,0/700 -maskregion,regions=basins,select=Atlantic_Basin -setgrid,fesom:$M -sellevel,$LV -selname,temp"
+# the natural chain (master after Task 13: volint,z0/z1 selects its levels itself)
+OHC2="-mulc,$RHOCP -volint,0/700 -maskregion,regions=basins,select=Atlantic_Basin -setgrid,fesom:$M -selname,temp"
 OHC_NOMASK="-mulc,$RHOCP -volint,0/700 -setgrid,fesom:$M -sellevel,$LV -selname,temp"
 ICE="-fldhist,edges=0.15/1 -sellonlatbox,-180,180,0,90 -setgrid,fesom:$M -selname,a_ice"
 PROBE_T="-fldmean -sellevel,$LV -selname,temp"
@@ -102,6 +106,39 @@ run_cdors() {  # run_cdors NAME YEARS "OPTS" "CHAIN" INPUT...   (PLAN_AFTER=1: t
 }
 
 S1="$D/temp.fesom.1975.nc"
+if [ "$MODE" = v2 ]; then
+    # re-run after the Task 13 fixes (two-fold volint, z0/z1 push-down, maskregion flag node, mesh
+    # memory in --mem): ohc2_* = the natural chain without -sellevel, ohc_* = the old chain.
+    # Cold sets: A (ohc2, ice), B (ohc, ice), C (ohc2), D = 2000-2002 (read probe).
+    # Values are compared with job 28230544's nereus reference on A (same data and areas).
+    PLAN_AFTER=1 run_cdors mesh_first_ohc2_1 1975 "" "${OHC2/-selname,temp/-seltimestep,1 -selname,temp}" "$S1"
+    "$CDORS" --json mesh info "fesom:$M" > "$OUT/mesh_info.json" 2>&1
+    /usr/bin/du -sb "$CDORS_CACHE"/* > "$OUT/cache_sizes.txt" 2>&1
+    run_cdors mesh_cached_ohc2_1 1975 "" "${OHC2/-selname,temp/-seltimestep,1 -selname,temp}" "$S1"
+    run_cdors probe_ohc1 1975 "" "${PROBE_T/-selname,temp/-seltimestep,1 -selname,temp}" "$S1"
+    run_cdors ohc2_A_cold 1970-1972 "" "$OHC2" -cat $(files temp 1970 1972)
+    run_cdors ice_A_cold 1970-1972 "" "$ICE" -cat $(files a_ice 1970 1972)
+    run_cdors ohc_B_cold 1980-1982 "" "$OHC" -cat $(files temp 1980 1982)
+    run_cdors ice_B_cold 1980-1982 "" "$ICE" -cat $(files a_ice 1980 1982)
+    run_cdors ohc2_C_cold 1990-1992 "" "$OHC2" -cat $(files temp 1990 1992)
+    run_cdors probe_temp_D_cold 2000-2002 "" "$PROBE_T" -cat $(files temp 2000 2002)
+    run_cdors probe_ice_D_cold 2000-2002 "" "$PROBE_I" -cat $(files a_ice 2000 2002)
+    for i in 1 2; do
+        run_cdors ohc2_A_warm$i 1970-1972 "" "$OHC2" -cat $(files temp 1970 1972)
+        run_cdors ohc_A_warm$i 1970-1972 "" "$OHC" -cat $(files temp 1970 1972)
+        run_cdors ice_A_warm$i 1970-1972 "" "$ICE" -cat $(files a_ice 1970 1972)
+        run_cdors probe_temp_A_warm$i 1970-1972 "" "$PROBE_T" -cat $(files temp 1970 1972)
+        run_cdors probe_ice_A_warm$i 1970-1972 "" "$PROBE_I" -cat $(files a_ice 1970 1972)
+    done
+    run_cdors ohc2_A_mem2G 1970-1972 "--mem 2G" "$OHC2" -cat $(files temp 1970 1972)
+    run_cdors ohc_A_mem2G 1970-1972 "--mem 2G" "$OHC" -cat $(files temp 1970 1972)
+    run_cdors ice_A_mem2G 1970-1972 "--mem 2G" "$ICE" -cat $(files a_ice 1970 1972)
+    $PY "$HERE/compare.py" "$OUT" /scratch/a/a270088/cdors-bench/unst-validate-28230544/nereus_ref_A \
+        > "$OUT/compare.stdout" 2>&1
+    grep -v -i -e pyproj -e ca_bundle "$OUT/compare.stdout"
+    echo "done: $OUT"; date
+    exit 0
+fi
 if [ "$MODE" = extra ]; then
     # second job: the first use of the mesh timed without a --plan before it (in job 28230544
     # the plan built the cache), the mesh build alone, and timing splits of the 3-D mesh path

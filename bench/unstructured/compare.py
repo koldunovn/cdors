@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """cdors vs nereus series of the Task 13 node run (bench/unstructured/validate.sh).
 
-    compare.py OUT_DIR    reads OUT_DIR/ohc_A_*.nc, OUT_DIR/ice_A_*.nc (cdors) and
+    compare.py OUT_DIR [REF_DIR]    reads OUT_DIR/ohc_A_*.nc, OUT_DIR/ice_A_*.nc (cdors) and
                           OUT_DIR/nereus_ref_A/ (baseline.py --area nod_area); prints one JSON object
                           and writes it to OUT_DIR/compare.json
 
@@ -43,7 +43,7 @@ def pair(got, want):
 
 def main():
     out = sys.argv[1]
-    ref = os.path.join(out, "nereus_ref_A")
+    ref = sys.argv[2] if len(sys.argv) > 2 else os.path.join(out, "nereus_ref_A")
     res = {}
     for kind, var, files in (("ohc", "temp", ["nereus_ohc_atl_0_700.nc", "nereus_ohc_atl_0_700_area0.nc"]),
                              ("ice", "a_ice", ["nereus_siextent_nh.nc"])):
@@ -54,7 +54,7 @@ def main():
                 with netCDF4.Dataset(p) as d:
                     name = next(n for n in d.variables if n not in d.dimensions)
                 want.append((f, series(p, name)))
-        for g in sorted(glob.glob(os.path.join(out, f"{kind}_A_*.nc"))):
+        for g in sorted(glob.glob(os.path.join(out, f"{kind}_A_*.nc")) + glob.glob(os.path.join(out, f"{kind}2_A_*.nc"))):
             got = series(g, var)
             for f, w in want:
                 res[f"{os.path.basename(g)} vs {f}"] = pair(got, w)
