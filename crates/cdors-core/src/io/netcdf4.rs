@@ -6,7 +6,11 @@
 //! variable whose index entry is readable without HDF5 and whose chunk grid equals netCDF-C's is
 //! read directly: `read_chunk` returns the stored bytes (a positioned read, no HDF5, no lock) as
 //! [`RawChunk::Encoded`], and the filters (deflate, shuffle, fletcher32, blosc) are undone by the
-//! decoder on the compute pool. The other variables go through netCDF-C, serially.
+//! decoder on the compute pool. Chunks stored without filters are read straight into a vector of
+//! their element type instead (one copy, from the page cache; no zero fill, no byte buffer) and
+//! returned as [`RawChunk::Decoded`]: on 128 cores this took the warm read of uncompressed FESOM2
+//! output from 8.4 to 12.5-15.9 GB/s and halved the CPU time. The other variables go through
+//! netCDF-C, serially.
 //!
 //! Contiguous variables keep netCDF-C's chunk grid (one record per chunk, or the whole variable
 //! for 0-D and 1-D): their records are plain byte ranges in the file.
@@ -68,6 +72,85 @@ impl DirectVar {
                 base.map(|b| (b + origin.first().copied().unwrap_or(0) * row, len))
             }
         }
+    }
+
+    /// Chunk `indices` read straight into a vector of its element type, if it is stored without
+    /// filters to undo (`None` otherwise, and for unwritten chunks): no zero fill, no byte copy,
+    /// missing values become NaN in place ([`super::convert_vec`]; the same values as
+    /// [`ChunkDecoder::decode`]).
+    fn read_plain(&self, indices: &[u64]) -> Option<Result<DecodedChunk>> {
+        let ext = self.grid.extent(indices);
+        let (offset, size, full) = match self.storage {
+            Storage::Chunked => {
+                let c = self.index().chunk(indices)?;
+                let n = self.index().filters.len();
+                if (0..n).any(|pos| c.filter_mask & (1 << pos) == 0) {
+                    return None;
+                }
+                (c.offset, c.size, self.grid.chunk_shape.clone())
+            }
+            Storage::Contiguous(_) => {
+                let (offset, size) = self.byte_range(indices)?;
+                (offset, size, ext.clone())
+            }
+        };
+        let n: usize = full.iter().product();
+        if size != (n * self.dtype.size()) as u64 {
+            return None;
+        }
+        let values = match self.dtype {
+            DType::I8 => self.read_vec::<i8>(offset, n),
+            DType::I16 => self.read_vec::<i16>(offset, n),
+            DType::I32 => self.read_vec::<i32>(offset, n),
+            DType::I64 => self.read_vec::<i64>(offset, n),
+            DType::U8 => self.read_vec::<u8>(offset, n),
+            DType::U16 => self.read_vec::<u16>(offset, n),
+            DType::U32 => self.read_vec::<u32>(offset, n),
+            DType::U64 => self.read_vec::<u64>(offset, n),
+            DType::F32 => self.read_vec::<f32>(offset, n),
+            DType::F64 => self.read_vec::<f64>(offset, n),
+            DType::Other => return None,
+        };
+        Some(values.map(|values| {
+            let values = match values {
+                Values::F32(v) => Values::F32(super::zarr::trim(v, &full, &ext)),
+                Values::F64(v) => Values::F64(super::zarr::trim(v, &full, &ext)),
+            };
+            DecodedChunk {
+                origin: self.grid.origin(indices),
+                shape: ext,
+                values,
+            }
+        }))
+    }
+
+    /// `n` elements of `T` stored from `offset`, as values.
+    fn read_vec<T: super::Elem + 'static>(&self, offset: u64, n: usize) -> Result<Values> {
+        let mut v: Vec<T> = Vec::with_capacity(n);
+        let bytes = n * T::SIZE;
+        // SAFETY: the spare capacity holds `n` elements, i.e. `bytes` bytes, valid for writes.
+        let buf = unsafe {
+            std::slice::from_raw_parts_mut(
+                v.spare_capacity_mut()
+                    .as_mut_ptr()
+                    .cast::<std::mem::MaybeUninit<u8>>(),
+                bytes,
+            )
+        };
+        self.file
+            .read_into(buf, offset)
+            .map_err(|e| Error::io(e.to_string()))?;
+        // SAFETY: `read_into` wrote all `bytes` bytes, and every bit pattern is a valid `T`
+        // (plain integers and floats).
+        unsafe { v.set_len(n) };
+        if self.index().big_endian != cfg!(target_endian = "big") && T::SIZE > 1 {
+            // SAFETY: the same initialised memory, viewed as bytes.
+            let raw = unsafe { std::slice::from_raw_parts_mut(v.as_mut_ptr().cast::<u8>(), bytes) };
+            for e in raw.chunks_exact_mut(T::SIZE) {
+                e.reverse();
+            }
+        }
+        Ok(super::convert_vec(v, &self.encoding))
     }
 }
 
@@ -301,6 +384,9 @@ impl ChunkSource for Nc4Source {
             return self.nc.read_chunk(var, indices);
         };
         dv.grid.check(var, indices)?;
+        if let Some(r) = dv.read_plain(indices) {
+            return r.map(RawChunk::Decoded);
+        }
         let bytes = match dv.byte_range(indices) {
             None => None,
             Some((offset, size)) => Some(

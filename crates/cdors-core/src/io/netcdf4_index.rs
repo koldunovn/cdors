@@ -20,7 +20,6 @@
 
 use std::collections::HashMap;
 use std::fs::File;
-use std::os::unix::fs::FileExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -488,19 +487,57 @@ impl Nc4File {
         Ok(Self { index, file })
     }
 
+    /// Fills `buf` with the file's bytes from `offset` (positioned reads; `buf` may be
+    /// uninitialised).
+    pub fn read_into(
+        &self,
+        buf: &mut [std::mem::MaybeUninit<u8>],
+        offset: u64,
+    ) -> Result<(), Nc4Error> {
+        use std::os::fd::AsRawFd;
+        let fd = self.file.as_raw_fd();
+        let mut done = 0;
+        while done < buf.len() {
+            let rest = &mut buf[done..];
+            // SAFETY: pread writes at most `rest.len()` bytes into `rest`, which is valid for
+            // writes; uninitialised bytes may be written to.
+            let n = unsafe {
+                libc::pread(
+                    fd,
+                    rest.as_mut_ptr().cast(),
+                    rest.len(),
+                    (offset + done as u64) as libc::off_t,
+                )
+            };
+            let err = match n {
+                0 => std::io::ErrorKind::UnexpectedEof.into(),
+                n if n < 0 => std::io::Error::last_os_error(),
+                n => {
+                    done += n as usize;
+                    continue;
+                }
+            };
+            if err.kind() != std::io::ErrorKind::Interrupted {
+                return Err(Nc4Error::Io {
+                    path: self.index.path.display().to_string(),
+                    source: err,
+                });
+            }
+        }
+        Ok(())
+    }
+
     pub fn index(&self) -> &Nc4Index {
         &self.index
     }
 
     /// Stored (still filtered) bytes of one chunk.
     pub fn read_raw(&self, chunk: &Nc4Chunk) -> Result<Vec<u8>, Nc4Error> {
-        let mut buf = vec![0u8; chunk.size as usize];
-        self.file
-            .read_exact_at(&mut buf, chunk.offset)
-            .map_err(|source| Nc4Error::Io {
-                path: self.index.path.display().to_string(),
-                source,
-            })?;
+        let n = chunk.size as usize;
+        let mut buf = Vec::with_capacity(n);
+        self.read_into(&mut buf.spare_capacity_mut()[..n], chunk.offset)?;
+        // SAFETY: `read_into` initialised all `n` bytes
+        unsafe { buf.set_len(n) };
         Ok(buf)
     }
 
