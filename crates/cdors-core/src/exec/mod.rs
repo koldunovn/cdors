@@ -145,13 +145,14 @@ pub fn out_chunks(
     c
 }
 
-/// Type a variable is written in: `-b`, else float32 input stays float32 and everything else is
-/// written as float64.
+/// Type a variable is written in: `-b`, else float32 input stays float32, int8 (masks of
+/// `regmask`) stays int8, and everything else is written as float64.
 pub fn out_dtype(cmd: &Command, v: &VarDesc) -> DType {
     match cmd.options.precision {
         Some(Precision::F32) => DType::F32,
         Some(Precision::F64) => DType::F64,
         None if v.dtype == DType::F32 => DType::F32,
+        None if v.dtype == DType::I8 => DType::I8,
         None => DType::F64,
     }
 }
@@ -399,12 +400,23 @@ pub struct OutCoord {
     pub attrs: Attrs,
 }
 
+/// A string variable to write along dimension `dim` ([`crate::plan::Labels`]).
+#[derive(Debug, Clone)]
+pub struct OutText {
+    pub name: String,
+    pub dim: String,
+    pub values: Vec<String>,
+    pub attrs: Attrs,
+}
+
 /// Everything a writer needs besides the data: dimensions, coordinates and attributes.
 #[derive(Debug, Clone)]
 pub struct OutMeta {
     /// (name, size, unlimited) in definition order.
     pub dims: Vec<(String, usize, bool)>,
     pub coords: Vec<OutCoord>,
+    /// String variables (labels of an axis).
+    pub texts: Vec<OutText>,
     /// Attributes of each data variable (same order as the layout).
     pub var_attrs: Vec<Attrs>,
     pub global: Attrs,
@@ -511,6 +523,7 @@ pub fn out_meta(plan: &Plan, lay: &[OutVar], history: Option<&str>) -> Result<Ou
         );
     }
     // vertical axes
+    let mut texts: Vec<OutText> = Vec::new();
     for (zi, z) in desc.zaxes.iter().enumerate() {
         if !desc.vars.iter().any(|v| v.zaxis == Some(zi)) {
             continue;
@@ -546,6 +559,16 @@ pub fn out_meta(plan: &Plan, lay: &[OutVar], history: Option<&str>) -> Result<Ou
                 attrs,
             },
         );
+        for l in &z.labels {
+            if !texts.iter().any(|t: &OutText| t.name == l.name) {
+                texts.push(OutText {
+                    name: l.name.clone(),
+                    dim: z.axis.dim.clone(),
+                    values: l.values.clone(),
+                    attrs: l.attrs.clone(),
+                });
+            }
+        }
     }
     // grids
     let mut var_attrs: Vec<Attrs> = desc.vars.iter().map(|v| v.attrs.clone()).collect();
@@ -761,6 +784,7 @@ pub fn out_meta(plan: &Plan, lay: &[OutVar], history: Option<&str>) -> Result<Ou
     Ok(OutMeta {
         dims,
         coords,
+        texts,
         var_attrs,
         global,
     })

@@ -37,11 +37,17 @@ pub fn set_no_warnings(off: bool) {
 /// Prints a warning on stderr: `cdors: warning: ...`, or one line of JSON under `--json`;
 /// nothing under `-w`.
 pub fn warn(kind: &str, message: &str) {
+    warn_with(kind, message, serde_json::Map::new());
+}
+
+/// [`warn`] with extra fields in the JSON form (counts, names).
+pub fn warn_with(kind: &str, message: &str, fields: serde_json::Map<String, serde_json::Value>) {
     if NO_WARNINGS.load(Ordering::Relaxed) {
         return;
     }
     if JSON.load(Ordering::Relaxed) {
-        let v = serde_json::json!({"warning": kind, "message": message});
+        let mut v = serde_json::json!({"warning": kind, "message": message});
+        v.as_object_mut().expect("object").extend(fields);
         eprintln!("{v}");
     } else {
         eprintln!("cdors: warning: {message}");

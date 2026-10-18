@@ -496,13 +496,26 @@ impl TimeDesc {
     }
 }
 
-/// A vertical axis with the attributes of its coordinate variable.
+/// A vertical axis with the attributes of its coordinate variable. Operators also use it for
+/// other axes of labelled entries that are neither time nor horizontal (the `region` axis of
+/// `regmask`).
 #[derive(Debug, Clone)]
 pub struct ZDesc {
     pub axis: ZAxis,
     pub attrs: Attrs,
     /// Attributes of the bounds variable, if any.
     pub bounds_var: Option<String>,
+    /// String variables along the axis (`region_name`, `region_abbrev`), one value per level.
+    pub labels: Vec<Labels>,
+}
+
+/// A string variable along one axis: NetCDF writes it as a character array over the axis and
+/// `<name>_strlen`, Zarr as a variable-length UTF-8 string array over the axis.
+#[derive(Debug, Clone)]
+pub struct Labels {
+    pub name: String,
+    pub values: Vec<String>,
+    pub attrs: Attrs,
 }
 
 impl ZDesc {
@@ -511,6 +524,9 @@ impl ZDesc {
         self.axis.values = idx.iter().map(|&i| self.axis.values[i]).collect();
         if let Some(b) = &mut self.axis.bounds {
             *b = idx.iter().map(|&i| b[i]).collect();
+        }
+        for l in &mut self.labels {
+            l.values = idx.iter().map(|&i| l.values[i].clone()).collect();
         }
     }
 }
@@ -623,6 +639,9 @@ pub struct Sources {
     /// target grid described by cdors, weights not generated yet): the run plans again with
     /// [`CdoUse::Now`] once its checks have passed.
     pub deferred: bool,
+    /// Warnings of operators that are not folds (`regmask`: cells filled, empty regions), for
+    /// `--plan`'s `warnings[]`; they are printed to stderr when they arise.
+    pub warnings: Vec<serde_json::Value>,
 }
 
 /// When planning may run cdo (and write `$CDORS_CACHE`) for remapping.
@@ -681,6 +700,7 @@ pub fn describe_source(srcs: &Sources, si: usize) -> Result<Desc> {
                 axis: z.clone(),
                 attrs: v.map(|v| v.attrs.clone()).unwrap_or_default(),
                 bounds_var: v.and_then(|v| v.attrs.get_str("bounds").map(str::to_owned)),
+                labels: Vec::new(),
             }
         })
         .collect();
@@ -783,6 +803,8 @@ pub struct Plan {
     pub lonlat: bool,
     /// Compression of the written chunks ([`out_compression`]); None: uncompressed.
     pub compression: Option<Compression>,
+    /// Warnings of the describing operators (see [`Sources::warnings`]).
+    pub warnings: Vec<serde_json::Value>,
 }
 
 impl Plan {
@@ -806,6 +828,7 @@ impl Plan {
             deferred: false,
             lonlat: false,
             compression: None,
+            warnings: Vec::new(),
         }
     }
 
@@ -1029,5 +1052,6 @@ pub fn build(cmd: &Command, cdo: CdoUse) -> Result<Plan> {
         deferred: srcs.deferred,
         lonlat: cmd.options.lonlat,
         compression,
+        warnings: srcs.warnings,
     })
 }

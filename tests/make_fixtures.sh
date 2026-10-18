@@ -19,8 +19,8 @@
 #                 and a 1 deg grid with centres on integer degrees (AR6 outlines, -180, poles)
 #   fesom_pi_data.zarr2 / .zarr3   xarray copies of fesom_pi_data, time chunks of 6
 #   fesom_pi_data_tiny.zarr2       tiny chunks (5 steps x 400 nodes / 700 elements x 10 levels)
-#   regions/      fixture-local region catalog for CDORS_REGIONS (filled by Task 6's
-#                 tools/export_regions.py; not made here)
+#   regions/      fixture-local region catalog for CDORS_REGIONS (tools/export_regions.py:
+#                 ne.<set>, basins, moc GeoJSON) and the cdo region files cdo_{two,one,none}.txt
 #   grb_ll / grb_gg / grb_rgg   GRIB2 files written with ecCodes (tests/make_grib_fixtures.py: regular
 #                 lon-lat 10 deg on 2 pressure levels with CCSDS packing and a bit-map, regular Gaussian
 #                 N16, reduced Gaussian N32), gribscan's references to them (<name>.json, read by cdors in
@@ -184,3 +184,46 @@ fi
 for g in grb_ll grb_gg grb_rgg; do
   [[ -e $g.grb ]] && nc "$g" -b F64 copy "$g.grb"
 done
+
+# Region catalog for CDORS_REGIONS (Natural Earth v5.1.2 and nereus' basins/moc, unsimplified;
+# tools/export_regions.py in the aqua environment, regionmask's downloads cached under /work),
+# and cdo region files for the selregion/maskregion rows: cdo_two.txt (a box across 0 deg with
+# negative longitudes, then an open triangle), cdo_one.txt (a polygon across the date line with
+# vertices on cell centres), cdo_none.txt (a triangle without any cell centre of the fixtures).
+REGIONS_PYTHON=${REGIONS_PYTHON:-/work/ab0995/a270088/mambaforge/envs/aqua/bin/python}
+if [[ -e regions/ne.ocean_basins_50.geojson && -e regions/moc.geojson ]]; then
+  echo "exists: $FIX/regions/*.geojson"
+elif [[ ! -x $REGIONS_PYTHON ]]; then
+  echo "skip:   regions/ (no REGIONS_PYTHON=$REGIONS_PYTHON)"
+else
+  "$REGIONS_PYTHON" -I "$HERE/../tools/export_regions.py" --no-embedded "$FIX/regions"
+  echo "made:   $FIX/regions/*.geojson"
+fi
+mkdir -p regions
+region_file() {  # region_file NAME: the lines on stdin, written atomically unless it exists
+  if [[ -e regions/$1 ]]; then echo "exists: $FIX/regions/$1"; cat > /dev/null; return; fi
+  cat > "regions/$1.tmp$$" && mv "regions/$1.tmp$$" "regions/$1" && echo "made:   $FIX/regions/$1"
+}
+region_file cdo_two.txt <<'TXT'
+# two polygons
+-30 -20
+40 -20
+40 30
+-30 30
+&
+100 0
+150 0
+150 50
+TXT
+region_file cdo_one.txt <<'TXT'
+# one polygon across the date line, with vertices on cell centres
+150 -40
+200 -40
+220 10
+170 30
+TXT
+region_file cdo_none.txt <<'TXT'
+0.1 0.1
+0.2 0.1
+0.2 0.2
+TXT

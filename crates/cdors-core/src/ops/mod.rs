@@ -23,6 +23,7 @@ pub mod healpix;
 pub mod info;
 pub mod output;
 pub mod pctl;
+pub mod regions;
 pub mod remap;
 pub mod runstat;
 pub mod select;
@@ -118,6 +119,9 @@ pub struct OpSpec {
     pub class: AccessClass,
     pub description: String,
     pub implemented: bool,
+    /// `cdo` for operators with cdo's name and semantics, `cdors` for operators cdo does not
+    /// have (Task 11 of the round-1 plan extends this to the agent surface).
+    pub origin: &'static str,
 }
 
 impl OpSpec {
@@ -206,6 +210,7 @@ fn op(
         class,
         description: description.to_owned(),
         implemented,
+        origin: "cdo",
     }
 }
 
@@ -240,6 +245,9 @@ const IMPLEMENTED: &[&str] = &[
     "hpupgrade",
     "mergetime",
     "cat",
+    "selregion",
+    "maskregion",
+    "regmask",
 ];
 
 fn build_registry() -> Vec<OpSpec> {
@@ -410,6 +418,38 @@ fn build_registry() -> Vec<OpSpec> {
             ],
             Selection,
             "Select a longitude/latitude box",
+            false,
+        ),
+        op(
+            "selregion",
+            one,
+            1,
+            vec![args_of("regions", Str)],
+            Selection,
+            "Select the cells whose centre lies in the polygons of cdo region files (lon lat \
+             per line, & between polygons); the result is unstructured",
+            false,
+        ),
+        // pointwise
+        op(
+            "maskregion",
+            one,
+            1,
+            vec![args_of("regions", Str)],
+            Pointwise,
+            "Set the cells outside the polygons of cdo region files to missing; cdors also takes \
+             regions=<set>[,select=<abbrev,...>][,fill=nearest] (a catalog set, see regmask)",
+            false,
+        ),
+        op(
+            "regmask",
+            one,
+            1,
+            vec![args_of("params", Str)],
+            Pointwise,
+            "Region membership mask(region, <cells>) (int8) of the input's grid: \
+             regions=<set>[,select=<abbrev,...>][,fill=nearest]; sets ar6.all, ar6.land, \
+             ar6.ocean, srex, giorgi, prudence, nino, basins, moc, ne.<set> or a GeoJSON file",
             false,
         ),
         // pointwise
@@ -641,6 +681,9 @@ fn build_registry() -> Vec<OpSpec> {
         if o.name == "outputtab" {
             o.aliases.push("outputkey");
         }
+        if o.name == "regmask" {
+            o.origin = "cdors";
+        }
     }
     r
 }
@@ -780,6 +823,7 @@ pub fn describe(node: &OpNode, inputs: Vec<Desc>, srcs: &mut Sources) -> Result<
         n if pctl::handles(n) => return pctl::describe(node, inputs, srcs),
         n if runstat::handles(n) => return runstat::describe(node, inputs, srcs),
         n if ymonarith::handles(n) => return ymonarith::describe(node, inputs),
+        n if regions::handles(n) => return regions::describe(node, inputs, srcs),
         _ => {}
     }
     match spec.class {

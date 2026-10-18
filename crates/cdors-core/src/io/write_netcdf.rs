@@ -98,6 +98,11 @@ fn encode_chunk(ov: &OutVar, shape: &[usize], data: Values, level: u8) -> Result
         (DType::F64, Values::F64(x)) => {
             shuffle(&pad(&x, shape, &ov.chunks, ov.missval), f64::to_le_bytes)
         }
+        // one-byte values: shuffling changes nothing
+        (DType::I8, Values::F64(x)) => pad(&to_i8(&x), shape, &ov.chunks, 0)
+            .into_iter()
+            .map(|v| v as u8)
+            .collect(),
         (t, _) => {
             return Err(Error::internal(format!(
                 "chunk of '{}' does not have the variable's type {t:?}",
@@ -112,6 +117,23 @@ fn encode_chunk(ov: &OutVar, shape: &[usize], data: Values, level: u8) -> Result
     z.write_all(&shuffled)
         .and_then(|()| z.finish())
         .map_err(|e| Error::internal(format!("deflate: {e}")))
+}
+
+/// Values of an int8 variable (masks: 0 and 1), rounded and saturated.
+fn to_i8(x: &[f64]) -> Vec<i8> {
+    x.iter().map(|&v| v.round() as i8).collect()
+}
+
+/// NetCDF's character type (`NC_CHAR`), for string variables as character arrays.
+#[repr(transparent)]
+#[derive(Copy, Clone)]
+struct NcChar(u8);
+
+// SAFETY: NcChar is a transparent one-byte type, as NC_CHAR.
+unsafe impl netcdf::types::NcTypeDescriptor for NcChar {
+    fn type_descriptor() -> netcdf::types::NcVariableType {
+        netcdf::types::NcVariableType::Char
+    }
 }
 
 fn nc_attr(v: &AttrValue, classic: bool) -> AttributeValue {
@@ -201,10 +223,19 @@ impl NcWriter {
             }
             put_attrs(&mut v, &c.attrs, classic)?;
         }
+        // string variables: character arrays over (axis, <name>_strlen)
+        for t in &meta.texts {
+            let len = t.values.iter().map(String::len).max().unwrap_or(0).max(1);
+            let sdim = format!("{}_strlen", t.name);
+            f.add_dimension(&sdim, len)?;
+            let mut v = f.add_variable::<NcChar>(&t.name, &[t.dim.as_str(), sdim.as_str()])?;
+            put_attrs(&mut v, &t.attrs, classic)?;
+        }
         for (ov, attrs) in lay.iter().zip(&meta.var_attrs) {
             let dims: Vec<&str> = ov.dims.iter().map(String::as_str).collect();
             let mut v = match ov.dtype {
                 DType::F32 => f.add_variable::<f32>(&ov.name, &dims)?,
+                DType::I8 => f.add_variable::<i8>(&ov.name, &dims)?,
                 _ => f.add_variable::<f64>(&ov.name, &dims)?,
             };
             if !classic {
@@ -218,6 +249,8 @@ impl NcWriter {
                     v.set_fill_value(ov.missval as f32)?;
                     v.put_attribute("missing_value", ov.missval as f32)?;
                 }
+                // masks: no missing values
+                DType::I8 => {}
                 _ => {
                     v.set_fill_value(ov.missval)?;
                     v.put_attribute("missing_value", ov.missval)?;
@@ -248,6 +281,19 @@ impl NcWriter {
                 }
                 _ => v.put_values(&c.values, ext)?,
             }
+        }
+        for t in &meta.texts {
+            let len = t.values.iter().map(String::len).max().unwrap_or(0).max(1);
+            let mut buf = vec![NcChar(0); t.values.len() * len];
+            for (i, val) in t.values.iter().enumerate() {
+                for (k, b) in val.bytes().enumerate() {
+                    buf[i * len + k] = NcChar(b);
+                }
+            }
+            let mut v = f
+                .variable_mut(&t.name)
+                .ok_or_else(|| Error::internal(format!("variable '{}' vanished", t.name)))?;
+            v.put_values(&buf, extents(&[0, 0], &[t.values.len(), len]))?;
         }
         let (file, direct) = match level {
             None => (Some(f), None),
@@ -290,7 +336,10 @@ impl NcWriter {
             )
         };
         hdf5_metno::h5check(rc).map(|_| ()).map_err(|e| {
-            Error::io(format!("HDF5: writing a chunk of '{}': {e}", self.vars[var].name))
+            Error::io(format!(
+                "HDF5: writing a chunk of '{}': {e}",
+                self.vars[var].name
+            ))
         })
     }
 }
@@ -343,6 +392,7 @@ impl Writer for NcWriter {
         let ext = extents(origin, shape);
         match data {
             Values::F32(x) => v.put_values(&x, ext)?,
+            Values::F64(x) if ov.dtype == DType::I8 => v.put_values(&to_i8(&x), ext)?,
             Values::F64(x) => v.put_values(&x, ext)?,
         }
         Ok(())
@@ -381,7 +431,10 @@ mod tests {
         let x: Vec<f64> = (0..7).map(|i| f64::from(i) * 1.5 - 2.0).collect();
         let raw: Vec<u8> = x.iter().flat_map(|v| v.to_le_bytes()).collect();
         let s = shuffle(&x, f64::to_le_bytes);
-        assert_eq!(s[..7], raw.iter().step_by(8).copied().collect::<Vec<_>>()[..]);
+        assert_eq!(
+            s[..7],
+            raw.iter().step_by(8).copied().collect::<Vec<_>>()[..]
+        );
         assert_eq!(crate::io::netcdf4_index::unshuffle(&s, 8), raw);
     }
 }

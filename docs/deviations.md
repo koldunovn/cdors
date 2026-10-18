@@ -237,6 +237,42 @@ the two views differ, cdors follows the references:
 - **`--force` is accepted and ignored.** cdo needs it for `remapcon` from or to HEALPix grids;
   cdors always passes it to `cdo gencon` and `cdo genycon`.
 
+## Regions
+
+- **`regmask`.** A cdors operator (cdo has none): `regmask,regions=<set>[,select=<abbrev,...>][,fill=nearest]`
+  writes `mask(region, <cells>)` as int8 (1: the cell centre lies in the region) with the
+  coordinate `region` (the region numbers) and the string variables `region_name` and
+  `region_abbrev` (NetCDF: character arrays over `<name>_strlen`; Zarr: variable-length UTF-8
+  strings). The grid stays as it is; `region` is an axis of the vertical kind, so cdo reads the
+  file as one field with a level per region (and skips the string variables with a warning).
+  Membership follows regionmask 0.13 (`mask_3D`, identical cell for cell on the test grids),
+  with one difference: every region is kept (regionmask's `drop=False`); an empty region is a
+  zero row and the warning `regions_empty`. `select=` masks with the selected regions only, as
+  regionmask's `regions[[...]]`. `fill=nearest` gives every cell outside all regions to the
+  region of the nearest member cell; every cell of the grid counts (there is no wet mask
+  without a model mesh), so on grids with land it fills the land too. The count is the warning
+  `regions_filled` (stderr, `--plan` `warnings[]`) and the attribute `regions_filled`. The set's
+  source, licence and attribution are attributes of `mask`.
+- **`maskregion,regions=<set>[,select=...][,fill=nearest]`.** A cdors extension: the union of the
+  catalog regions (regionmask's rules) as the mask; cdo's region files work as in cdo.
+- **`selregion` with several polygons.** cdo 2.6.0 (and 2.6.5's source) appends the selected
+  cells after each polygon to the list of all cells selected so far, so the cells of the first
+  polygon appear again for every further polygon. cdors writes every selected cell once, in
+  ascending order.
+- **`selregion` on the highest latitude of a polygon.** cdo 2.6.0's `selregion` drops cell
+  centres on the polygon's highest latitude that its `maskregion` (and 2.6.5's `selregion`
+  source) keep; cdors follows 2.6.0: the latitude range of a polygon is exclusive for
+  `selregion` (inclusive for `maskregion` on unstructured, curvilinear and HEALPix grids,
+  exclusive on regular grids, as cdo).
+- **Field statistics after `selregion` on a regular grid.** cdo's unstructured grid of the
+  selected cells has no cell bounds, so `fldmean` weights them equally; cdors keeps the cell
+  areas of the original grid.
+- **`dcw:<code>` is not implemented** (`not_implemented`): it needs GMT's DCW database. Natural
+  Earth has the countries: `maskregion,regions=ne.countries_50,select=<country name>` (e.g. `select=Germany`).
+- **`maskregion` and variables on other grids.** cdo writes only the variables on the masked
+  grid (and needs exactly one); cdors masks every grid with coordinates and passes single
+  points unchanged.
+
 ## Information operators
 
 - **`sinfo` prints cdors' own summary.** cdo's `sinfo` is a table with institute, source, step

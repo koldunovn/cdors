@@ -233,3 +233,31 @@ ulp      | -fldint {in}                                | hpz2_noleap
 # mesh_fldint); float32 data and output, measured max rel diff 5.3e-8
 ref:numpy.mesh_fldmean | -fldmean -selname,a_ice,m_ice -setgrid,fesom:{fix}/fesom_pi {in} | fesom_pi_data
 ref:numpy.mesh_fldint  | -fldint -selname,a_ice,m_ice -setgrid,fesom:{fix}/fesom_pi_deg {in} | fesom_pi_data
+# Regions (plan Task 6 and 7). regmask against regionmask 0.13's own data (mask_3D, drop=False):
+# cell for cell, also on r1x1_edges (centres on AR6 outlines, -180 and the poles).
+ref:regionmask.mask_3D:exact | -regmask,regions=ar6.ocean {in}          | r36x18_std hpz2_noleap unst_360 r1x1_edges
+ref:regionmask.mask_3D:exact | -regmask,regions=ar6.land {in}           | r36x18_std hpz2_noleap unst_360 r1x1_edges
+ref:regionmask.mask_3D:exact | -regmask,regions=srex {in}               | r36x18_std hpz2_noleap unst_360 r1x1_edges
+ref:regionmask.mask_3D:exact | -regmask,regions=prudence {in}           | r36x18_std hpz2_noleap unst_360 r1x1_edges
+ref:regionmask.mask_3D:exact | -regmask,regions=ne.ocean_basins_50 {in} | r36x18_std hpz2_noleap unst_360 r1x1_edges
+ref:regionmask.mask_3D:exact | -regmask,regions=ar6.all,select=NWS,SAM,EPO {in} | r36x18_std hpz2_noleap
+ref:regionmask.maskregion:exact | -maskregion,regions=srex,select=WAF,EAF,SAH {in} | r36x18_std hpz2_noleap unst_360
+# fill=nearest: the 314 land cells of r36x18 outside every AR6 ocean region (regionmask: 648 - 334)
+json:any(.stderr[]; .warning == "regions_filled" and .cells == 314) | --json -regmask,regions=ar6.ocean,fill=nearest {in} {out} | r36x18_std
+json:any(.out.warnings[]; .warning == "regions_filled" and .cells == 314) | --plan --json -regmask,regions=ar6.ocean,fill=nearest {in} | r36x18_std
+# empty regions: all-zero rows (as regionmask's drop=False) and a warning naming them
+json:any(.stderr[]; .warning == "regions_empty" and .regions == ["SWS", "MDG", "CAU", "EAU"]) | --json -regmask,regions=ar6.all {in} {out} | hpz2_noleap
+err:bad_arguments | -regmask,regions=ar6.ocean,select=XYZ {in}         | r36x18_std
+err:bad_arguments | -regmask,regions=nosuchset {in}                    | r36x18_std
+# selregion and maskregion with cdo region files, against cdo 2.6.0 (one polygon, two polygons);
+# selregion with two polygons against cdo run polygon by polygon (cdo 2.6.0 repeats the cells of
+# the first polygon, docs/deviations.md)
+exact    | -selregion,{fix}/regions/cdo_one.txt {in}               | r36x18_std hpz2_noleap unst_360 r1x1_edges
+exact    | -maskregion,{fix}/regions/cdo_one.txt {in}              | r36x18_std hpz2_noleap unst_360 r1x1_edges
+exact    | -maskregion,{fix}/regions/cdo_two.txt {in}              | r36x18_std hpz2_noleap unst_360 r1x1_edges
+ref:numpy.selregion:exact | -selregion,{fix}/regions/cdo_two.txt {in} | r36x18_std hpz2_noleap unst_360 r1x1_edges
+exact    | -selregion,{fix}/regions/cdo_one.txt -seltimestep,1/5 {in} | r36x18_std
+exact    | -seltimestep,2 -maskregion,{fix}/regions/cdo_two.txt {in} | hpz2_noleap
+err:bad_arguments   | -selregion,{fix}/regions/cdo_none.txt {in}   | r36x18_std
+err:not_implemented | -selregion,dcw:DE {in}                       | r36x18_std
+err:not_implemented | -maskregion,dcw:DE {in}                      | r36x18_std

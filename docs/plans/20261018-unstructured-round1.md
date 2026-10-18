@@ -499,13 +499,13 @@ The harness gains three capabilities (Task 2), so that every check in this plan 
   reducer that reuses fldstat's `Acc`.
 - Modify: `crates/cdors-core/src/ops/mod.rs`, `tests/ref/reference.py`, `tests/cases.txt`.
 
-- [ ] **Licence gate (Nikolay decides before anything is embedded):** AR6 (CC-BY 4.0), Natural Earth (public domain),
+- [x] **Licence gate (Nikolay decides before anything is embedded):** AR6 (CC-BY 4.0), Natural Earth (public domain),
       MPAS geometric_features / IHO via marineregions (licence to check). Record the outcome in this plan.
-- [ ] **Export script.**
+- [x] **Export script.**
   - Natural Earth (countries_50/110, land_*, ocean_basins_50 v5.1.2) and the nereus basins and moc sets are exported
     **unsimplified** to a regions directory. cdors finds it via `CDORS_REGIONS` or the install's `share/regions/`.
   - Tests use a fixture-local copy. The shared install is filled only after approval.
-- [ ] **`regions.rs`.**
+- [x] **`regions.rs`.**
   - Set names: `ar6.ocean`, `ar6.land`, `ar6.all`, `srex`, `giorgi`, `prudence`, `nino`, `basins`, `moc`,
     `ne.<set>`, or a GeoJSON path.
   - Membership follows regionmask's rules. Overlapping sets give a cell several rows.
@@ -521,27 +521,82 @@ The harness gains three capabilities (Task 2), so that every check in this plan 
   - Key: `regions=<set>[,fill=nearest][,select=<abbrev,…>]`.
   - Output dimension `region`, with `region_name` and `region_abbrev`.
   - An empty region gives an all-NaN row plus a warning.
-- [ ] Write tests:
+- [ ] Write tests (the regmask rows, `regions_filled`, the empty region and the planner variant are done; the
+      fesom_pi_data rows and regmean/regint wait, see below):
   - `regmask` vs `ref:regionmask.mask_3D`, cell for cell, on r36x18_std, hpz2, unst_360, `fesom_pi_data` and
     r1x1_edges, for ar6.ocean, ar6.land, srex, prudence (overlap) and ne.ocean_basins_50;
   - `regmean` and `regint` vs `ref:nereus` (basins) and NumPy;
   - a `json:` row asserting the `regions_filled` count;
   - an empty-region row;
   - the planner variant.
-- [ ] Run tests.
+- [x] Run tests.
+- ➕ **Licence outcome (Nikolay, 2026-10-18): embed as planned.** Embedded (`include_bytes!`, 610 kB in all):
+  AR6 (CC-BY 4.0, Iturbide et al. 2020) as one file `ar6.all.geojson` (596 kB; `ar6.land` and `ar6.ocean` are its
+  subsets: same numbers and identical polygons in regionmask, three regions in both, so each feature lists its
+  subsets), SREX, Giorgi, PRUDENCE (regionmask, MIT; coordinates from the papers) and `nino` (own NOAA CPC box
+  definitions: Nino 1+2, 3, 3.4, 4). Regions directory only, unsimplified: Natural Earth v5.1.2 (public domain)
+  `ne.countries_50/110`, `ne.land_50/110`, `ne.ocean_basins_50` (8.3 MB together) and nereus' `basins`, `moc`
+  (MPAS geometric_features from IHO via marineregions, CC-BY 4.0; 3.9 MB; per-feature `history` dropped, `name`,
+  `author`, `constituents` kept). Source, licence and attribution are attributes of the output (`regions_source`,
+  `regions_license`, `regions_attribution`) and `cdors help regmask` lists the catalog and the attributions.
+- ➕ Done in this task: `tools/export_regions.py` (aqua env; regionmask's pooch cache under
+  `/work/ab0995/a270088/cdors-cache/regionmask`; `--no-embedded` for the fixtures), `cdors_mesh::regions`, the
+  `regmask` operator, int8 data variables and string variables (`plan::Labels` on a `ZDesc`; NetCDF char arrays,
+  Zarr vlen-utf8) in both writers, `OpSpec::origin` (`cdo`/`cdors`; `ops --json` shows it), `Sources::warnings` →
+  `--plan` `warnings[]`. Not done here (next agent, after `RemapWeights::from_csr` and per-level weights): the
+  statistics operators `regmin` … `regstd` (`ops/regstat.rs`), their rows and the `ref:nereus` rows. Their input is
+  `RegionSet::members` → `Csr` (rows = regions, cells ascending), optionally through `regions::fill_nearest`.
+- ⚠️ **Data model of `regmask`:** `mask(region, <the grid's own dims>)`, so regular grids keep `(region, lat, lon)`.
+  `region` is a `ZDesc` (vertical role) with the region numbers as values and the labels `region_name`,
+  `region_abbrev`; cdo reads the file as a field with one level per region. A region without cells is an all-zero row
+  plus the warning `regions_empty` (regionmask's `drop=False`); `select=` masks with the selected regions only, as
+  regionmask's `regions[[...]]`.
+- ⚠️ **`fill=nearest` has no wet mask on grids without a mesh:** every cell of the grid counts as wet, so on a grid
+  with land the land cells are filled too (r36x18 with ar6.ocean: 314 cells). With a FESOM mesh all nodes are wet.
+- ⚠️ **Membership cache not implemented:** membership is fast without it. HEALPix z10 (12.6M cells, built in memory,
+  16 threads on a login node): ar6.ocean 0.09 s, ar6.all 0.09 s, srex 0.05 s, prudence 0.02 s, ne.ocean_basins_50
+  0.15 s, basins 0.25 s (36.6M memberships); parsing ≤ 0.02 s. On hpz2 a whole `cdors regmask` run takes
+  0.15–0.17 s. `fill_nearest` is the slow part when most cells are outside the set: 1.9 s for 207 filled cells
+  (ar6.all), 5 s / 23 s / 75 s for 3.7M / 5.1M / 6.6M filled cells (ne.ocean_basins_50, ar6.ocean, srex), 384 s for
+  prudence (12.4M cells filled from 207k members in Europe: far queries visit most of the tree). Meant for ocean sets
+  on ocean grids (few cells to fill).
+- ⚠️ GeoJSON numbers are parsed with serde_json's `float_roundtrip` (enabled from cdors-mesh, so for the whole
+  workspace): coordinates are read correctly rounded. The full harness passes unchanged with it.
+- ⚠️ **Skipped: the `fesom_pi_data` rows** (`regmask` vs `ref:regionmask.mask_3D` on the pi mesh nodes) need
+  `-setgrid,fesom:` (Task 5); add them as `ref:regionmask.mask_3D:exact | -regmask,regions=<set> -setgrid,fesom:{fix}/fesom_pi
+  {in}` once Task 5 is merged (`reference.py`'s `cell_centres` then needs the node coordinates of the mesh).
 
 ### Task 7: `selregion` and `maskregion` (cdo semantics)
 
 **Files:**
 - Modify: `crates/cdors-core/src/ops/select.rs`, `crates/cdors-core/src/ops/mod.rs`, `tests/cases.txt`
 
-- [ ] **`selregion` and `maskregion`** with cdo ASCII region files: cell centre inside, output grid unstructured for
+- [x] **`selregion` and `maskregion`** with cdo ASCII region files: cell centre inside, output grid unstructured for
       `selregion`. `maskregion,regions=<catalog set>` is accepted as a cdors extension (documented).
-- [ ] **`dcw:`** gives `not_implemented`, with a hint to use `ne.countries_50`.
-- [ ] Write tests:
+- [x] **`dcw:`** gives `not_implemented`, with a hint to use `ne.countries_50`.
+- [x] Write tests:
   - `selregion` and `maskregion` vs cdo on r36x18_std, hpz2 and unst_360 with a two-polygon file;
   - an `err:not_implemented` row for `dcw:DE`.
-- [ ] Run tests.
+- [x] Run tests.
+- ➕ Implemented in `crates/cdors-core/src/ops/regions.rs` (not `select.rs`), with `regmask`. cdo's rules come from
+  cdo 2.6.5's `Selregion.cc`, `Maskbox.cc` and `region.cc`: each polygon on its own, the crossing test
+  `(y >= yi && y < yj) || (y > yj && y <= yi)`, longitudes shifted by 0, -360, +360 into the polygon's range (first
+  fit), and the region file format (`#`, `&`, `>`, rings closed). `selregion` on 2-D grids makes one `ncells`
+  dimension: each stored dimension follows it through its own index list (`Expr::retarget`), coordinates are a
+  `FixedGrid`, `sel` holds the flat stored indices (so `fld*` weights pick the original cell areas).
+  Rows: `selregion`/`maskregion` vs cdo with `cdo_one.txt` (date line, vertices on centres) and `maskregion` with
+  `cdo_two.txt` on r36x18_std, hpz2_noleap, unst_360 and r1x1_edges; `maskregion,regions=` vs
+  `ref:regionmask.maskregion`; empty selection `err:bad_arguments`; `dcw:DE` for both operators.
+- ⚠️ **cdo 2.6.0 `selregion` with several polygons repeats cells:** after each polygon it appends all cells
+  selected so far, so the first polygon's cells appear twice with two polygons (also in 2.6.5's source). cdors
+  writes each cell once, ascending (`docs/deviations.md`); the two-polygon `selregion` row compares with
+  `ref:numpy.selregion`, which runs cdo polygon by polygon on a cell-index field and takes the union.
+- ⚠️ **cdo 2.6.0 `selregion` drops centres on a polygon's highest latitude** that its `maskregion` and 2.6.5's
+  source keep (seen on r1x1_edges with `cdo_one.txt`): cdors uses an exclusive latitude range for `selregion`,
+  inclusive for `maskregion` on cell grids, exclusive for `maskregion` on regular grids (as cdo).
+- ⚠️ `fldmean` after `selregion` on a regular grid differs from cdo: cdo's new grid has no bounds and gets equal
+  weights, cdors keeps the original cell areas (`docs/deviations.md`). No row.
+
 
 ### Task 8: Latitude bands and area-weighted histograms
 

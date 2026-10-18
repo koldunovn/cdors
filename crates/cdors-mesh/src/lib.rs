@@ -9,6 +9,8 @@
 //!   L'Huilier fans), and point-in-polygon tests for regions in planar lon/lat with regionmask's
 //!   rules.
 //! - [`locate`]: a KD-tree on unit vectors for nearest-cell lookups.
+//! - [`regions`]: the region catalog (embedded sets and the regions directory), GeoJSON
+//!   parsing, and region membership of cells as a CSR table.
 //! - [`reader`]: the [`ArrayReader`] interface through which loaders read mesh files; the
 //!   NetCDF and Zarr implementations live in cdors-core.
 //! - [`models`]: the model registry (one table: model → loader, rules, capabilities) and the
@@ -20,6 +22,7 @@ pub mod locate;
 pub mod mesh;
 pub mod models;
 pub mod reader;
+pub mod regions;
 pub mod ugrid;
 
 pub use mesh::{

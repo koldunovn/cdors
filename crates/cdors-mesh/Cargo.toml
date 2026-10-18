@@ -8,4 +8,6 @@ license.workspace = true
 
 [dependencies]
 rayon.workspace = true
+# region GeoJSON; float_roundtrip reads every coordinate exactly (correctly rounded)
+serde_json = { workspace = true, features = ["float_roundtrip"] }
 thiserror.workspace = true

@@ -22,6 +22,9 @@ import sys
 import netCDF4
 import numpy as np
 
+# pyproj (geopandas, regionmask) finds its database only through PROJ_DATA
+os.environ.setdefault("PROJ_DATA", os.path.join(sys.prefix, "share", "proj"))
+
 
 # ---------------------------------------------------------------- helpers
 def data_vars(ds):
@@ -108,6 +111,153 @@ def fldmean_wrong(args, inputs, out):
     fldmean(args, inputs, out, scale=1 + 1e-5)
 
 
+REGIONMASK_CACHE = "/work/ab0995/a270088/cdors-cache/regionmask"
+
+
+def regionmask_set(name):
+    """A cdors catalog name as regionmask's own region set (its data, not cdors' export)."""
+    import regionmask
+    regionmask.set_options(cache_dir=os.environ.get("CDORS_REGIONMASK_CACHE", REGIONMASK_CACHE))
+    dr = regionmask.defined_regions
+    if name.startswith("ar6."):
+        return getattr(dr.ar6, name[4:])
+    if name.startswith("ne."):
+        return getattr(dr.natural_earth_v5_1_2, name[3:])
+    return getattr(dr, name)
+
+
+def cell_centres(ds, name):
+    """Cell centres (degrees, float64) of the grid of variable `name`, and its horizontal
+    dimensions: lon-lat axes (2-D grid), unstructured lon/lat, or HEALPix (healpy, nested)."""
+    v = ds[name]
+    if getattr(v, "grid_mapping", "") and "healpix" in ds[v.grid_mapping].grid_mapping_name:
+        import healpy
+        gm = ds[v.grid_mapping]
+        nest = str(getattr(gm, "healpix_order", "nested")).startswith("nest")
+        n = v.shape[-1]
+        lon, lat = healpy.pix2ang(int(gm.healpix_nside), np.arange(n), nest=nest, lonlat=True)
+        return lon, lat, v.dimensions[-1:]
+    last = v.dimensions[-1]
+    if last in ds.variables and "east" in getattr(ds[last], "units", ""):   # regular
+        ylat = v.dimensions[-2]
+        return ds[last][:].astype("f8"), ds[ylat][:].astype("f8"), v.dimensions[-2:]
+    co = str(getattr(v, "coordinates", "")).split()
+    xn = next(c for c in co if "east" in getattr(ds[c], "units", ""))
+    yn = next(c for c in co if "north" in getattr(ds[c], "units", ""))
+    return ds[xn][:].astype("f8"), ds[yn][:].astype("f8"), v.dimensions[-1:]
+
+
+def _mask_3D(args, inputs, opname):
+    """regionmask's mask_3D (drop=False) for `<opname>,regions=<set>[,select=...]` on the grid of
+    the first data variable of IN1: (mask (region, <horizontal>) bool, horizontal dims)."""
+    import xarray as xr
+    op = next(a for a in args if a.lstrip("-").startswith(opname + ","))
+    parts = op.lstrip("-").split(",")[1:]
+    name = next(p.split("=", 1)[1] for p in parts if p.startswith("regions="))
+    sel, on = [], False
+    for p in parts:
+        if p.startswith("select="):
+            sel.append(p.split("=", 1)[1])
+            on = True
+        elif "=" in p:
+            on = False
+        elif on:
+            sel.append(p)
+    rs = regionmask_set(name)
+    if sel:
+        rs = rs[sel]
+    with netCDF4.Dataset(inputs[0]) as src:
+        var = data_vars(src)[0]
+        lon, lat, hdims = cell_centres(src, var)
+    if len(hdims) == 2:
+        m = rs.mask_3D(np.asarray(lon), np.asarray(lat), drop=False)   # 1-D axes: a lon-lat grid
+        m = m.transpose("region", "lat", "lon")
+    else:
+        m = rs.mask_3D(xr.DataArray(lon, dims="cell"), xr.DataArray(lat, dims="cell"), drop=False)
+        m = m.transpose("region", "cell")
+    return m.values, hdims
+
+
+def mask_3D(args, inputs, out):
+    """regionmask's mask_3D (drop=False: every region, empty ones all zero) of the grid of the
+    first data variable of IN1 for `regmask,regions=<set>[,select=<abbrev>,...]`, written as
+    mask(region, <horizontal dims>) int8."""
+    m, hdims = _mask_3D(args, inputs, "regmask")
+    with netCDF4.Dataset(out, "w") as dst:
+        dst.createDimension("region", m.shape[0])
+        for d, n in zip(hdims, m.shape[1:]):
+            dst.createDimension(d, n)
+        o = dst.createVariable("mask", "i1", ("region",) + tuple(hdims))
+        o[:] = m.astype("i1")
+
+
+def maskregion(args, inputs, out):
+    """`maskregion,regions=<set>[,select=...]`: every variable of IN1 (time, <horizontal>) missing
+    outside the union of regionmask's regions."""
+    m, hdims = _mask_3D(args, inputs, "maskregion")
+    keep = m.any(axis=0)
+    with netCDF4.Dataset(inputs[0]) as src, netCDF4.Dataset(out, "w") as dst:
+        copy_time(src, dst)
+        for d in hdims:
+            dst.createDimension(d, len(src.dimensions[d]))
+        for n in data_vars(src):
+            v = src[n]
+            o = dst.createVariable(n, v.dtype, v.dimensions,
+                                   fill_value=getattr(v, "_FillValue", None))
+            x = masked(v[:])
+            o[:] = np.ma.masked_where(np.broadcast_to(~keep, x.shape) | np.ma.getmaskarray(x), x)
+
+
+def selregion(args, inputs, out):
+    """cdo's selregion with every cell once, in ascending order: cdo ($CDO) selects each polygon
+    of the region files on its own, from a field that holds the cell index, and the union of the
+    selected cells is taken from IN1 (cdo 2.6.0 repeats the cells of earlier polygons for every
+    further polygon). Data variables are (time, <horizontal>); the result is (time, ncells).
+    cdo's inputs and outputs stay in OUT.d/."""
+    import subprocess
+    cdo = os.environ.get("CDO", "cdo")
+    op = next(a for a in args if a.lstrip("-").startswith("selregion,"))
+    polys = []
+    for fname in op.lstrip("-").split(",")[1:]:
+        block = []
+        with open(fname) as f:
+            for line in f:
+                if line.startswith("&"):
+                    polys.append(block)
+                    block = []
+                else:
+                    block.append(line)
+        polys.append(block)
+    polys = [p for p in polys if any(x.strip() and not x.startswith("#") for x in p)]
+    work = out + ".d"
+    os.makedirs(work, exist_ok=True)
+    with netCDF4.Dataset(inputs[0]) as src:
+        names = data_vars(src)
+        idx = os.path.join(work, "index.nc")
+        subprocess.run([cdo, "-s", "-O", f"-seltimestep,1", f"-selname,{names[0]}", inputs[0], idx], check=True)
+        with netCDF4.Dataset(idx, "a") as d:
+            v = d[names[0]]
+            v[:] = np.arange(v[:].size, dtype="f8").reshape(v.shape)
+        cells = set()
+        for k, p in enumerate(polys):
+            pf, sf = os.path.join(work, f"poly{k}.txt"), os.path.join(work, f"sel{k}.nc")
+            with open(pf, "w") as f:
+                f.writelines(p)
+            subprocess.run([cdo, "-s", "-O", f"selregion,{pf}", idx, sf], check=True)
+            with netCDF4.Dataset(sf) as d:
+                cells.update(int(round(x)) for x in np.ravel(d[names[0]][:]))
+        cells = np.array(sorted(cells))
+        with netCDF4.Dataset(out, "w") as dst:
+            copy_time(src, dst)
+            dst.createDimension("ncells", len(cells))
+            for n in names:
+                x = src[n][:]
+                x = x.reshape(x.shape[0], -1)[:, cells]
+                o = dst.createVariable(n, src[n].dtype, ("time", "ncells"),
+                                       fill_value=getattr(src[n], "_FillValue", None))
+                o[:] = x
+
+
 # the functions a row can name (ref:<lib>.<fn>)
 # 2-D field statistics on a FESOM2 mesh, weighted by the surface row of nod_area (nodes) or
 # elem_area (elements).
@@ -142,8 +292,15 @@ def mesh_fldint(args, inputs, out):
     mesh_fld(args, inputs, out, integral=True)
 
 
-REFERENCES = {"fldmean": fldmean, "fldmean_wrong": fldmean_wrong,
-              "mesh_fldmean": mesh_fld, "mesh_fldint": mesh_fldint}
+REFERENCES = {
+    "fldmean": fldmean,
+    "fldmean_wrong": fldmean_wrong,
+    "mesh_fldmean": mesh_fld,
+    "mesh_fldint": mesh_fldint,
+    "mask_3D": mask_3D,
+    "maskregion": maskregion,
+    "selregion": selregion,
+}
 
 
 # ---------------------------------------------------------------- commands

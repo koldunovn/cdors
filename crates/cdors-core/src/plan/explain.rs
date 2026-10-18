@@ -344,7 +344,7 @@ pub fn to_json(plan: &Plan, cmd: &Command, threads: usize, io_threads: usize) ->
 
     let mut stages = Vec::new();
     let mut weights = Vec::new();
-    let mut warnings = Vec::new();
+    let mut warnings = plan.warnings.clone();
     let mut total_comp: Option<u64> = Some(0);
     let (mut budget, mut g_stored, mut g_dec) = (SAMPLE_TOTAL, 0u64, 0u64);
     for (si, (stage, st)) in plan.stages.iter().zip(&stats).enumerate() {

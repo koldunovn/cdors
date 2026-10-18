@@ -165,6 +165,7 @@ fn array_json(
     let (v3t, v2t, fill) = match dtype {
         DType::F32 => ("float32", "<f4", json!("NaN")),
         DType::I32 => ("int32", "<i4", json!(0)),
+        DType::I8 => ("int8", "|i1", json!(0)),
         _ => ("float64", "<f8", json!("NaN")),
     };
     let cname = |c: Compression| match c.codec {
@@ -225,6 +226,51 @@ fn make_array(store: &Arc<Store>, path: &str, meta: Value, v2: bool) -> Result<A
     let a = Array::new_with_metadata(store.clone(), path, md).map_err(zerr)?;
     a.store_metadata().map_err(zerr)?;
     Ok(a)
+}
+
+/// A string variable as zarr-python writes one: variable-length UTF-8 (v3 `string` with the
+/// `vlen-utf8` codec, v2 dtype `|O` with the `vlen-utf8` filter), one uncompressed chunk. The
+/// chunk is encoded here (numcodecs' VLenUTF8: the item count, then length and bytes of each
+/// item, as little-endian u32), so zarrs is not involved. Returns the array metadata.
+fn write_text(store: &Store, t: &crate::exec::OutText, v2: bool) -> Result<Value> {
+    let n = t.values.len();
+    let mut chunk = (n as u32).to_le_bytes().to_vec();
+    for v in &t.values {
+        chunk.extend_from_slice(&(v.len() as u32).to_le_bytes());
+        chunk.extend_from_slice(v.as_bytes());
+    }
+    let attrs = attrs_json(&t.attrs);
+    let (meta, key) = if v2 {
+        let mut a = attrs.clone();
+        a.insert("_ARRAY_DIMENSIONS".into(), json!([t.dim]));
+        let m = json!({
+            "zarr_format": 2, "shape": [n], "chunks": [n.max(1)], "dtype": "|O",
+            "compressor": null, "fill_value": null, "order": "C",
+            "filters": [{"id": "vlen-utf8"}], "dimension_separator": ".",
+        });
+        write_json(store, &format!("{}/.zarray", t.name), &m)?;
+        write_json(
+            store,
+            &format!("{}/.zattrs", t.name),
+            &Value::Object(a.clone()),
+        )?;
+        let mut m = m;
+        m["attributes"] = Value::Object(a);
+        (m, format!("{}/0", t.name))
+    } else {
+        let m = json!({
+            "zarr_format": 3, "node_type": "array", "shape": [n], "data_type": "string",
+            "chunk_grid": {"name": "regular", "configuration": {"chunk_shape": [n.max(1)]}},
+            "chunk_key_encoding": {"name": "default", "configuration": {"separator": "/"}},
+            "fill_value": "", "codecs": [{"name": "vlen-utf8", "configuration": {}}],
+            "attributes": attrs, "dimension_names": [t.dim],
+        });
+        write_json(store, &format!("{}/zarr.json", t.name), &m)?;
+        (m, format!("{}/c/0", t.name))
+    };
+    let k = StoreKey::new(key).map_err(zerr)?;
+    store.set(&k, chunk.into()).map_err(zerr)?;
+    Ok(meta)
 }
 
 fn write_json(store: &Store, key: &str, v: &Value) -> Result<()> {
@@ -348,6 +394,10 @@ impl ZarrWriter {
                 _ => a.store_chunk(&idx, c.values.clone()).map_err(zerr)?,
             }
         }
+        for t in &meta.texts {
+            let m = write_text(&*store, t, v2)?;
+            record(&t.name, &m);
+        }
         let mut arrays = Vec::with_capacity(lay.len());
         for (ov, attrs) in lay.iter().zip(&meta.var_attrs) {
             let mut aj = attrs_json(attrs);
@@ -407,6 +457,11 @@ impl Writer for ZarrWriter {
             Values::F32(x) => a
                 .store_chunk_opt(&idx, pad(&x, shape, &ov.chunks, f32::NAN), &opts)
                 .map_err(zerr),
+            Values::F64(x) if ov.dtype == DType::I8 => {
+                let x: Vec<i8> = x.iter().map(|&v| v.round() as i8).collect();
+                a.store_chunk_opt(&idx, pad(&x, shape, &ov.chunks, 0), &opts)
+                    .map_err(zerr)
+            }
             Values::F64(x) => a
                 .store_chunk_opt(&idx, pad(&x, shape, &ov.chunks, f64::NAN), &opts)
                 .map_err(zerr),

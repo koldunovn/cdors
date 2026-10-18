@@ -74,6 +74,7 @@ pub fn ops(json: bool) -> String {
                 json!({
                     "name": o.name,
                     "implemented": true,
+                    "origin": o.origin,
                     "aliases": o.aliases,
                     "usage": usage(o),
                     "inputs": n_inputs(o),
@@ -235,6 +236,25 @@ pub fn notes(name: &str) -> Vec<String> {
     if is(&["remap"]) {
         n.push("--force is accepted and ignored [Remapping: --force]");
     }
+    if name == "selregion" {
+        n.push(
+            "each selected cell is written once, in ascending order (cdo 2.6.0 repeats the cells \
+             of earlier polygons for every further polygon) [Regions: selregion with several \
+             polygons]",
+        );
+    }
+    if matches!(name, "selregion" | "maskregion") {
+        n.push(
+            "dcw:<code> is not implemented: use regions=ne.countries_50,select=<country name> \
+             [Regions: dcw]",
+        );
+    }
+    if name == "maskregion" {
+        n.push(
+            "regions=<set>[,select=<abbrev,...>][,fill=nearest] masks with catalog regions \
+             (regionmask's rules), a cdors extension [Regions: maskregion,regions=]",
+        );
+    }
     if name == "hpdegrade" {
         n.push("zoom=0 degrades to nside 1, as cdo 2.6.5 [Remapping: hpdegrade,zoom=0]");
     }
@@ -264,7 +284,22 @@ pub fn notes(name: &str) -> Vec<String> {
              overwrite]",
         );
     }
-    n.into_iter().map(str::to_owned).collect()
+    let mut n: Vec<String> = n.into_iter().map(str::to_owned).collect();
+    if matches!(name, "regmask" | "maskregion") {
+        n.push(
+            "regmask is a cdors operator: membership by regionmask's rules (overlapping sets list \
+             a cell under every region; others under the last one), all regions kept (an empty \
+             one: zero row and warning regions_empty), fill=nearest reported as regions_filled \
+             [Regions: regmask]"
+                .to_owned(),
+        );
+        n.extend(
+            ops::regions::catalog_text()
+                .into_iter()
+                .map(|t| format!("region set {t}")),
+        );
+    }
+    n
 }
 
 /// `cdors help <op>`.
