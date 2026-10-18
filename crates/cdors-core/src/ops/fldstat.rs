@@ -112,7 +112,7 @@ enum Family {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Stat {
+pub(crate) enum Stat {
     Mean,
     Avg,
     Min,
@@ -179,7 +179,7 @@ fn parse(name: &str) -> Option<(Family, Stat)> {
 // ---------------------------------------------------------------------------------------------
 
 /// Running state of one output value.
-trait Acc: Copy + Send + 'static {
+pub(crate) trait Acc: Copy + Send + 'static {
     fn new() -> Self;
     fn add(&mut self, w: f64, x: f64);
     fn value(&self, stat: Stat) -> f64;
@@ -187,7 +187,7 @@ trait Acc: Copy + Send + 'static {
 
 /// Σw·x / Σw over the valid values (`varray_weighted_mean_mv`).
 #[derive(Clone, Copy)]
-struct MeanAcc {
+pub(crate) struct MeanAcc {
     sum: f64,
     sumw: f64,
 }
@@ -246,7 +246,7 @@ impl Acc for AvgAcc {
 
 /// Σw·x over the valid values; missing without any (`varray_sum_mv`).
 #[derive(Clone, Copy)]
-struct SumAcc {
+pub(crate) struct SumAcc {
     sum: f64,
     n: u64,
 }
@@ -267,7 +267,7 @@ impl Acc for SumAcc {
 }
 
 #[derive(Clone, Copy)]
-struct MinMaxAcc {
+pub(crate) struct MinMaxAcc {
     min: f64,
     max: f64,
 }
@@ -298,7 +298,7 @@ impl Acc for MinMaxAcc {
 }
 
 #[derive(Clone, Copy)]
-struct VarAcc(WeightedSums);
+pub(crate) struct VarAcc(WeightedSums);
 
 impl Acc for VarAcc {
     fn new() -> Self {
@@ -958,6 +958,7 @@ fn made_grid(
         },
         xattrs,
         yattrs,
+        labels: Vec::new(),
     };
     debug_assert!(kind != GridKind::Regular || ny >= 1);
     (

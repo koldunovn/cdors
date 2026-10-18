@@ -279,6 +279,14 @@ the two views differ, cdors follows the references:
   without a model mesh), so on grids with land it fills the land too. The count is the warning
   `regions_filled` (stderr, `--plan` `warnings[]`) and the attribute `regions_filled`. The set's
   source, licence and attribution are attributes of `mask`.
+- **Region statistics** `regmin`, `regmax`, `regsum`, `regint`, `regmean`, `regstd`
+  (`regions=<set>[,select=...][,fill=nearest]`), cdors operators: the `fld*` statistic over the
+  cells of each region (membership as `regmask`; overlapping sets count a cell in each of its
+  regions). `regsum`, `regmin`, `regmax` are unweighted; `regint` is Σ area·value (m², as
+  `fldint`), `regmean` and `regstd` are weighted by cell area (`regstd` with cdo's one-pass
+  variance, as `fldstd`); on a model mesh per level with that level's areas. The horizontal
+  dimensions become `region` (cdo reads it as a generic grid); a region without valid cells is
+  missing (without any cell also the warning `regions_empty`).
 - **`maskregion,regions=<set>[,select=...][,fill=nearest]`.** A cdors extension: the union of the
   catalog regions (regionmask's rules) as the mask; cdo's region files work as in cdo.
 - **`selregion` with several polygons.** cdo 2.6.0 (and 2.6.5's source) appends the selected

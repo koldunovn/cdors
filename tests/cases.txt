@@ -271,6 +271,28 @@ exact    | -seltimestep,2 -maskregion,{fix}/regions/cdo_two.txt {in} | hpz2_nole
 err:bad_arguments   | -selregion,{fix}/regions/cdo_none.txt {in}   | r36x18_std
 err:not_implemented | -selregion,dcw:DE {in}                       | r36x18_std
 err:not_implemented | -maskregion,dcw:DE {in}                      | r36x18_std
+# Region statistics (cdors): the fld* statistics over the cells of each region, against NumPy on
+# regionmask's own masks (cdo's cell areas times R^2; empty regions missing). regstd: abs=1e-5,
+# since its one-pass variance (as cdo's fldstd) leaves ~1e-7 instead of 0 for one-cell regions.
+ref:regionmask.regmin  | -regmin,regions=srex {in}             | r36x18_std hpz2_noleap
+ref:regionmask.regmax  | -regmax,regions=srex {in}             | r36x18_std hpz2_noleap
+ref:regionmask.regsum  | -regsum,regions=srex {in}             | r36x18_std hpz2_noleap
+ref:regionmask.regint  | -regint,regions=srex {in}             | r36x18_std hpz2_noleap
+ref:regionmask.regmean | -regmean,regions=ar6.all {in}         | r36x18_std hpz2_noleap
+ref:regionmask.regstd:abs=1e-5 | -regstd,regions=srex {in}     | r36x18_std hpz2_noleap
+ref:regionmask.regmean | -regmean,regions=prudence {in}        | unst_360
+# on the FESOM2 pi mesh: per level with nod_area[k] (temp) and 2-D with nod_area[0] (a_ice), dry
+# levels left out, both dimension orders; the planner variant runs on fesom_pi_data
+ref:regionmask.regmean | -regmean,regions=ar6.ocean -setgrid,fesom:{fix}/fesom_pi -selname,temp,a_ice {in} | fesom_pi_data fesom_pi_data_v20
+ref:regionmask.regint  | -regint,regions=ar6.ocean -setgrid,fesom:{fix}/fesom_pi -selname,temp,a_ice {in}  | fesom_pi_data fesom_pi_data_v20
+ref:regionmask.regmax  | -regmax,regions=srex -setgrid,fesom:{fix}/fesom_pi -selname,temp,a_ice {in}       | fesom_pi_data
+ref:regionmask.regstd:abs=1e-5 | -regstd,regions=ar6.ocean -setgrid,fesom:{fix}/fesom_pi -selname,temp,a_ice {in} | fesom_pi_data
+# nereus: its own basin masks (shapely) and nereus.surface_mean with the mesh's areas
+ref:nereus.nereus_regmean | -regmean,regions=basins,select=Atlantic_Basin,Pacific_Basin,Indian_Basin,Arctic_Basin,Southern_Ocean_Basin -setgrid,fesom:{fix}/fesom_pi -selname,a_ice,m_ice {in} | fesom_pi_data
+json:any(.stderr[]; .warning == "regions_filled" and .cells == 1396) | --json -regmean,regions=ar6.ocean,fill=nearest -setgrid,fesom:{fix}/fesom_pi -selname,temp,a_ice {in} {out} | fesom_pi_data
+json:any(.stderr[]; .warning == "regions_empty" and .regions == ["SWS", "MDG", "CAU", "EAU"]) | --json -regmean,regions=ar6.all {in} {out} | hpz2_noleap
+json:any(.out.stages[0].kernel.mesh_weights[]; .weights == "per_level" and .bytes == 1180640) | --plan --json -regmean,regions=ar6.ocean -setgrid,fesom:{fix}/fesom_pi -selname,temp,a_ice {in} | fesom_pi_data
+err:bad_arguments | -regmean {in}                              | r36x18_std
 # Round 1, Task 8: latitude bands and area-weighted histograms.
 # zonmean,zonal_<DY> vs cdo (2.6.0 takes zonal_<DY> with zonmean only): cells cut by the bands on
 # HEALPix (great-circle edges) and on lon-lat cells (unst_360, r36x18_std); zonal_7 also ends its

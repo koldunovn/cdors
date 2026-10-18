@@ -513,8 +513,8 @@ The harness gains three capabilities (Task 2), so that every check in this plan 
   overlap flag, the source and the licence.
 - Create: `crates/cdors-mesh/data/regions/*.geojson`: small embedded sets (ar6.*, srex, giorgi, prudence, nino).
 - Create: `crates/cdors-mesh/src/regions.rs`: catalog, GeoJSON parsing, membership → CSR, overlap, `fill=nearest`.
-- Create: `crates/cdors-core/src/ops/regstat.rs`: linear operators via the executor; min, max and std via a CSR row
-  reducer that reuses fldstat's `Acc`.
+- Create: `crates/cdors-core/src/ops/regstat.rs`: all six statistics through one CSR row reducer on the executor's
+  field kernel, with fldstat's `Acc`.
 - Modify: `crates/cdors-core/src/ops/mod.rs`, `tests/ref/reference.py`, `tests/cases.txt`.
 
 - [x] **Licence gate (Nikolay decides before anything is embedded):** AR6 (CC-BY 4.0), Natural Earth (public domain),
@@ -532,14 +532,14 @@ The harness gains three capabilities (Task 2), so that every check in this plan 
   - Weights are cached per (mesh key, place, selection after pruning, 2-D or per-level, region-data sha, set,
     options, algorithm version).
   - Attribution goes into an output attribute and into `help`.
-- [ ] **Operators.**
+- [x] **Operators.**
   - `regmask,regions=<set>` writes `mask(region, cell)` as int8, giving membership for overlapping sets too.
   - `regmin`, `regmax`, `regsum`, `regint`, `regmean` and `regstd` mirror `fld*`: sum is unweighted; int, mean and
     std are weighted by area, per level with a mesh.
   - Key: `regions=<set>[,fill=nearest][,select=<abbrev,…>]`.
   - Output dimension `region`, with `region_name` and `region_abbrev`.
   - An empty region gives an all-NaN row plus a warning.
-- [ ] Write tests (all done except `regmean`/`regint`, which wait for the statistics operators, see below):
+- [x] Write tests:
   - `regmask` vs `ref:regionmask.mask_3D`, cell for cell, on r36x18_std, hpz2, unst_360, `fesom_pi_data` and
     r1x1_edges, for ar6.ocean, ar6.land, srex, prudence (overlap) and ne.ocean_basins_50;
   - `regmean` and `regint` vs `ref:nereus` (basins) and NumPy;
@@ -560,9 +560,7 @@ The harness gains three capabilities (Task 2), so that every check in this plan 
   `/work/ab0995/a270088/cdors-cache/regionmask`; `--no-embedded` for the fixtures), `cdors_mesh::regions`, the
   `regmask` operator, int8 data variables and string variables (`plan::Labels` on a `ZDesc`; NetCDF char arrays,
   Zarr vlen-utf8) in both writers, `OpSpec::origin` (`cdo`/`cdors`; `ops --json` shows it), `Sources::warnings` →
-  `--plan` `warnings[]`. Not done here (next agent, after `RemapWeights::from_csr` and per-level weights): the
-  statistics operators `regmin` … `regstd` (`ops/regstat.rs`), their rows and the `ref:nereus` rows. Their input is
-  `RegionSet::members` → `Csr` (rows = regions, cells ascending), optionally through `regions::fill_nearest`.
+  `--plan` `warnings[]`. The statistics operators followed in a second pass (below).
 - ⚠️ **Data model of `regmask`:** `mask(region, <the grid's own dims>)`, so regular grids keep `(region, lat, lon)`.
   `region` is a `ZDesc` (vertical role) with the region numbers as values and the labels `region_name`,
   `region_abbrev`; cdo reads the file as a field with one level per region. A region without cells is an all-zero row
@@ -589,6 +587,27 @@ The harness gains three capabilities (Task 2), so that every check in this plan 
   ar6.ocean, ar6.land, srex, prudence and ne.ocean_basins_50 (identical; `reference.py` reads the nodes of
   fesom.mesh.diag.nc with the loader's radians rule), and two `json:` rows with the filled counts (ar6.ocean 1396,
   basins with five basins 22); all with the Zarr and planner variants.
+- ➕ **Region statistics** `regmin`, `regmax`, `regsum`, `regint`, `regmean`, `regstd` (`ops/regstat.rs`, origin
+  `cdors`, key as `regmask`): a `FieldMap` on the remap executor's `FieldKernel` (complete fields; non-trailing
+  horizontal dimensions handled there). Per field and region the member cells are added in ascending order with
+  fldstat's accumulators (`MeanAcc`, `SumAcc`, `MinMaxAcc`, `VarAcc`, made `pub(crate)`), so the numerics are those of
+  `fld*`. Weights: 1 for sum, min, max; for int, mean, std the `fldint` cell areas (m²; mesh areas on a mesh) or, for a
+  variable with the mesh's levels, the place's area at each mesh level (`area_per_level.level(k)`, loaded on first
+  use, counted in `--plan` `mesh_weights`, as is the membership table). Output dimension `region`: a one-axis
+  generic grid (coordinate `region` = the region numbers) with `region_name`/`region_abbrev` (new
+  `FixedGrid::labels`, written by both writers); the set's attributes on every variable; `cell_methods`
+  `area: <stat> where region`. cdo reads the outputs (generic grid of N points).
+- ⚠️ **Not `RemapWeights::from_csr` for the linear statistics:** all six run through the one row reducer above. The
+  membership CSR is scaled by the level's areas at apply time (no matrix per level), the mean renormalises around
+  missing values exactly as `fldmean`, and min/max/std need the reducer anyway, so one code path keeps the fold
+  order and the missing-value rules identical for all of them.
+- ➕ Rows (all against NumPy on regionmask's own masks, `ref:regionmask.reg<stat>`): the six statistics on
+  r36x18_std and hpz2_noleap (regmean with ar6.all: empty regions missing), regmean with prudence (overlap) on
+  unst_360; on fesom_pi_data regmean/regint per level and 2-D (also on fesom_pi_data_v20), regmax, regstd, with the
+  planner variant; regmean of nereus' basins vs `ref:nereus.nereus_regmean` (nereus' shapely masks and
+  `surface_mean`, the same within 6e-8); `json:` rows for `regions_filled` (1396), `regions_empty` and the
+  per-level `mesh_weights` bytes; `err:bad_arguments` without `regions=`. `regstd` rows use `abs=1e-5`: cdo's
+  one-pass variance (as `fldstd`) leaves ~1e-7 instead of 0 for regions of one cell.
 
 ### Task 7: `selregion` and `maskregion` (cdo semantics)
 

@@ -657,9 +657,19 @@ pub fn out_meta(plan: &Plan, lay: &[OutVar], history: Option<&str>) -> Result<Ou
                 extra.push(("coordinates".into(), text(&format!("{yname} {xname}"))));
             }
         } else if let (Some(f), Some(x), None) = (&g.fixed, &g.base.x, &g.base.y) {
-            // a one-axis grid made by an operator (the bins of `fldhist`): its coordinate
-            // variable and the bounds
+            // a one-axis grid made by an operator (the bins of `fldhist`, the regions of `reg*`):
+            // its coordinate variable, the bounds and the labels
             let (c, mut xa) = (&f.coords, f.xattrs.clone());
+            for l in &f.labels {
+                if !texts.iter().any(|t: &OutText| t.name == l.name) {
+                    texts.push(OutText {
+                        name: l.name.clone(),
+                        dim: hd[0].clone(),
+                        values: l.values.clone(),
+                        attrs: l.attrs.clone(),
+                    });
+                }
+            }
             if let Some(xb) = &c.xbounds {
                 add_dim(&mut dims, "bnds", 2, false)?;
                 let bname = format!("{}_bnds", x.var);

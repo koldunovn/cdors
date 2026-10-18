@@ -460,6 +460,7 @@ fn bin_grid(src: &GridDesc, edges: &[f64], units: Option<String>) -> GridDesc {
         },
         xattrs,
         yattrs: Attrs::default(),
+        labels: Vec::new(),
     };
     GridDesc {
         kind: GridKind::Generic,

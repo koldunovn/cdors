@@ -63,15 +63,15 @@ fn text(s: &str) -> AttrValue {
 // ---------------------------------------------------------------------------------------------
 
 /// `regions=<set>[,select=<a>,<b>...][,fill=nearest]`.
-struct Spec {
-    set: String,
-    select: Vec<String>,
-    fill: bool,
+pub(super) struct Spec {
+    pub set: String,
+    pub select: Vec<String>,
+    pub fill: bool,
 }
 
 impl Spec {
     /// The options as written into the output.
-    fn describe(&self) -> String {
+    pub(super) fn describe(&self) -> String {
         let mut s = format!("regions={}", self.set);
         if !self.select.is_empty() {
             s.push_str(&format!(",select={}", self.select.join(",")));
@@ -84,7 +84,7 @@ impl Spec {
 }
 
 /// The catalog form of the arguments, `None` if they do not use `regions=` (cdo region files).
-fn parse_spec(op: &str, args: &[String]) -> Result<Option<Spec>> {
+pub(super) fn parse_spec(op: &str, args: &[String]) -> Result<Option<Spec>> {
     if !args.iter().any(|a| a.trim().starts_with("regions=")) {
         return Ok(None);
     }
@@ -130,7 +130,7 @@ fn catalog_hint() -> String {
     )
 }
 
-fn open_set(op: &str, spec: &Spec) -> Result<RegionSet> {
+pub(super) fn open_set(op: &str, spec: &Spec) -> Result<RegionSet> {
     let map = |e: MeshError| match e {
         MeshError::Missing(m) => bad(op, m).with_hint(catalog_hint()),
         MeshError::Invalid(m) => Error::new(ErrorCode::BadData, m).with("operator", op.to_owned()),
@@ -150,7 +150,7 @@ fn open_set(op: &str, spec: &Spec) -> Result<RegionSet> {
 }
 
 /// A warning on stderr and in `--plan`'s `warnings[]`, with extra fields (an object).
-fn warn(srcs: &mut Sources, kind: &str, msg: String, fields: serde_json::Value) {
+pub(super) fn warn(srcs: &mut Sources, kind: &str, msg: String, fields: serde_json::Value) {
     let fields = match fields {
         serde_json::Value::Object(m) => m,
         _ => serde_json::Map::new(),
@@ -161,9 +161,35 @@ fn warn(srcs: &mut Sources, kind: &str, msg: String, fields: serde_json::Value) 
     srcs.warnings.push(v);
 }
 
+/// The attributes that name a region set, its options, rules and attribution.
+pub(super) fn region_attrs(spec: &Spec, set: &RegionSet, filled: Option<usize>) -> Attrs {
+    let mut a = vec![
+        ("regions".to_owned(), text(&spec.set)),
+        ("regions_options".to_owned(), text(&spec.describe())),
+        (
+            "regions_overlap".to_owned(),
+            AttrValue::Ints(vec![i64::from(set.overlap())]),
+        ),
+        (
+            "regions_rules".to_owned(),
+            text(
+                "regionmask 0.13: cell centres in planar lon/lat, straight edges; a centre on an \
+                 outline goes to the region west or south of it",
+            ),
+        ),
+        ("regions_source".to_owned(), text(&set.source)),
+        ("regions_license".to_owned(), text(&set.license)),
+        ("regions_attribution".to_owned(), text(&set.attribution)),
+    ];
+    if let Some(k) = filled {
+        a.push(("regions_filled".to_owned(), AttrValue::Ints(vec![k as i64])));
+    }
+    Attrs(a)
+}
+
 /// Membership of the cells (`lon`, `lat`) in the set's regions, filled if asked; reports the
 /// filled cells and empty regions as warnings. Returns the table and the number filled.
-fn membership(
+pub(super) fn membership(
     op: &str,
     spec: &Spec,
     set: &RegionSet,
@@ -213,7 +239,7 @@ fn membership(
 // ---------------------------------------------------------------------------------------------
 
 /// Flat indices into the stored grid of the cells of a grid description, in output order.
-fn selected_cells(g: &GridDesc) -> Vec<usize> {
+pub(super) fn selected_cells(g: &GridDesc) -> Vec<usize> {
     if g.sel.len() == 2 {
         let (ys, xs) = (g.sel[0].to_vec(), g.sel[1].to_vec());
         let nx = g.base.xsize;
@@ -233,7 +259,7 @@ fn to_degrees(v: &mut [f64], units: &str) {
 }
 
 /// Cell centres (degrees) of a grid description, in output order.
-fn centres(op: &str, g: &GridDesc) -> Result<(Vec<f64>, Vec<f64>)> {
+pub(super) fn centres(op: &str, g: &GridDesc) -> Result<(Vec<f64>, Vec<f64>)> {
     if let Some(f) = &g.fixed {
         let (mut x, mut y) = (f.coords.xvals.clone(), f.coords.yvals.clone());
         if x.len() != g.size() {
@@ -270,7 +296,7 @@ fn centres(op: &str, g: &GridDesc) -> Result<(Vec<f64>, Vec<f64>)> {
 
 /// The cells `fill=nearest` may fill: on a mesh with a vertical, those with at least one wet
 /// level (FESOM2: every node); `None` (every cell) without one.
-fn wet_cells(g: &GridDesc) -> Option<Vec<bool>> {
+pub(super) fn wet_cells(g: &GridDesc) -> Option<Vec<bool>> {
     let place = g.base.mesh_place()?;
     let wet = g.base.mesh.as_ref()?.vertical.as_ref()?.wet(&place.name)?;
     Some(
@@ -454,31 +480,11 @@ fn regmask(node: &OpNode, d: Desc, srcs: &mut Sources) -> Result<Desc> {
     let out_dims: Vec<usize> = (0..dims.len()).collect();
     let leaf =
         MaskSource::new(&format!("regions:{}", spec.set), m, &hd, true).leaf(srcs, &out_dims);
-    let mut attrs = Attrs::default();
-    let mut put = |k: &str, v: AttrValue| attrs.0.push((k.to_owned(), v));
-    put(
-        "long_name",
+    let mut attrs = Attrs(vec![(
+        "long_name".into(),
         text("region membership: 1 where the cell centre lies in the region"),
-    );
-    put("regions", text(&spec.set));
-    put("regions_options", text(&spec.describe()));
-    put(
-        "regions_overlap",
-        AttrValue::Ints(vec![i64::from(set.overlap())]),
-    );
-    put(
-        "regions_rules",
-        text(
-            "regionmask 0.13: cell centres in planar lon/lat, straight edges; a centre on an \
-             outline goes to the region west or south of it",
-        ),
-    );
-    put("regions_source", text(&set.source));
-    put("regions_license", text(&set.license));
-    put("regions_attribution", text(&set.attribution));
-    if let Some(k) = filled {
-        put("regions_filled", AttrValue::Ints(vec![k as i64]));
-    }
+    )]);
+    attrs.0.extend(region_attrs(&spec, &set, filled).0);
     let mask = VarDesc {
         name: "mask".into(),
         attrs,
@@ -811,6 +817,7 @@ fn selregion(node: &OpNode, mut d: Desc) -> Result<Desc> {
             },
             xattrs,
             yattrs,
+            labels: Vec::new(),
         }));
         g.sel = vec![IndexMap::from_list(flat)];
         g.kind = GridKind::Unstructured;

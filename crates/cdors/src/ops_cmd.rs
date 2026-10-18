@@ -291,7 +291,16 @@ pub fn notes(name: &str) -> Vec<String> {
         );
     }
     let mut n: Vec<String> = n.into_iter().map(str::to_owned).collect();
-    if matches!(name, "regmask" | "maskregion") {
+    if ops::regstat::handles(name) {
+        n.push(
+            "a cdors operator: the fld* statistic over the cells of each region (membership as \
+             regmask; sum, min and max unweighted; int, mean and std by cell area, per level on a \
+             mesh); output dimension region with region_name and region_abbrev; a region without \
+             valid cells is missing [Regions: region statistics]"
+                .to_owned(),
+        );
+    }
+    if matches!(name, "regmask" | "maskregion") || ops::regstat::handles(name) {
         n.push(
             "regmask is a cdors operator: membership by regionmask's rules (overlapping sets list \
              a cell under every region; others under the last one), all regions kept (an empty \

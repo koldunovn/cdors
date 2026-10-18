@@ -26,6 +26,7 @@ pub mod output;
 pub mod pctl;
 pub mod places;
 pub mod regions;
+pub mod regstat;
 pub mod remap;
 pub mod runstat;
 pub mod select;
@@ -646,6 +647,17 @@ fn build_registry() -> Vec<OpSpec> {
         r.push(op(&name, two, 1, vec![], Pointwise, &d, true));
     }
     // space statistics
+    for (name, d) in regstat::operators() {
+        r.push(op(
+            &name,
+            one,
+            1,
+            vec![args_of("params", Str)],
+            Reduction,
+            &d,
+            true,
+        ));
+    }
     for (name, d) in fldstat::operators() {
         let args = if fldstat::takes_zonaldes(&name) {
             vec![opt("zonaldes", Str, "none")]
@@ -722,7 +734,7 @@ fn build_registry() -> Vec<OpSpec> {
         if o.name == "outputtab" {
             o.aliases.push("outputkey");
         }
-        if o.name == "regmask" {
+        if o.name == "regmask" || regstat::handles(&o.name) {
             o.origin = "cdors";
         }
     }
@@ -866,6 +878,7 @@ pub fn describe(node: &OpNode, inputs: Vec<Desc>, srcs: &mut Sources) -> Result<
         n if runstat::handles(n) => return runstat::describe(node, inputs, srcs),
         n if ymonarith::handles(n) => return ymonarith::describe(node, inputs),
         n if regions::handles(n) => return regions::describe(node, inputs, srcs),
+        n if regstat::handles(n) => return regstat::describe(node, inputs, srcs),
         _ => {}
     }
     match spec.class {

@@ -175,9 +175,10 @@ def cell_centres(ds, name, args=()):
     v = ds[name]
     fes = fesom_nodes(args)
     if fes is not None:
-        if v.shape[-1] != len(fes[0]):
+        hd = [d for d, k in zip(v.dimensions, v.shape) if k == len(fes[0])]
+        if not hd:
             raise SystemExit(f"reference: {name} is not on the mesh nodes")
-        return fes[0], fes[1], v.dimensions[-1:]
+        return fes[0], fes[1], hd[:1]
     if getattr(v, "grid_mapping", "") and "healpix" in ds[v.grid_mapping].grid_mapping_name:
         import healpy
         gm = ds[v.grid_mapping]
@@ -593,6 +594,88 @@ REFERENCES.update({f"mesh_level_{s}": (lambda s: lambda a, i, o: mesh_level_stat
 REFERENCES["nereus_level_mean"] = lambda a, i, o: mesh_level_stat(a, i, o, "nereus")
 REFERENCES.update({f"to{t}": (lambda t: lambda a, i, o: mesh_place_map(a, i, o, t))(t)
                    for t in ("nodes", "elems")})
+
+
+# Region statistics: regmin, regmax, regsum (unweighted), regint (sum of area times value), regmean,
+# regstd (area-weighted, population) over the cells of each region of regionmask's masks
+# (mask_3D, drop=False). Lon-lat and HEALPix grids weigh cdo's cell areas times R^2; on a FESOM2
+# mesh (-setgrid,fesom:) nodes weigh nod_area[k] at layer k (2-D: nod_area[0]), dry levels left
+# out. Output (time, [lev,] region), levels after the regions for FESOM 2.0's (time, nod2, nz1).
+def regstat(args, inputs, out, stat):
+    m, _ = _mask_3D(args, inputs, "reg" + stat)
+    nr = m.shape[0]
+    m = m.reshape(nr, -1)
+    mesh = read_mesh(args) if fesom_nodes(args) is not None else None
+    with netCDF4.Dataset(inputs[0]) as src, netCDF4.Dataset(out, "w") as dst:
+        copy_time(src, dst)
+        dst.createDimension("region", nr)
+        for n in selected(args, data_vars(src)):
+            v = src[n]
+            if mesh is not None:
+                x, lev, last = to_tlc(v, args)
+                x = np.where(wet(mesh, x.shape[2], lev, v.ndim == 2)[None], x, np.nan)
+                a = mesh["nod_area"][lev] if v.ndim == 3 else mesh["nod_area"][:1]
+            else:
+                x = np.ma.filled(masked(v[:]), np.nan).reshape(v.shape[0], 1, -1)
+                a = (cell_areas(src, n) * R * R).reshape(1, -1)
+                last = False
+            nt, nl, _ = x.shape
+            res = np.full((nt, nl, nr), np.nan)
+            for r in range(nr):
+                xr_ = x[:, :, m[r]]
+                ok = ~np.isnan(xr_)
+                w = np.where(ok, np.broadcast_to(a[None][:, :, m[r]], xr_.shape), 0.0)
+                xs = np.where(ok, xr_, 0.0)
+                with np.errstate(invalid="ignore", divide="ignore"):
+                    mean = (w * xs).sum(axis=2) / w.sum(axis=2)
+                    val = {
+                        "min": lambda: np.where(ok, xr_, np.inf).min(axis=2, initial=np.inf),
+                        "max": lambda: np.where(ok, xr_, -np.inf).max(axis=2, initial=-np.inf),
+                        "sum": lambda: xs.sum(axis=2),
+                        "int": lambda: (w * xs).sum(axis=2),
+                        "mean": lambda: mean,
+                        "std": lambda: np.sqrt((w * (xs - mean[..., None]) ** 2).sum(axis=2)
+                                               / w.sum(axis=2)),
+                    }[stat]()
+                res[:, :, r] = np.where(ok.any(axis=2), val, np.nan)
+            if v.ndim == 2 or mesh is None:
+                dims, y = ("time", "region"), res[:, 0, :]
+            else:
+                if "lev" not in dst.dimensions:
+                    dst.createDimension("lev", nl)
+                dims = ("time", "region", "lev") if last else ("time", "lev", "region")
+                y = np.swapaxes(res, 1, 2) if last else res
+            o = dst.createVariable(n, "f8", dims, fill_value=netCDF4.default_fillvals["f8"])
+            o[:] = np.ma.masked_invalid(y)
+
+
+REFERENCES.update({f"reg{s}": (lambda s: lambda a, i, o: regstat(a, i, o, s))(s)
+                   for s in ("min", "max", "sum", "int", "mean", "std")})
+
+
+@reference()
+def nereus_regmean(args, inputs, out):
+    """regmean,regions=basins,select=<names> of the 2-D node variables on a FESOM2 mesh with
+    nereus: its own basin masks (nereus.diag.regions.get_region_mask on oceanBasins, shapely's
+    contains) and nereus.surface_mean with the mesh's nod_area[0]."""
+    from nereus.diag.regions import get_region_mask
+    import nereus
+    op = next(a for a in args if a.lstrip("-").startswith("regmean,"))
+    names = [p for p in op.split(",")[1:] if "=" not in p or p.startswith("select=")]
+    names = [p.split("=", 1)[-1] for p in names]
+    lon, lat = fesom_nodes(args)
+    mesh = read_mesh(args)
+    with netCDF4.Dataset(inputs[0]) as src, netCDF4.Dataset(out, "w") as dst:
+        copy_time(src, dst)
+        dst.createDimension("region", len(names))
+        for n in selected(args, data_vars(src)):
+            v = src[n]
+            x = np.ma.filled(masked(v[:]), np.nan)
+            res = np.stack([nereus.surface_mean(x, mesh["nod_area"][0],
+                                                mask=get_region_mask(lon, lat, b, "oceanBasins"))
+                            for b in names], axis=1)
+            o = dst.createVariable(n, "f8", ("time", "region"), fill_value=netCDF4.default_fillvals["f8"])
+            o[:] = np.ma.masked_invalid(res)
 
 
 # ---------------------------------------------------------------- commands

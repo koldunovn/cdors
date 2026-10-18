@@ -383,6 +383,9 @@ pub struct FixedGrid {
     pub coords: GridCoords,
     pub xattrs: Attrs,
     pub yattrs: Attrs,
+    /// String variables along a one-axis grid (`region_name`, `region_abbrev` of the region
+    /// statistics).
+    pub labels: Vec<Labels>,
 }
 
 /// Coordinates of a grid as written: values and optional vertex bounds (`nv` per point).
