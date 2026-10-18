@@ -12,6 +12,15 @@
 #   <f>_ymonmean / _ydaymean / _yseasmean   climatologies of r36x18_std and hpz2_noleap (cdo)
 #   weights_con_r36x18_r18x9.nc  SCRIP weights of cdo gencon,r18x9 for r36x18_std (remap,<grid>,<weights> rows)
 #   nocoord_360   unst_360 without horizontal coordinates (FESOM-like; written by xarray)
+#   fesom_pi/ fesom_pi_deg/ fesom_pi_data r1x1_edges   tests/make_fesom_fixtures.py (FESOM_PYTHON; details
+#                 in its header): the pi mesh directory (radians, nod_n), the same mesh.diag in ng5's
+#                 layout (degrees, nod2, ...), 24 monthly FESOM2-layout fields on pi (temp, salt (time,
+#                 nod2, nz1), a_ice, m_ice (time, nod2), u, v (time, elem, nz1); 0 below the bottom),
+#                 and a 1 deg grid with centres on integer degrees (AR6 outlines, -180, poles)
+#   fesom_pi_data.zarr2 / .zarr3   xarray copies of fesom_pi_data, time chunks of 6
+#   fesom_pi_data_tiny.zarr2       tiny chunks (5 steps x 400 nodes / 700 elements x 10 levels)
+#   regions/      fixture-local region catalog for CDORS_REGIONS (filled by Task 6's
+#                 tools/export_regions.py; not made here)
 #   grb_ll / grb_gg / grb_rgg   GRIB2 files written with ecCodes (tests/make_grib_fixtures.py: regular
 #                 lon-lat 10 deg on 2 pressure levels with CCSDS packing and a bit-map, regular Gaussian
 #                 N16, reduced Gaussian N32), gribscan's references to them (<name>.json, read by cdors in
@@ -29,6 +38,9 @@ FIX=${CDORS_FIXTURES:-$TARGET/fixtures}
 ZARR_PYTHON=${ZARR_PYTHON:-/work/ab0995/a270088/mambaforge/envs/aimip-virt/bin/python}
 # eccodes and gribscan (0.0.7) for the GRIB fixtures
 GRIBSCAN_PYTHON=${GRIBSCAN_PYTHON:-/work/ab0995/a270088/mambaforge/envs/gribscan/bin/python}
+# numpy + netCDF4 for the FESOM fixtures, and the pi mesh they are made on
+FESOM_PYTHON=${FESOM_PYTHON:-/work/ab0995/a270088/mambaforge/envs/nereus/bin/python}
+FESOM_PI_MESH=${FESOM_PI_MESH:-/pool/data/AWICM/FESOM2/MESHES_FESOM2.1/pi}
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
 mkdir -p "$FIX"
@@ -92,28 +104,42 @@ for f in r36x18_std hpz2_noleap; do
   for s in ymonmean ydaymean yseasmean; do nc "${f}_$s" "-$s" "$f.nc"; done
 done
 
-# Zarr copies of hpz2_noleap, written by xarray (real third-party Zarr, not our own writer).
-zarr() {  # zarr NAME FORMAT TIMECHUNK CELLCHUNK
+# Zarr copies of hpz2_noleap and fesom_pi_data, written by xarray (real third-party Zarr, not our
+# own writer). CHUNKS maps dimension names to chunk sizes (other dimensions: one chunk); it applies
+# to every data variable with two or more dimensions.
+zarr() {  # zarr NAME SOURCE FORMAT CHUNKS      e.g. CHUNKS=time=10,healpix_index=16
   local name=$1
   if [[ -e $name ]]; then echo "exists: $FIX/$name"; return; fi
   if [[ ! -x $ZARR_PYTHON ]]; then echo "skip:   $name (no ZARR_PYTHON=$ZARR_PYTHON)"; return; fi
-  "$ZARR_PYTHON" -I - "$FIX/hpz2_noleap.nc" "$FIX/$name.tmp$$" "$2" "$3" "$4" <<'EOF'
+  if [[ ! -e $2.nc ]]; then echo "skip:   $name (no $FIX/$2.nc)"; return; fi
+  "$ZARR_PYTHON" -I - "$FIX/$2.nc" "$FIX/$name.tmp$$" "$3" "$4" <<'EOF'
 import sys, xarray as xr, zarr
-src, dst, fmt, tch, cch = sys.argv[1], sys.argv[2], int(sys.argv[3]), int(sys.argv[4]), int(sys.argv[5])
+src, dst, fmt = sys.argv[1], sys.argv[2], int(sys.argv[3])
+chunks = {k: int(v) for k, v in (kv.split("=") for kv in sys.argv[4].split(","))}
 ds = xr.open_dataset(src, decode_times=False)   # keep time as numbers + units/calendar attrs
 enc = {}
 for v in ds.data_vars:
-    if ds[v].ndim == 2:
+    if ds[v].ndim >= 2:
         ds[v].encoding.pop("chunksizes", None); ds[v].encoding.pop("contiguous", None)
-        enc[v] = {"chunks": (tch, cch)}
+        enc[v] = {"chunks": tuple(min(chunks.get(d, n), n) for d, n in ds[v].sizes.items())}
 ds.to_zarr(dst, mode="w-", zarr_format=fmt, encoding=enc, consolidated=(fmt == 2))
 EOF
   mv "$FIX/$name.tmp$$" "$FIX/$name"
   echo "made:   $FIX/$name"
 }
-zarr hpz2_noleap.zarr2      2 73 192
-zarr hpz2_noleap.zarr3      3 73 192
-zarr hpz2_noleap_tiny.zarr2 2 10 16
+zarr hpz2_noleap.zarr2      hpz2_noleap 2 time=73
+zarr hpz2_noleap.zarr3      hpz2_noleap 3 time=73
+zarr hpz2_noleap_tiny.zarr2 hpz2_noleap 2 time=10,healpix_index=16
+
+# FESOM2 fixtures on the pi mesh and the 1 deg region-edge grid, then Zarr copies of the FESOM data.
+if [[ ! -x $FESOM_PYTHON ]]; then
+  echo "skip:   fesom_pi* r1x1_edges (no FESOM_PYTHON=$FESOM_PYTHON)"
+else
+  "$FESOM_PYTHON" -I "$HERE/make_fesom_fixtures.py" "$FIX" "$FESOM_PI_MESH"
+fi
+zarr fesom_pi_data.zarr2      fesom_pi_data 2 time=6
+zarr fesom_pi_data.zarr3      fesom_pi_data 3 time=6
+zarr fesom_pi_data_tiny.zarr2 fesom_pi_data 2 time=5,nod2=400,elem=700,nz1=10
 
 # FESOM-like file without horizontal coordinates: unst_360 with lon/lat, their bounds and the
 # `coordinates`/`CDI_grid_type` attributes removed, cells renamed to nod2 (err:no_coordinates rows).

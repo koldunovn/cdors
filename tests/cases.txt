@@ -186,3 +186,21 @@ ulp      | -zonmean {in}                               | grb_gg
 ulp      | -timmean -sellevel,85000 {in}               | grb_ll
 ulp      | -timmean {in}                               | grb_gg
 ulp      | -vertmean {in}                              | grb_ll
+#
+# Harness round 1 (plan 20261018-unstructured-round1, Task 2): ref: and json: tags, FESOM2 layout.
+# Area-weighted field mean against an independent NumPy reference (great-circle cell areas, as cdo).
+ref:numpy.fldmean | -fldmean {in}                      | r36x18_std hpz2_noleap
+json:.out.variables | map(.name) == ["temp", "salt", "a_ice", "m_ice", "u", "v"] | --json sinfo {in} | fesom_pi_data
+# fesom_pi_data: FESOM2's (time, nod2, nz1) layout without coordinates, 0 below the bottom; a
+# variant fixture (Zarr copies, tiny chunks splitting nod2/elem and nz1, --mem). cdo reads it as
+# generic grids (3140 nodes, 5839 elements) on a generic 47-level z-axis.
+text     | showname {in}                               | fesom_pi_data
+exact    | -selname,a_ice,m_ice {in}                   | fesom_pi_data
+exact    | -seltimestep,1/3 -selname,temp {in}         | fesom_pi_data
+exact    | -sellevel,2.5,25,6125 -selname,salt,u {in}  | fesom_pi_data
+ulp      | -timmean -selname,salt,a_ice,u {in}         | fesom_pi_data
+ulp      | -yearmean -selname,temp,v {in}              | fesom_pi_data
+json:any(.stderr[]; .warning == "equal_weights") | --json -fldmean -selname,a_ice {in} {out} | fesom_pi_data   # no mesh: equal weights
+# r1x1_edges: 1 deg cells centred on integer degrees, lon -180..179, lat -90..90 (region edge rows)
+text     | griddes {in}                                | r1x1_edges
+exact    | -copy {in}                                  | r1x1_edges

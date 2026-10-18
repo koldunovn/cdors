@@ -252,18 +252,55 @@ The harness gains three capabilities (Task 2), so that every check in this plan 
 - Modify: `tests/make_fixtures.sh`
 - Modify: `tests/cases.txt`
 
-- [ ] `ref:<lib>.<fn>[:abs=…][:rel=…]` tag as specified in Testing Strategy. Cache in `$CDORS_REF/ref-<key>`. A
+- [x] `ref:<lib>.<fn>[:abs=…][:rel=…]` tag as specified in Testing Strategy. Cache in `$CDORS_REF/ref-<key>`. A
       missing env or package FAILs.
-- [ ] `json:<jq-expr>` tag over `{"out", "stderr"}` (Testing Strategy).
-- [ ] `VARIANT_FIXTURE` becomes a list (`hpz2_noleap fesom_pi_data`), and `fesom_pi_data_tiny.zarr2` is added with
+- [x] `json:<jq-expr>` tag over `{"out", "stderr"}` (Testing Strategy).
+- [x] `VARIANT_FIXTURE` becomes a list (`hpz2_noleap fesom_pi_data`), and `fesom_pi_data_tiny.zarr2` is added with
       chunks that split `nod2` and `nz1`.
-- [ ] `make_fesom_fixtures.py` (nereus env) writes the fixtures listed in Testing Strategy. `make_fixtures.sh` calls
+- [x] `make_fesom_fixtures.py` (nereus env) writes the fixtures listed in Testing Strategy. `make_fixtures.sh` calls
       it, and the fixture list is documented in its header.
-- [ ] Write tests: self-test rows.
+- [x] Write tests: self-test rows.
   - A `ref:numpy.fldmean` row equals cdo on r36x18_std, and a deliberately wrong reference fails.
   - A `json:` row that is true passes, and one that is false fails.
   - A missing env fails.
-- [ ] Run tests: the full harness passes, and no existing row changes.
+- [x] Run tests: the full harness passes, and no existing row changes.
+
+- ➕ Row syntax: `ref:numpy.fldmean | -fldmean {in} | r36x18_std hpz2_noleap`, with tolerance
+  `ref:numpy.fldmean_wrong:rel=1e-4 | …`, `…:abs=0.01`, `…:exact`; `json:any(.stderr[]; .warning == "equal_weights")
+  | --json -fldmean -selname,a_ice {in} {out} | fesom_pi_data`. Arguments and fixtures are the last two `|` fields, so
+  a jq expression may contain `|` (not `#`). New placeholder `{out}`: an output file in the row's run directory.
+- ➕ Environments: `numpy` and `nereus` → nereus, `pyfesom2` → pyfesom2, `regionmask` → aqua;
+  `CDORS_REF_ENV_<lib>=<env or prefix>` overrides. Values pass if `|cdors − ref| ≤ abs + rel·|ref|` everywhere, with
+  missing values in the same places. This is checked by `reference.py compare`, because cdo's `diffn` counts a field
+  as different when *either* abslim or rellim is exceeded, so it has no pure relative mode. Names and timestamps are
+  compared with cdo as before. The planner variants of a `ref:` row compare with the base output exactly, as for cdo
+  rows.
+- ➕ Self-test: `tests/selftest_ref.sh` runs `tests/selftest_ref.txt` (16 rows, 10 of them expected to fail, each
+  with its message checked: wrong reference, `exact` against float32 output, unknown modifier, missing env, missing
+  package, unknown lib, unknown function, false and non-boolean `json:` results, a jq syntax error).
+- ➕ `ulp` limits are now computed variable by variable, because cdo `outputf` aborts on a file with several grids
+  (FESOM nodes and elements). For files with one grid the value is unchanged.
+- ⚠️ **Real FESOM2 output puts `nz1` before `nod2`.** `/work/ab0995/a270088/fesom2_forca20_snap/vnod.fesom.1959.nc`
+  (FESOM git 6b26861a) has `vnod(time, nz1, nod2)`. It is NetCDF-4 classic with chunks (1, 5, nod2/12) and deflate 1,
+  `_FillValue` 9.96921e+36, no `calendar`, and time in `seconds since <year>-01-01 0:0:0`. FESOM 2.0 wrote
+  `(time, nod2, nz1)`. The fixture follows this plan (`(time, nod2, nz1)`). The order is the constant `ORDER_NODE`
+  / `ORDER_ELEM` in `make_fesom_fixtures.py`, and the dry value is `DRY`. Task 1 records which order the target
+  dataset has; the loader probably needs both.
+- ⚠️ **ng5's `mesh.diag` differs from pi's in more than `nod2`.** Its dimensions are `elem`, `nz` and `nz1` (not
+  `elem_n`, `nl`, `nl1`), and its variables are `nz` and `nz1` (not `zbar` and `Z`) and `elements` (not `elem`). It
+  adds `lon`/`lat`, and `gradient_sca_x/y` are `(elem, n3)`. `fesom_pi_deg/` reproduces all of this (nodes in
+  degrees), so Task 5's loader must accept both layouts.
+- ⚠️ cdors already reads `(time, nod2, nz1)` exactly as cdo does for the non-remap operators tried (`selname`,
+  `seltimestep`, `sellevel`, `copy`, `timmean`, `yearmean`, `fldmean`, `vertmean`). That holds on NetCDF (both read
+  paths), Zarr v2/v3 and the tiny chunks. cdo sees generic grids (3140 nodes, 5839 elements) on a generic 47-level
+  z-axis. No disagreement to hand to Task 5, apart from remap's `trailing_hdims()`.
+- ⚠️ **Planner variant on FESOM, two limits for later rows.**
+  - Under `--mem 1M` a tile must stay below ~0.5 MB. The NetCDF fixture is therefore chunked (1 step, 1/8 of the
+    cells, all levels); chunks of half the cells failed with `memory_limit`.
+  - A chain whose intermediate holds the whole output fails with `intermediate_too_large`, for example
+    `-selname,u -timmean` (6.8 MB). Keep selections innermost in rows on `fesom_pi_data`.
+- ⚠️ The `regions/` directory is not made here. Task 6's export script fills `$CDORS_FIXTURES/regions`, and
+  run_cases.sh exports `CDORS_REGIONS` with that default.
 
 ### Task 3: `cdors-mesh` crate: vocabulary and geometry
 

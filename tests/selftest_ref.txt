@@ -1,0 +1,19 @@
+# Self-test rows for the json: and ref: tags (the real cdors); run with  tests/selftest_ref.sh
+# Rows marked "expect FAIL: <text>" must fail with <text> in the message; all others must pass.
+# tag                                   | arguments              | fixtures
+ref:numpy.fldmean                       | -fldmean {in}          | r36x18_std
+ref:numpy.fldmean_wrong                 | -fldmean {in}          | r36x18_std   # expect FAIL: values differ from the reference
+ref:numpy.fldmean_wrong:rel=1e-4        | -fldmean {in}          | r36x18_std   # the 1e-5 error is within rel=1e-4
+ref:numpy.fldmean_wrong:abs=0.01        | -fldmean {in}          | r36x18_std   # tas ~280, pr ~6: 1e-5 relative < 0.01
+ref:numpy.fldmean:exact                 | -fldmean {in}          | r36x18_std   # expect FAIL: values differ from the reference
+ref:numpy.fldmean:tol=1                 | -fldmean {in}          | r36x18_std   # expect FAIL: unknown ref modifier
+ref:missingenv.fldmean                  | -fldmean {in}          | r36x18_std   # expect FAIL: reference environment of 'missingenv' missing
+ref:regionmask.fldmean                  | -fldmean {in}          | r36x18_std   # expect FAIL: package 'regionmask' missing
+ref:nosuchlib.fldmean                   | -fldmean {in}          | r36x18_std   # expect FAIL: unknown reference library
+ref:numpy.nosuchfn                      | -fldmean {in}          | r36x18_std   # expect FAIL: reference failed
+json:.out.variables | length == 2       | --json sinfo {in}      | r36x18_std
+json:.out.variables | length == 3       | --json sinfo {in}      | r36x18_std   # expect FAIL: not true
+json:.out.variables[].name              | --json sinfo {in}      | r36x18_std   # expect FAIL: not true
+json:.out.variables[] | .dtype == "float32" | --json sinfo {in}  | r36x18_std
+json:.out == null and any(.stderr[]; .warning == "equal_weights") | --json -fldmean -selname,a_ice {in} {out} | fesom_pi_data
+json:.nosuch(                           | --json sinfo {in}      | r36x18_std   # expect FAIL: jq expression failed
