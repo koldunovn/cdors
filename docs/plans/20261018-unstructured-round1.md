@@ -56,7 +56,8 @@ FESOM2 is the first model.
   - `ops/remap.rs`:
     - the weight cache lives in `$CDORS_CACHE/weights`;
     - the private `prune()` drops source cells that no link reads;
-    - ⚠️ `trailing_hdims()` (`:254`) requires the horizontal dimensions last, but FESOM writes `temp(time, nod2, nz1)`.
+    - ⚠️ `trailing_hdims()` (`:254`) requires the horizontal dimensions last. Current FESOM2 (2.1 and later) writes
+      `temp(time, nz1, nod2)`, which fits; FESOM 2.0 wrote `temp(time, nod2, nz1)`, which does not (Task 1).
 - **Statistics operators**
   - `ops/fldstat.rs`: field weights are `Weights::Const` or `Weights::Each` (per cell), with no per-level variant.
     `zonal()` refuses unstructured grids.
@@ -195,10 +196,10 @@ The harness gains three capabilities (Task 2), so that every check in this plan 
   - `fesom_pi/`: a copy of the pi mesh directory;
   - `fesom_pi_deg/`: `mesh.diag` with nodes in degrees and the dimension named `nod2`;
   - `fesom_pi_data.nc`, 24 monthly steps, in FESOM's dimension order with dry levels stored as 0:
-    - `temp(time, nod2, nz1)`, analytic in lon, lat and z;
-    - `salt(time, nod2, nz1)`;
+    - `temp(time, nz1, nod2)`, analytic in lon, lat and z;
+    - `salt(time, nz1, nod2)`;
     - `a_ice(time, nod2)` and `m_ice(time, nod2)`;
-    - `u(time, elem, nz1)` and `v(time, elem, nz1)`;
+    - `u(time, nz1, elem)` and `v(time, nz1, elem)`;
   - `r1x1_edges.nc`: a 1° grid with centres on integer degrees, to hit AR6 outlines exactly;
   - a fixture-local regions directory, passed via `CDORS_REGIONS`.
 
@@ -318,6 +319,10 @@ The harness gains three capabilities (Task 2), so that every check in this plan 
 - ⚠️ The `regions/` directory is not made here. Task 6's export script fills `$CDORS_FIXTURES/regions`, and
   run_cases.sh exports `CDORS_REGIONS` with that default.
 
+- ⚠️ Orchestrator, after Task 1 (2026-10-18): `fesom_pi_data` now uses current FESOM2's `(time, nz1, nod2)` and
+  `(time, nz1, elem)`; `fesom_pi_data_v20` holds the same values in FESOM 2.0's `(time, nod2, nz1)` layout (two
+  existing-operator rows on it).
+
 ### Task 3: `cdors-mesh` crate: vocabulary and geometry
 
 **Files:**
@@ -428,7 +433,8 @@ The harness gains three capabilities (Task 2), so that every check in this plan 
       hint names both sizes and the mesh. Area-weighted operators (`fldmean`, `fldint`, `fldstd`, …) then use the mesh
       areas, at level k `nod_area[k]`, through `Weights::PerLevel`. A deviation from cdo's 2-D area goes into
       `docs/deviations.md`.
-- [ ] **Executor for FESOM's `(time, nod2, nz1)` order.** `FieldKernel` lanes accept horizontal dimensions that are
+- [ ] **Executor for FESOM 2.0's `(time, nod2, nz1)` order** (current FESOM2 writes `(time, nz1, nod2)`, which the
+      executor already handles; both orders must give identical results, fixture `fesom_pi_data_v20`). `FieldKernel` lanes accept horizontal dimensions that are
       not last: they gather to `(…, nz1, nod2)` on input and scatter back on output. The output keeps the input's
       dimension order.
 - [ ] **`RemapWeights::from_csr`** takes a public rule: `Renormalise` for means, `Drop` for sums and integrals.

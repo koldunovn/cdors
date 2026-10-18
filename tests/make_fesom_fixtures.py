@@ -13,15 +13,18 @@ writes into OUTDIR, each atomically (temporary name, then rename) and never over
 - fesom_pi_data.nc  24 monthly means (2000-2001) in FESOM2's output layout: no lon/lat, time in
                  "seconds since 2000-01-01 0:0:0" (no calendar attribute, stamped one model step
                  before the end of each month), NetCDF-4 classic, deflate 1, chunks splitting the
-                 cells; temp, salt (time, nod2, nz1), a_ice, m_ice (time, nod2), u, v (time, elem,
-                 nz1), float32; levels below each node's / element's bottom stored as 0;
+                 cells; temp, salt (time, nz1, nod2), a_ice, m_ice (time, nod2), u, v (time, nz1,
+                 elem), float32; levels below each node's / element's bottom stored as 0;
+- fesom_pi_data_v20.nc  the same values in FESOM 2.0's layout: temp, salt (time, nod2, nz1),
+                 u, v (time, elem, nz1) (horizontal dimension before the levels);
 - r1x1_edges.nc  a 1 deg lon-lat grid with centres on integer degrees (lon -180..179, lat -90..90),
                  so cell centres fall exactly on AR6 outlines, at -180 and at the poles; 2 steps.
 The Zarr copies of fesom_pi_data (.zarr2, .zarr3 and _tiny.zarr2, whose chunks split nod2/elem
 and nz1) are written by make_fixtures.sh with ZARR_PYTHON.
 
 The layout choices are the constants below (one line each), since real FESOM2 output differs
-between versions: FESOM 2.0 writes (time, nod2, nz1), newer versions (time, nz1, nod2).
+between versions: FESOM 2.0 writes (time, nod2, nz1), FESOM 2.1 and later (time, nz1, nod2) (AWI-CM3
+dart output, docs/unstructured-baseline.md).
 """
 import datetime
 import os
@@ -33,8 +36,10 @@ import numpy as np
 
 OUT, MESH = sys.argv[1], sys.argv[2]
 
-ORDER_NODE = ("time", "nod2", "nz1")    # FESOM 2.0; newer FESOM2 writes ("time", "nz1", "nod2")
-ORDER_ELEM = ("time", "elem", "nz1")
+ORDER_NODE = ("time", "nz1", "nod2")    # FESOM 2.1 and later
+ORDER_ELEM = ("time", "nz1", "elem")
+ORDER_NODE_V20 = ("time", "nod2", "nz1")  # FESOM 2.0 (fesom_pi_data_v20)
+ORDER_ELEM_V20 = ("time", "elem", "nz1")
 DRY = 0.0                               # value stored below the bottom (FESOM2 writes 0)
 DTYPE = "f4"
 FILL = netCDF4.default_fillvals["f4"]   # FESOM2 declares the default fill (9.96921e+36)
@@ -163,7 +168,7 @@ def v_vel(lon, lat, z, m):
     return 0.05 * np.sin(2 * lo) * np.cos(la) * np.exp(-z / 1500) + 0.01 * np.sin(la) * season(m, 3)
 
 
-def fesom_data(tmp):
+def fesom_data(tmp, order_node=ORDER_NODE, order_elem=ORDER_ELEM):
     with netCDF4.Dataset(os.path.join(MESH, "fesom.mesh.diag.nc")) as m:
         lon, lat = np.rad2deg(m["nodes"][:])
         tri = m["elem"][:] - 1                      # (3, elem), 1-based in the file
@@ -212,13 +217,13 @@ def fesom_data(tmp):
             a = a.astype(DTYPE)[None]
             out[m:m + 1] = np.transpose(a, [canon.index(d) for d in dims])
 
-    var("temp", "temperature", "C", "node", ORDER_NODE, temp, lon, lat, wet_n)
-    var("salt", "salinity", "psu", "node", ORDER_NODE, salt, lon, lat, wet_n)
+    var("temp", "temperature", "C", "node", order_node, temp, lon, lat, wet_n)
+    var("salt", "salinity", "psu", "node", order_node, salt, lon, lat, wet_n)
     var("a_ice", "ice concentration [0 to 1]", "%",   # FESOM2's own units string for a 0..1 field
         "node", None, a_ice, lon, lat, None)
     var("m_ice", "ice height per unit area", "m", "node", None, m_ice, lon, lat, None)
-    var("u", "zonal velocity", "m/s", "elem", ORDER_ELEM, u_vel, elon, elat, wet_e)
-    var("v", "meridional velocity", "m/s", "elem", ORDER_ELEM, v_vel, elon, elat, wet_e)
+    var("u", "zonal velocity", "m/s", "elem", order_elem, u_vel, elon, elat, wet_e)
+    var("v", "meridional velocity", "m/s", "elem", order_elem, v_vel, elon, elat, wet_e)
     ds.close()
 
 
@@ -246,4 +251,5 @@ def edges_grid(tmp):
 atomic_dir("fesom_pi", copy_mesh)
 atomic_dir("fesom_pi_deg", deg_mesh)
 atomic_file("fesom_pi_data.nc", fesom_data)
+atomic_file("fesom_pi_data_v20.nc", lambda tmp: fesom_data(tmp, ORDER_NODE_V20, ORDER_ELEM_V20))
 atomic_file("r1x1_edges.nc", edges_grid)
