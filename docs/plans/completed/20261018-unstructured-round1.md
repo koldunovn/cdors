@@ -995,9 +995,13 @@ The harness gains three capabilities (Task 2), so that every check in this plan 
 - Modify: `bench/agent_check.sh`, `bench/agent/` tasks
 - Modify: `docs/agent-check.md`
 
-- [ ] Five tasks, two arms. Tasks: Atlantic OHC 0–700 m series, NH ice seasonal cycle, Drake T section, NINO3.4
+- [x] Five tasks, two arms. Tasks: Atlantic OHC 0–700 m series, NH ice seasonal cycle, Drake T section, NINO3.4
       index, Arctic mean SST. Arms: cdors (`cdors guide` only) and Python + nereus.
-- [ ] Score correctness against the Task 13 references. Report wall time, tokens and USD for each arm.
+- [x] Score correctness against the Task 13 references. Report wall time, tokens and USD for each arm.
+- ➕ **Run 2026-10-19** (pilot job 28236330, F5 with cdors correct, $0.33; full run job 28244863, 44 min, frozen
+  `cdors-32b1dbd`, `bench/agent/results-20261019-140945.md`): ten of ten correct. cdors 838 s, $2.24; Python + nereus
+  1697 s, $2.03, so criterion 3 is not met on cost (1.10×). cdors is cheaper on F1–F2, dearer on F3–F5 (learning
+  calls, one thread lookup per session; `docs/criteria-unstructured.md` §3).
 - ➕ **Prepared 2026-10-19** (no session run): tasks F1–F5, prompts, references and tolerances in
   `bench/agent_tasks.md` (FESOM2 task set); references by `bench/agent/ref_fesom_*.py` (NumPy, nereus as the
   second method), computed in job 28230786 by `bench/agent/ref_fesom.sh`, which also ran the expert's cdors
@@ -1014,7 +1018,7 @@ The harness gains three capabilities (Task 2), so that every check in this plan 
   4. memory bounded under `--mem`.
 - [x] Update the README (operator list and a mesh section), `docs/levante.md` (FESOM2 examples; the shared install
       and guide page only with approved text), `docs/deviations.md` and `docs/STATUS.md`.
-- [ ] Move this plan to `docs/plans/completed/`.
+- [x] Move this plan to `docs/plans/completed/`.
 - ➕ Documentation drafted (2026-10-19), criteria document left for the end:
   - README: an operator table (cdors operators in bold, mesh extensions marked †) and "Model meshes (FESOM2)"
     (what `setgrid,fesom:` gives, the region catalog with licences, the six recipes, the dart numbers);

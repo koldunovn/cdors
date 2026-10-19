@@ -2,13 +2,14 @@
 
 ## Round 1: analysis on FESOM2 meshes (2026-10-19)
 
-Briefing for Nikolay. Plan with per-task notes: `docs/plans/20261018-unstructured-round1.md`. The four criteria:
+Briefing for Nikolay. Plan with per-task notes: `docs/plans/completed/20261018-unstructured-round1.md`. The four criteria:
 `docs/criteria-unstructured.md`. Nothing of round 1 is pushed, published or installed yet.
 
-**In short.** Tasks 1–13 and 15 are done. Task 14, the agent check: the pilot ran and is correct; submitting
-the full run was blocked by the permission classifier, so it waits for you (command below). Correctness, speed and
-memory are met: the warm heat-content row passes when measured warm (5.9–6.5 s), and since `25aea2f` the heat
-content peaks at 1.72 GB under `--mem 2G`.
+**In short.** All 15 tasks are done, and three of the four criteria are met. Correctness, speed and memory are met:
+the warm heat-content row passes when measured warm (5.9–6.5 s), and since `25aea2f` the heat content peaks at
+1.72 GB under `--mem 2G`. The agent check (job 28244863) is not met on cost: ten of ten answers are correct, and with
+cdors the agents took half the time (838 s against 1697 s), but at 1.10× the cost of Python with nereus ($2.24
+against $2.03).
 
 - **Built:**
   - **Meshes.** `-setgrid,fesom:<dir>` reads the FESOM2 mesh from `fesom.mesh.diag.nc`:
@@ -56,22 +57,24 @@ content peaks at 1.72 GB under `--mem 2G`.
   cases on both NetCDF read paths, with the Zarr and planner variants (109 s on the first run of the build, 30 s
   with `CDORS_NC4=netcdf` after it); `tests/selftest_ref.sh` ok. The cases include 109 rows against references
   (67 NumPy, 28 regionmask, 14 nereus) and 67 `json:` rows.
-- **Compute used:** 0.74 node-h in all:
+- **Compute used:** 1.14 node-h in all, and $4.60 of agent sessions:
   - gate 0.28 (job 28228738);
   - validation 0.20 (28230544, 28230657, 28231368);
   - read path 0.06 (28231623, 28231676);
   - Task 14 references 0.08 (28230786);
   - warm re-run and memory 0.09 (28236403, 28236468, 28236548, 28236588);
-  - agent check pilot 0.03 (28236330, shared partition) and $0.33.
+  - agent check pilot 0.03 (28236330, shared partition) and $0.33;
+  - agent check 0.4 (28244863, shared partition, 44 min) and $4.27.
 
-**The agent check (Task 14) needs you.** The pilot (job 28236330: F5 with cdors, correct, 9 turns, 64 s, $0.33)
-went through; submitting the full run was blocked by the permission classifier. With the frozen binary:
-
-```bash
-cd ~/cdo
-TASKSET=fesom CDORS_BIN=/work/ab0995/a270088/cdors-target/frozen/cdors-32b1dbd \
-  sbatch --time=02:30:00 bench/agent_check.sbatch                      # 10 sessions, ~$3–6
-```
+**The agent check (Task 14).**
+- **Per task:** cdors is cheaper on the two mesh-weighted series: F1 $0.45 against $0.55, F2 $0.40 against $0.76.
+  It is dearer on F3–F5, which one NumPy script answers in 6–7 turns.
+- **Where the cdors sessions' extra cost goes:**
+  - learning cdors: the guide, operator help, `sinfo`, `mesh info` and `--plan`, 5–6 calls per session;
+  - one call per session on threads, which the guide does not cover in a Slurm job;
+  - in F3, two failed attempts to print station names from the written file.
+- **Spread:** a single session varies by about 15 % (the pilot's F5 cost $0.33 against $0.38 here).
+- Details: `docs/criteria-unstructured.md` §3 and `docs/agent-check.md`.
 
 **Open follow-ups.**
 1. **Memory estimate:** the peak is still 0.1 GB (6 %) above the plan's estimate (compressed bytes of mesh levels
@@ -80,8 +83,9 @@ TASKSET=fesom CDORS_BIN=/work/ab0995/a270088/cdors-target/frozen/cdors-32b1dbd \
 2. **Cold reads:** 2.2–2.5 GB/s against 3.5–4.5 GB/s for a plain `pread` of the same files. Spread the reads over
    the files' storage targets: interleave the chunks of `-cat` and glob members, and read a file's progressive
    layout components at once (`docs/unstructured-results.md`, "Read path").
-3. **Agent check:** run the full set (above), then mark criterion 3 in `docs/criteria-unstructured.md` and move the plan to
-   `docs/plans/completed/`.
+3. **Agent check, cost (your call):** accept the 1.10× as within the spread of single sessions, or make the guide
+   shorter and say what the sessions looked up (the Slurm defaults; station names and `bottom_depth` from the
+   sampling chain), then re-run the cdors arm only (five sessions, about $2).
 4. **Publication, after you approve the exact text:**
    - the shared install, with `share/regions/` (the regions directory, 12 MB);
    - its README (= `docs/levante.md`, Example 7 and "Three years of FESOM2");
@@ -103,8 +107,8 @@ to Natural Earth's countries.
 | `/scratch/a/a270088/cdors-bench/unst-validate-28230544`, `-28230657`, `-28231368` | 1.2, 2.4, 1.2 GB | Task 13 node runs: outputs, mesh caches, the nereus reference |
 | `/scratch/a/a270088/cdors-bench/unst-baseline-28228738` | 77 MB | Task 1 gate run |
 | `/scratch/a/a270088/cdors-bench/readpath-28231623`, `-28231676`, `readpath-bin` | 2.0 MB, 2.7 MB, 449 MB | read-path jobs and their candidate binaries |
-| `/scratch/a/a270088/cdors-bench/t14`, `t14-refs-28230786` | 1.2, 1.2 GB | Task 14 references; keep until the agent check has run |
-| `/work/ab0995/a270088/cdors-target/frozen/cdors-d47d8fc`, `cdors-32b1dbd` | 150 MB each | frozen binaries; keep `cdors-32b1dbd` for the agent check |
+| `/scratch/a/a270088/cdors-bench/t14`, `t14-refs-28230786` | 1.2, 1.2 GB | Task 14 references; the agent check has run (keep them if the cdors arm is re-run) |
+| `/work/ab0995/a270088/cdors-target/frozen/cdors-d47d8fc`, `cdors-32b1dbd` | 150 MB each | frozen binaries; `cdors-32b1dbd` ran the agent check (keep it for a re-run) |
 
 Commands. Check the list first; the worktrees go through git:
 

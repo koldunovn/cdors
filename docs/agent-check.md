@@ -96,7 +96,38 @@ Per task: T1 56 s ($0.27), T2 149 s ($0.52), T3 88 s ($0.45), T4 90 s ($0.48), T
 flagged. With the guide, the cdors arm cost 27% less and took 39% less time: 1.3× the cost of cdo + Python, and
 4× faster.
 
-## FESOM2 set (round 1): prepared, not yet run (2026-10-19)
+## FESOM2 set (round 1, 2026-10-19)
+
+**Ten of ten correct; with cdors half the wall time (838 s against 1697 s) at 1.10× the cost ($2.24 against
+$2.03).** Run `20261019-140945` (job 28244863, shared partition, 44 min), frozen binary `cdors-32b1dbd`, model
+claude-opus-5-5, results in `bench/agent/results-20261019-140945.md`:
+
+| | cdors, `cdors guide` | Python + nereus, cdo |
+|---|---|---|
+| Correct | 5 of 5 | 5 of 5 |
+| Wall time | 838 s | 1697 s |
+| Turns / tool calls | 57 / 52 | 59 / 54 |
+| Tokens (all, incl. cache reads) / output | 1.68M / 30k | 1.46M / 41k |
+| Cost at list price | $2.24 | $2.03 |
+
+Per task, cdors against Python: F1 $0.45 against $0.55 (109 s against 721 s), F2 $0.40 against $0.76 (187 s
+against 545 s), F3 $0.65 against $0.23, F4 $0.36 against $0.25, F5 $0.38 against $0.24.
+- **F1 and F2 (mesh-weighted series):** cdors is cheaper; the Python arm built the area and depth weights and the
+  masks by hand (40 turns in all).
+- **F3–F5:** one NumPy script answers each in 6–7 turns, while every cdors session first spends 5–6 calls on the
+  guide, the help of two to four operators, `sinfo`, `mesh info` and `--plan`.
+- **Threads:** all five cdors sessions spent a call looking them up, because the guide does not say that inside a
+  Slurm job the defaults already use the job's cores.
+- **F3 (16 turns):**
+  - `outputtab,station_name` of the written section file failed twice (cdors reads no string variables from stored
+    files; the hint says so).
+  - `-vertint -addc,1 -mulc,0` gave the full column depth instead of the wet one. As in cdo, zero times missing is
+    zero.
+  - The session checked against `bottom_depth` and corrected it.
+- **Spread:** the pilot (job 28236330, `results-20261019-082207.md`) ran F5 with cdors in 9 turns for $0.33, against
+  11 turns and $0.38 in the full run.
+
+### Setup
 
 Five tasks on raw FESOM2 output (AWI-CM3 `hist1950d`, dart mesh, 3.16M nodes): F1 Atlantic heat content 0–700 m
 per month of 1990–1991, F2 the NH ice-extent seasonal cycle from daily concentration (1990–1991), F3 a Drake
@@ -112,6 +143,6 @@ on F4–F5, where cdors writes float32. Three cdors findings came up along the w
 The largest: `maskregion,regions=…` inflates the planned bytes 5×, so on a login node the natural F1 command is
 refused by the 64 GB read limit.
 
-Run: `TASKSET=fesom bench/agent_check.sh` (dry run), a pilot `RUN=1 TASKSET=fesom TASKS=F5 ARMS=A
-bench/agent_check.sh`, then `RUN=1 TASKSET=fesom bench/agent_check.sh`. Estimated cost: $4–6 for the ten
-sessions (range $3–8), 40–90 min.
+Run: `TASKSET=fesom bench/agent_check.sh` (dry run); on a compute node `TASKSET=fesom CDORS_BIN=<binary> sbatch
+--time=02:30:00 bench/agent_check.sbatch` (add `TASKS=F5 ARMS=A` and `--time=00:40:00` for a pilot). Estimated
+beforehand at $4–6 for the ten sessions and 40–90 min; it took $4.27 and 44 min.

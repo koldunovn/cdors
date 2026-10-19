@@ -26,8 +26,11 @@ and a daily climatology over 1.1 TB within a 32 GB budget. What was shown and wh
 agree with nereus given the same mesh areas (Atlantic heat content 0–700 m to 9e-15, ice extent to
 3e-14), and the Atlantic and AR6 ocean masks are identical to nereus' and regionmask's (all nodes;
 AR6 on every 10th node). On a compute node, three years of daily NH ice extent took 7.1 s, 17.8×
-faster than nereus, and the Atlantic heat content 8.3 s, 8.3× faster. See "Model meshes (FESOM2)" below and
-[docs/unstructured-results.md](docs/unstructured-results.md).
+faster than nereus, and the Atlantic heat content 8.3 s, 8.3× faster. On five FESOM2 tasks, agents answered
+five of five correctly both with cdors and with Python and nereus; with cdors in half the time (838 s against
+1697 s), at 1.10× the cost ($2.24 against $2.03). See "Model meshes (FESOM2)" below,
+[docs/unstructured-results.md](docs/unstructured-results.md) and
+[docs/criteria-unstructured.md](docs/criteria-unstructured.md).
 
 **On Levante, without building:** `export PATH=/work/ab0995/a270088/cdors/bin:$PATH`. The guide with
 worked examples on nextGEMS, EERIE, CMIP6 and FESOM2 data is [docs/levante.md](docs/levante.md), installed

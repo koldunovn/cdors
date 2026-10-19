@@ -1,17 +1,17 @@
 # The four round-1 criteria (analysis on FESOM2 meshes)
 
-Status 2026-10-19, master `25aea2f`. The round-1 plan (`docs/plans/20261018-unstructured-round1.md`, Task 15) sets
+Status 2026-10-19, master `25aea2f`. The round-1 plan (`docs/plans/completed/20261018-unstructured-round1.md`, Task 15) sets
 four criteria. Below, each is checked against the gate (`docs/unstructured-baseline.md`), the real-data validation
 (`docs/unstructured-results.md`) and the test suite. Correctness is met. Speed meets every mark: the warm
 heat-content row, a miss by 0.2 s in the first validation, was re-measured warm and takes 5.9–6.5 s. Memory is met
-since a fix to the mesh reader: 1.72 GB under a 2 GB budget. The agent check's pilot is correct; the full ten
-sessions have not run yet.
+since a fix to the mesh reader: 1.72 GB under a 2 GB budget. The agent check is not met on cost: all ten sessions
+answered correctly, and with cdors the agents took half the time, but at 1.10× the cost of Python with nereus.
 
 | | Criterion | Result | Main evidence |
 |---|---|---|---|
 | 1 | Correct: regionmask masks identical, nereus within tolerance, no silent cell loss | **met** | masks identical to regionmask and nereus' Atlantic mask on dart; OHC 9.1e-15 and ice extent 3.0e-14 from nereus; 562 of 562 harness cases |
 | 2 | Speed against the gate's marks | **met** | Atlantic OHC 0–700 m, 3 years, 8.3 s cold (8.3× nereus), 5.9–6.5 s warm (2.0× nereus warm); NH ice extent 7.1 s (17.8×); first use of the mesh 16.3 s (nereus 343 s) |
-| 3 | Agents: 5 of 5, at a cost no higher than the Python arm | **pending: pilot correct** | F5 with cdors correct in 9 turns, 64 s, $0.33 (job 28236330); the full run (ten sessions) not yet run |
+| 3 | Agents: 5 of 5, at a cost no higher than the Python arm | **not met: cost 1.10×** | 5 of 5 correct in both arms (job 28244863); cdors 838 s and $2.24, Python with nereus 1697 s and $2.03 |
 | 4 | Memory bounded under `--mem` | **met** | OHC under `--mem 2G` peaks at 1.72 GB (2.15–2.28 GB before the fix); ice 1.05 GB |
 
 ## 1. Correctness
@@ -95,28 +95,44 @@ and `maskregion` as a per-cell node.
 
 ## 3. Agents
 
-**Pending; the pilot is correct.** The check (Task 14, `bench/agent_tasks.md`, FESOM2 set):
-- **Tasks:** F1 Atlantic OHC 0–700 m, F2 NH ice-extent seasonal cycle, F3 Drake section, F4 Niño 3.4 anomalies,
-  F5 Arctic mean SST, all on dart.
-- **References:** independent NumPy references, with nereus as the second method (job 28230786).
-- **Arms:** arm A gets cdors with `cdors guide` only; arm B gets Python with nereus.
+**Not met on cost.** Ten of ten answers are correct, and with cdors the agents took half the wall time (838 s
+against 1697 s), but they cost $2.24 against $2.03 for Python with nereus (1.10×). The criterion asks for 5 of 5
+at a cost no higher than the Python arm's.
 
-**Pilot** (job 28236330, frozen binary `cdors-32b1dbd`, `bench/agent/results-20261019-082207.md`): F5 with cdors,
-correct to all six digits, 9 turns, 8 tool calls, 64 s, $0.33. The session read `cdors guide` and the operators'
-help, checked the chain with `--plan`, and ran it on 16 threads with `--mem 4G`.
+The check (Task 14, `bench/agent_tasks.md`, FESOM2 set): F1 Atlantic OHC 0–700 m, F2 NH ice-extent seasonal cycle,
+F3 Drake section, F4 Niño 3.4 anomalies, F5 Arctic mean SST, all on dart, scored against independent NumPy
+references with nereus as the second method (job 28230786). Arm A gets cdors with `cdors guide` only, arm B Python
+with nereus and cdo. Job 28244863 (shared partition, 44 min, frozen binary `cdors-32b1dbd`, model
+claude-opus-5-5), one session per task and arm, `bench/agent/results-20261019-140945.md`:
 
-**Full run:** submitting it was blocked by the permission classifier, so Nikolay starts it:
+| Task | cdors: turns, wall, USD | Python + nereus: turns, wall, USD |
+|---|---|---|
+| F1 OHC 0–700 m | 10, 109 s, $0.45 | 14, 721 s, $0.55 |
+| F2 ice extent | 11, 187 s, $0.40 | 26, 545 s, $0.76 |
+| F3 Drake section | 16, 168 s, $0.65 | 7, 198 s, $0.23 |
+| F4 Niño 3.4 | 9, 124 s, $0.36 | 6, 127 s, $0.25 |
+| F5 Arctic SST | 11, 252 s, $0.38 | 6, 106 s, $0.24 |
+| **All five** | **57 turns, 838 s, $2.24** | **59 turns, 1697 s, $2.03** |
 
-```bash
-cd ~/cdo
-# five tasks, two arms, ten sessions one after another (~$3–6)
-TASKSET=fesom CDORS_BIN=/work/ab0995/a270088/cdors-target/frozen/cdors-32b1dbd \
-  sbatch --time=02:30:00 bench/agent_check.sbatch
-```
+- **Where cdors wins:** the two mesh-weighted series. F1 and F2 cost the Python arm 40 turns and 21 minutes, building
+  area and depth weights and masks by hand.
+- **Where it loses:** F3–F5, which a single NumPy script answers in 6–7 turns. Every cdors session first spends 5–6
+  calls learning: `cdors guide` (7.8 kB), the help of two to four operators (5–12 kB per call), `sinfo`,
+  `mesh info` and a `--plan`. Those pages are then re-read from the cache on every later turn.
+- **Spent on settings the guide does not cover:** all five cdors sessions spent one call looking up threads
+  (`cdors help | grep thread; env | grep SLURM`), because the guide does not say that inside a Slurm job the
+  defaults already use the job's cores.
+- **F3, the most expensive session (16 turns, $0.65):**
+  - `outputtab,station_name` on the written section file failed twice: cdors reads no string variables from stored
+    files, as the error's hint said.
+  - The first wet-depth count, `-vertint -addc,1 -mulc,0`, gave the full column depth. This follows cdo's rule that
+    zero times missing is zero (not a cdors bug).
+  - The session caught the wrong depth against `bottom_depth` before answering.
+- **Spread:** each task ran once per arm. The pilot's F5 with cdors (job 28236330) cost $0.33 in 9 turns, against
+  $0.38 in 11 turns here, so a single session varies by about 15 %, more than the 10 % between the arms.
 
 Scoring: `bench/agent_check.sh` scores each answer against the references with the per-number tolerances in
-`bench/agent_tasks.md`, and reports wall time, tokens and USD per arm (`docs/agent-check.md`). The criterion is met if
-arm A gets 5 of 5 right at a cost no higher than arm B's.
+`bench/agent_tasks.md`, and reports wall time, tokens and USD per arm (`docs/agent-check.md`).
 
 ## 4. Memory under `--mem`
 
@@ -154,12 +170,15 @@ Peak RSS in GB of 10⁹ bytes, as `--mem` counts. (`/usr/bin/time` reports KiB; 
 | Compute nodes: Task 14 references (job 28230786) | 0.08 node-h (4 min 50 s) |
 | Compute nodes: warm re-run and memory (jobs 28236403, 28236468, 28236548, 28236588) | 0.09 node-h |
 | Agent check pilot (job 28236330, shared partition) | 0.03 node-h, $0.33 |
-| Total compute | 0.74 node-h |
-| Agent check, full run | not yet run (~$3–6 estimated) |
+| Agent check, full run (job 28244863, shared partition, 44 min) | 0.4 node-h, $4.27 (cdors $2.24, Python $2.03) |
+| Total compute | 1.14 node-h |
+| Total agent sessions | $4.60 |
 
 ## Open decisions
 
-- Run the full agent check (command above).
+- Criterion 3: accept the 1.10× as within the spread of single sessions, or make the guide shorter and say what the
+  sessions looked up (the Slurm defaults; reading `bottom_depth` and station names from the sampling chain, not from
+  the written file), then re-run the cdors arm (five sessions, about $2).
 - Start round 2 (neighbour operators, first plots) or not.
 - Publish: the shared install with `share/regions/`, its README (`docs/levante.md`) and the guide page, each after
   the exact text is approved.
