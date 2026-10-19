@@ -201,3 +201,37 @@ The four candidates and a fifth task on ICON form `TASKSET=trap` (`bench/agent_t
 - **Arm B environment:** nereus for W1, W2, W4 and W6; ecmwf for W5.
 - **Dry run and scoring:** the dry run prints all ten prompts. The scorer marks the naive answers as their
   variants.
+
+### Trap set run (job 28256601, 2026-10-19): the traps did not catch arm B
+
+Ten of ten answers were correct (`bench/agent/results-20261019-215652.md`, model claude-opus-5-5, 17 min, 0.16 node-h,
+$3.33).
+
+| Task | A (cdors): calls, s, USD | B (Python/cdo): calls, s, USD |
+|---|---|---|
+| W1 | 5, 75, 0.20 | 3, 41, 0.19 |
+| W2 | 7, 56, 0.26 | 7, 67, 0.42 |
+| W4 | 15, 131, 0.60 | 4, 47, 0.20 |
+| W5 | 11, 153, 0.46 | 8, 120, 0.44 |
+| W6 | 8, 58, 0.33 | 5, 65, 0.22 |
+| total | 46, 472, 1.85 | 27, 340, 1.48 |
+
+cdors cost 1.25× as much as the Python arm (round 1's FESOM2 set: 1.10×) and took 1.4× the wall time. It was cheaper
+only on W2.
+
+- **Arm B avoided every naive answer.** It read `nod_area` with its `nl` dimension and took level k (W1). It cut the
+  1950–2050 m layer at 2000 m (W2), after reading nereus' `volume_mean` source and computing its own sum instead.
+  It used `elem_area` with vertex-mean centres (W4), and Gauss–Legendre weights divided by `pl` (W5). It even
+  found the raw GRIB file and cross-checked with cdo through a hand-written reduced-Gaussian grid description.
+  For W6 it used `cell_area`, cross-checked with cdo `-setgrid`. The step-1 naive variants are what a careless
+  method gives, not what this model does.
+- **Arm A had the right number early and then spent calls checking how cdors got it.** W4: the answer came at
+  call 6 of 15. The remaining calls tried to find out how cdors places an element in a box (`ops --json`, `strings`
+  on the binary, `toelems` on the mesh coordinates, boxes around the edges). W5: the answer came at call 8 of 11,
+  then zonal bands to test the reduced-Gaussian weights. W6: the answer came at call 6 of 8, then
+  `-setgridarea,cell_area` and a manual Σ T·A / Σ A to confirm that cdors used `cell_area`. The documentation does
+  not say which weights or which membership rule a mean used, so a careful agent checks.
+- **What this means for cdors:** the advantage of "right by default" is lost if the default cannot be seen. A
+  result that states its method would save these calls: the weights' source and the membership rule, in `--json`
+  output and in `--plan`. Examples: `per-level nod_area, dry layers excluded`; `reduced Gaussian row areas`;
+  `cell_area from the grid file`; `elements by the centre of their three vertices`.

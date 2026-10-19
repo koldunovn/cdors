@@ -178,7 +178,9 @@ Peak RSS in GB of 10⁹ bytes, as `--mem` counts. (`/usr/bin/time` reports KiB; 
 
 - Criterion 3: the 1.10× is accepted for now (Nikolay, 2026-10-19). The next agent check should have tasks where
   agents without cdors get the answer wrong: weights and grids other than regular lon-lat (`docs/STATUS.md`,
-  follow-up 3).
+  follow-up 3). That set (W1, W2, W4, W5, W6; job 28256601) gave 10/10 correct again: the Python arm avoided every
+  naive answer, and cdors cost 1.25× as much, because arm A checked which weights cdors had used
+  (`docs/agent-check.md`, "Trap set run").
 - Start round 2 (neighbour operators, first plots) or not.
 - Publish: the shared install with `share/regions/`, its README (`docs/levante.md`) and the guide page, each after
   the exact text is approved.
