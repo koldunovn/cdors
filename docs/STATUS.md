@@ -83,9 +83,11 @@ against $2.03).
 2. **Cold reads:** 2.2–2.5 GB/s against 3.5–4.5 GB/s for a plain `pread` of the same files. Spread the reads over
    the files' storage targets: interleave the chunks of `-cat` and glob members, and read a file's progressive
    layout components at once (`docs/unstructured-results.md`, "Read path").
-3. **Agent check, cost (your call):** accept the 1.10× as within the spread of single sessions, or make the guide
-   shorter and say what the sessions looked up (the Slurm defaults; station names and `bottom_depth` from the
-   sampling chain), then re-run the cdors arm only (five sessions, about $2).
+3. **Agent check with traps:** the 1.10× is accepted for now (2026-10-19). Five tasks that both arms answer
+   correctly measure only cost, so the next set should have tasks where agents without cdors get the answer wrong:
+   - **weights:** per-level areas, dry levels stored as 0, month lengths;
+   - **grids other than regular lon-lat:** elements, reduced Gaussian, HEALPix nested.
+   For each task, the naive answer has to fall outside the tolerance, or the task is dropped.
 4. **Publication, after you approve the exact text:**
    - the shared install, with `share/regions/` (the regions directory, 12 MB);
    - its README (= `docs/levante.md`, Example 7 and "Three years of FESOM2");

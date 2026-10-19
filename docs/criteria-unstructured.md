@@ -11,7 +11,7 @@ answered correctly, and with cdors the agents took half the time, but at 1.10× 
 |---|---|---|---|
 | 1 | Correct: regionmask masks identical, nereus within tolerance, no silent cell loss | **met** | masks identical to regionmask and nereus' Atlantic mask on dart; OHC 9.1e-15 and ice extent 3.0e-14 from nereus; 562 of 562 harness cases |
 | 2 | Speed against the gate's marks | **met** | Atlantic OHC 0–700 m, 3 years, 8.3 s cold (8.3× nereus), 5.9–6.5 s warm (2.0× nereus warm); NH ice extent 7.1 s (17.8×); first use of the mesh 16.3 s (nereus 343 s) |
-| 3 | Agents: 5 of 5, at a cost no higher than the Python arm | **not met: cost 1.10×** | 5 of 5 correct in both arms (job 28244863); cdors 838 s and $2.24, Python with nereus 1697 s and $2.03 |
+| 3 | Agents: 5 of 5, at a cost no higher than the Python arm | **not met: cost 1.10×; accepted** | 5 of 5 correct in both arms (job 28244863); cdors 838 s and $2.24, Python with nereus 1697 s and $2.03 |
 | 4 | Memory bounded under `--mem` | **met** | OHC under `--mem 2G` peaks at 1.72 GB (2.15–2.28 GB before the fix); ice 1.05 GB |
 
 ## 1. Correctness
@@ -95,7 +95,7 @@ and `maskregion` as a per-cell node.
 
 ## 3. Agents
 
-**Not met on cost.** Ten of ten answers are correct, and with cdors the agents took half the wall time (838 s
+**Not met on cost; accepted for now** (Nikolay, 2026-10-19). Ten of ten answers are correct, and with cdors the agents took half the wall time (838 s
 against 1697 s), but they cost $2.24 against $2.03 for Python with nereus (1.10×). The criterion asks for 5 of 5
 at a cost no higher than the Python arm's.
 
@@ -176,9 +176,9 @@ Peak RSS in GB of 10⁹ bytes, as `--mem` counts. (`/usr/bin/time` reports KiB; 
 
 ## Open decisions
 
-- Criterion 3: accept the 1.10× as within the spread of single sessions, or make the guide shorter and say what the
-  sessions looked up (the Slurm defaults; reading `bottom_depth` and station names from the sampling chain, not from
-  the written file), then re-run the cdors arm (five sessions, about $2).
+- Criterion 3: the 1.10× is accepted for now (Nikolay, 2026-10-19). The next agent check should have tasks where
+  agents without cdors get the answer wrong: weights and grids other than regular lon-lat (`docs/STATUS.md`,
+  follow-up 3).
 - Start round 2 (neighbour operators, first plots) or not.
 - Publish: the shared install with `share/regions/`, its README (`docs/levante.md`) and the guide page, each after
   the exact text is approved.
