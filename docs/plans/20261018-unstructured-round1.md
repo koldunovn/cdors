@@ -936,8 +936,10 @@ The harness gains three capabilities (Task 2), so that every check in this plan 
 
 ### Task 12: Verify acceptance criteria (local)
 
-- [ ] Every requirement in the Overview is implemented; deviations are in `docs/deviations.md`.
-- [ ] Full suite: `cargo test` and `tests/run_cases.sh` (both NetCDF read paths, all variants).
+- [x] Every requirement in the Overview is implemented; deviations are in `docs/deviations.md`.
+- [x] Full suite: `cargo test` and `tests/run_cases.sh` (both NetCDF read paths, all variants).
+  ➕ On `32b1dbd`: `cargo test --release` passes; 562 of 562 cases on both read paths, with the Zarr and planner
+  variants.
   ➕ Harness speed (488 rows, CDORS_JOBS=6, login node): 88–97 s → 32–40 s warm. Passed checks are recorded in
   `$CDORS_REF/ok` by sha1 of output and reference, so only changed outputs are checked again; identical
   variant outputs (Zarr v3 = v2, `--mem` = base) are checked once; ref: values are compared in one batched
@@ -1005,7 +1007,7 @@ The harness gains three capabilities (Task 2), so that every check in this plan 
 
 ### Task 15: [Final] Criteria and documentation
 
-- [ ] **`docs/criteria-unstructured.md`** with four criteria:
+- [x] **`docs/criteria-unstructured.md`** with four criteria:
   1. correctness: regionmask masks identical, nereus/pyfesom2 within tolerance, no silent cell loss;
   2. speed against the gate's marks;
   3. agents 5/5, at a cost no higher than the Python arm;
@@ -1022,12 +1024,19 @@ The harness gains three capabilities (Task 2), so that every check in this plan 
   - `docs/deviations.md`: round-1 entries regrouped (bands and histograms, meshes, vertical, regions, sampling,
     units), each once; the "zon* with levels on a mesh are refused" entry was wrong since Task 8 and is gone;
   - `docs/STATUS.md`: a round-1 section at the top, with follow-ups and the cleanup list.
-  - Numbers that change with the `volint` fix carry `<!-- refresh -->` comments (README, levante.md, STATUS.md).
+- ➕ Final pass on `32b1dbd` (2026-10-19): every number refreshed from job 28231368 (the `<!-- refresh -->` markers
+  are gone); every example shown in the README and `docs/levante.md` re-run on the login node, Example 7 now starts
+  with the FESOM 2.0 PHC climatology on pi (no `nz1` coordinate; works since `c3ac53a`) and uses the natural OHC
+  chain without `-sellevel`; `docs/deviations.md` merged with master's entries (interface variables, `intlevel` →
+  `fld*`, `zbar` level bounds, `nz1`-less files, mesh memory, `--plan` and the mesh cache, the depth push-down);
+  `docs/unstructured-results.md` gained "Read path"; `docs/criteria-unstructured.md` written.
+- ⚠️ Criterion 1 names pyfesom2, but no `ref:pyfesom2` rows were added: NumPy on the mesh's arrays, regionmask and
+  nereus (whose basins come from pyfesom2) cover the same quantities (recorded in `docs/criteria-unstructured.md`).
+- ⚠️ **The plan stays in `docs/plans/`:** Task 14 has not run. Starting its sessions was blocked by the permission
+  classifier ("Create Unsafe Agents"), so the agent criterion is pending until Nikolay starts the pilot and the full
+  check (`bench/agent_check.sbatch`, commands in `docs/criteria-unstructured.md`).
 - ⚠️ The installed guide assumes the round-1 install has `share/regions/` (nereus' basins in Example 7); until then
   those examples need `CDORS_REGIONS`.
-- ⚠️ The FESOM 2.0 PHC climatologies (`/pool/data/AWICM/FESOM2/climatology_PHC/*/temp.fesom.1948.nc`, pi and core2)
-  have no `nz1` coordinate variable: cdo and cdors see one generic grid of nz1 × nod2 points, and `-setgrid,fesom:`
-  fails with `grid_mismatch` ("dimension 'nod2' has 147580 points"), so they could not serve as the small example.
 
 ## Technical Details
 

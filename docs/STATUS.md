@@ -2,79 +2,121 @@
 
 ## Round 1: analysis on FESOM2 meshes (2026-10-19)
 
-Briefing for Nikolay. Plan with per-task notes: `docs/plans/20261018-unstructured-round1.md`. Nothing of round 1 is
-pushed, published or installed yet.
+Briefing for Nikolay. Plan with per-task notes: `docs/plans/20261018-unstructured-round1.md`. The four criteria:
+`docs/criteria-unstructured.md`. Nothing of round 1 is pushed, published or installed yet.
 
-**In short.** Tasks 1–13 are done and on `master`; Task 14 (agent check) is prepared and waits for your yes; Task 15
-(criteria, documentation) is drafted, without `docs/criteria-unstructured.md`.
+**In short.** Tasks 1–13 and 15 are done. Task 14, the agent check, is prepared, but starting its
+sessions was blocked by the permission classifier; it waits for you (commands below). Correctness is met. Speed
+meets every mark except one, which missed by 0.2 s on a run that was not really warm. Memory under `--mem 2G` is
+6–9 % over.
 
 - **Built:**
-  - `-setgrid,fesom:<dir>`: the FESOM2 mesh from `fesom.mesh.diag.nc` (both file layouts, units decided and shown),
-    areas per level, wet levels (dry levels missing), both FESOM dimension orders, a UGRID-Zarr mesh cache, and
-    `cdors mesh info`;
-  - regions: a catalog (AR6, SREX, Giorgi, PRUDENCE and Niño embedded; Natural Earth and nereus' basins and MOC
-    basins in a regions directory), `regmask`, `regmin/max/sum/int/mean/std`, `maskregion,regions=`, and cdo's
-    `selregion`/`maskregion` with region files;
-  - bands and histograms: `zonmean/zonsum/zonint,zonal_<DY>` on any grid with corners and on meshes, `fldhist`;
-  - vertical: `vert*` with the mesh's layers, `vertint[,z0/z1]`, `volint`/`volmean[,z0/z1]`, `intlevel`,
-    `bottomvalue`, `fldint`;
-  - sampling: `selpoints` and `transect` (nearest node or barycentric), `tonodes`/`toelems`;
-  - agent surface: `origin` and `extensions` in `ops --json`, help texts for the 15 cdors operators, new
-    `outputtab` keys, six FESOM2 recipes in `cdors guide`; integrals of cdors operators in float64 with their units.
+  - **Meshes.** `-setgrid,fesom:<dir>` reads the FESOM2 mesh from `fesom.mesh.diag.nc`:
+    - both file layouts, with the units of the node coordinates decided and shown;
+    - areas per level, also on the interfaces, and wet levels (dry levels become missing);
+    - both FESOM dimension orders, and FESOM 2.0 files without `nz1`;
+    - level bounds from `zbar`;
+    - a UGRID-Zarr mesh cache, which `--plan` never writes, and `cdors mesh info`.
+  - **Regions.**
+    - A catalog: AR6, SREX, Giorgi, PRUDENCE and the Niño boxes are embedded; Natural Earth and nereus' basins and
+      MOC basins come from a regions directory.
+    - `regmask`, `regmin/max/sum/int/mean/std` and `maskregion,regions=`.
+    - cdo's `selregion` and `maskregion` with region files.
+  - **Bands and histograms:** `zonmean`, `zonsum` and `zonint` with `zonal_<DY>` on any grid with corners and on
+    meshes; `fldhist`.
+  - **Vertical:**
+    - `vert*` with the mesh's layers;
+    - `vertint[,z0/z1]` and `volint`/`volmean[,z0/z1]`, in two folds, with the depth range pushed down into the
+      read;
+    - `intlevel` (and `fld*` after it by the layer that contains each target depth), `bottomvalue`, `fldint`.
+  - **Sampling:** `selpoints` and `transect` (nearest node or barycentric); `tonodes` and `toelems`.
+  - **Agent surface:**
+    - `origin` and `extensions` in `ops --json`;
+    - help texts for the 15 cdors operators;
+    - new `outputtab` keys;
+    - six FESOM2 recipes in `cdors guide`;
+    - integrals in float64 with their units.
+  - **Read path:** NetCDF-4 chunks without filters are read straight into their element type. From the page cache:
+    8.4 → 15.9 GB/s.
   - 207 operators in all (187 before).
-- **Correctness:** masks identical to regionmask (fixtures, and dart's nodes) and to nereus' Atlantic mask (0 of
-  924 967 nodes differ); on dart, OHC agrees with nereus to 2.9e-8 and ice extent to 3e-14 (the same mesh areas);
-  10 login-node real-data cases identical or within float32 rounding (`docs/unstructured-results.md`).
-- **Speed (node run, jobs 28230544 and 28230657, 0.14 node-h):** ice extent passes every mark (7.2 s cold, 17.7×
-  nereus); first use of the mesh 19.7 s (nereus 343 s). OHC misses its marks: 15.4 s cold (≤ 13 s), 13.9 s warm
-  (≤ 10 s), 3.0–3.3 GB peak (≤ 2 GB), because `volint` keeps only 10–15 cores busy <!-- refresh -->.
-- **Tests:** on master `22fd3af` (this documentation branch changes no code), `cargo test --release` passes and
-  `tests/run_cases.sh` passes all 521 cases on both NetCDF read paths (native and `CDORS_NC4=netcdf`), with the Zarr
-  and planner variants; 86 rows are checked against `ref:` references (50 NumPy, 23 regionmask, 13 nereus), others with
-  `json:` assertions. The harness took 116 s on the first run of this build and 38 s on the second.
-- **Compute used:** 0.28 node-h (gate, job 28228738) + 0.14 node-h (validation) + the Task 14 reference job
-  28230786.
+- **Correctness:**
+  - masks identical to regionmask's and to nereus' Atlantic mask on dart (0 of 924 967 nodes differ);
+  - OHC agrees with nereus to 9.1e-15, ice extent to 3.0e-14;
+  - all 10 login-node real-data cases pass.
+- **Speed** (job 28231368, 0.06 node-h; marks from the gate):
+  - Atlantic OHC 0–700 m over 3 years: 8.3 s cold, 8.3× nereus;
+  - NH ice extent: 7.1 s, 17.8×;
+  - first use of the mesh: 16.3 s (nereus 343 s);
+  - one miss: the second OHC run, 10.2 s against 10 s. The Lustre client's 24 GB cache had been flushed by the
+    other runs, so it was not warm. It was not re-run.
+- **Tests:** on `32b1dbd` plus this documentation (no code changed), `cargo test --release` passes and
+  `tests/run_cases.sh` passes 562 of 562 cases on both NetCDF read paths, with the Zarr and planner variants
+  (165 s on the first run of the build, 46 s on the second). The cases include 109 rows against references
+  (67 NumPy, 28 regionmask, 14 nereus) and 67 `json:` rows.
+- **Compute used:** 0.62 node-h in all:
+  - gate 0.28 (job 28228738);
+  - validation 0.20 (28230544, 28230657, 28231368);
+  - read path 0.06 (28231623, 28231676);
+  - Task 14 references 0.08 (28230786).
+
+**The agent check (Task 14) needs you.** The sessions could not be started from the agent session ("Create Unsafe
+Agents" in the permission classifier). Pilot first, then the full set, with the frozen binary:
+
+```bash
+cd ~/cdo
+TASKSET=fesom TASKS=F5 ARMS=A CDORS_BIN=/work/ab0995/a270088/cdors-target/frozen/cdors-32b1dbd \
+  sbatch --time=00:40:00 bench/agent_check.sbatch                      # pilot: one session
+TASKSET=fesom CDORS_BIN=/work/ab0995/a270088/cdors-target/frozen/cdors-32b1dbd \
+  sbatch --time=02:30:00 bench/agent_check.sbatch                      # 10 sessions, ~$3–4
+```
 
 **Open follow-ups.**
-1. `volint` folded per (step, level), levels summed in fixed order: expected ~10 s warm for OHC, which meets the
-   marks (in progress).
-2. The region mask as a precomputed CSR row instead of a whole-mesh leaf per tile (~2 s, and tile sizes halved; in
-   progress).
-3. The mesh's resident arrays (0.26 GB on dart) in the `--mem` estimate: `--mem 2G` peaked at 2.24 GB.
-4. `volint,z0/z1` pushed down as a level selection: without `-sellevel` it reads all 79 levels (2.2× the bytes). The
-   recipe in `cdors guide` has no `-sellevel` and so reads them all (in progress: level bounds).
-5. FESOM 2.0 files without the `nz1` coordinate variable (the PHC climatologies in
-   `/pool/data/AWICM/FESOM2/climatology_PHC/`) are refused with `grid_mismatch`, whose message names a
-   147580-point `nod2` (3140 × 47): the hint should say that the file has no vertical axis.
-6. Task 14: the agent check (five tasks, two arms, ~$3–4) needs your yes; then `docs/criteria-unstructured.md`
-   and the plan moves to `docs/plans/completed/`.
-7. Publication, after you approve the exact text: the shared install (with `share/regions/`, the regions
-   directory: 12 MB), its README (= `docs/levante.md`), the guide page, the push.
+1. **Memory:** about 0.5 GB of RSS is outside the `--mem` estimate (HDF5 and netCDF-C buffers, the allocator,
+   tile copies in flight), so OHC under `--mem 2G` peaks at 2.13–2.18 GB. Either reserve these per open file and
+   I/O thread, or keep a fixed margin on NetCDF-4 inputs.
+2. **Cold reads:** 2.2–2.5 GB/s against 3.5–4.5 GB/s for a plain `pread` of the same files. Spread the reads over
+   the files' storage targets: interleave the chunks of `-cat` and glob members, and read a file's progressive
+   layout components at once (`docs/unstructured-results.md`, "Read path").
+3. **Agent check:** run it (above), then mark criterion 3 in `docs/criteria-unstructured.md` and move the plan to
+   `docs/plans/completed/`.
+4. **Publication, after you approve the exact text:**
+   - the shared install, with `share/regions/` (the regions directory, 12 MB);
+   - its README (= `docs/levante.md`, Example 7 and "Three years of FESOM2");
+   - the guide page;
+   - the push.
 
-**Decisions for you.** Round 2 or not (neighbour operators and the first plots); whether `dcw:` should map to
-Natural Earth countries.
+**Decisions for you.** Whether to start round 2 (neighbour operators and the first plots). Whether `dcw:` should map
+to Natural Earth's countries.
 
-**Cleanup candidates (your call; nothing was deleted).** Sizes measured with `/usr/bin/du` on 2026-10-19 01:00 (other round-1 agents were still working, so the build trees may have grown):
+**Cleanup candidates (your call; nothing was deleted).** Sizes from `/usr/bin/du`, measured 2026-10-19 02:10–02:40:
 
 | Path | Size | What |
 |---|---|---|
-| `/work/ab0995/a270088/cdors-target-r1-{t1,t2,t3,t4,t5,t6,t8,t9,t10,t11,t12,t13,t14,t15,review}` | 181 GB together: t12 35 GB, t9 20 GB, t5 17 GB, t10 17 GB, t8 16 GB, t6 15 GB, t4 13 GB, t11 12 GB, t2 11 GB, t15 8.1 GB, review 6.2 GB, t3 5.9 GB, t13 3.2 GB, t14 1.7 GB, t1 80 MB | the agents' build trees, fixture and cdo-reference copies, harness run directories, mesh caches |
-| `/work/ab0995/a270088/cdors-wt/{t1-gate,t2-harness,t3-mesh,t4-cache,t5-exec,t6-regions,t8-zonhist,t9-vertical,t10-sample,t11-agent,t12-harness,t13-realdata,t14-agentcheck,t15-docs,review}` | 3–4 MB each, 55 MB together | the agents' git worktrees (and their branches `r1-*`; remove with `git worktree remove`) |
-| `/scratch/a/a270088/cdors-bench/unst-validate-28230544`, `unst-validate-28230657` | 1.2 GB, 2.4 GB | Task 13 node runs: outputs, mesh caches, nereus reference; the record is `runs.tsv`, `compare.json`, `*.time`, `*.plan.json` |
+| `<session scratchpad>/rv/.o.nc.cdors-tmp-levante1-1163793-4b168adb` | 51 GB | the temporary output of a killed run (cdors never removes these); it lies under `/scratch/a/a270088/tmp/`, and its exact path is in the round-1 report, not here, because it contains a session id |
+| the rest of that session scratchpad directory | 2.4 GB | agents' scratch files |
+| `/work/ab0995/a270088/cdors-target-r1-*` (16 directories) | 227 GB together | the agents' build trees, with their fixture and cdo-reference copies, harness run directories and mesh caches |
+| | | sizes: t12 35, t4 31, t5 24, t9 20, t10 18, t8 16, readpath 15, t6 15, t11 12, t15 12, t2 11 GB; review 6.2, t3 5.9, t13 4.5, t14 1.7 GB; t1 80 MB |
+| `/work/ab0995/a270088/cdors-wt/*` (16 worktrees: t1-gate … t15-docs, review, readpath) | 2.8–4.4 MB each, 63 MB together | the agents' git worktrees and their branches `r1-*` |
+| `/scratch/a/a270088/cdors-bench/unst-validate-28230544`, `-28230657`, `-28231368` | 1.2, 2.4, 1.2 GB | Task 13 node runs: outputs, mesh caches, the nereus reference |
 | `/scratch/a/a270088/cdors-bench/unst-baseline-28228738` | 77 MB | Task 1 gate run |
-| `/scratch/a/a270088/cdors-bench/t14`, `t14-refs-28230786` | 1.2 GB, 1.2 GB | Task 14 references (keep until the agent check has run) |
+| `/scratch/a/a270088/cdors-bench/readpath-28231623`, `-28231676`, `readpath-bin` | 2.0 MB, 2.7 MB, 449 MB | read-path jobs and their candidate binaries |
+| `/scratch/a/a270088/cdors-bench/t14`, `t14-refs-28230786` | 1.2, 1.2 GB | Task 14 references; keep until the agent check has run |
+| `/work/ab0995/a270088/cdors-target/frozen/cdors-d47d8fc`, `cdors-32b1dbd` | 150 MB each | frozen binaries; keep `cdors-32b1dbd` for the agent check |
 
-Commands (check the list first; the worktrees go through git):
+Commands. Check the list first; the worktrees go through git:
 
 ```bash
-cd ~/cdo && for w in /work/ab0995/a270088/cdors-wt/*; do git worktree remove "$w"; done
+rm <session scratchpad>/rv/.o.nc.cdors-tmp-levante1-1163793-4b168adb   # exact path: round-1 report
+cd ~/cdo && for w in /work/ab0995/a270088/cdors-wt/*; do git worktree remove "$w"; done   # then: git branch -D <the r1-* branches>
 rm -rf /work/ab0995/a270088/cdors-target-r1-*
-rm -rf /scratch/a/a270088/cdors-bench/unst-validate-28230544/cache \
+rm -rf /scratch/a/a270088/cdors-bench/readpath-bin /work/ab0995/a270088/cdors-target/frozen/cdors-d47d8fc
+rm -rf /scratch/a/a270088/cdors-bench/unst-validate-28230544/cache /scratch/a/a270088/cdors-bench/unst-validate-28231368/cache \
        /scratch/a/a270088/cdors-bench/unst-validate-28230657/{cache,cache_meshonly}   # mesh caches inside the records
 ```
 
-Keep: `/work/ab0995/a270088/cdors-target` (build tree, shared fixtures with `regions/`, cdo references), the job
-records (`*.out`, `runs.tsv`, `compare.json`, `*.time`) in the scratch directories, until the round is closed.
+Keep `/work/ab0995/a270088/cdors-target`: the build tree, the shared fixtures with `regions/`, the cdo references and
+`frozen/cdors-32b1dbd` for the agent check. Also keep the job records (`*.out`, `runs.tsv`, `compare.json`,
+`*.time`, `*.plan.json`) in the scratch directories until the round is closed.
 
 ---
 

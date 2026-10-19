@@ -47,6 +47,38 @@ Dataset, sets and pass marks: `docs/unstructured-baseline.md`.
 | 5 | peak RSS, any row | ≤ 2 GB | ice 1.0–1.6 GB; OHC 2.4–3.9 GB at the default 4 GB budget; OHC under `--mem 2G` 2.13–2.18 GB | **miss** (OHC) | Under `--mem 2G` the plan estimates 1.62 GB, with 39 tiles in flight and 0.34 GB resident mesh. RSS is 6–9 % over the budget. One OHC step at the default budget peaks at 3.8 GB. Unaccounted: ~0.5 GB (HDF5/netCDF buffers, allocator, the tile copies in flight) |
 | 6 | values vs nereus with the mesh's `nod_area` | rel 1e-6 | OHC 9.1e-15 (36 months, both chains), extent 3.0e-14 (1096 days) | pass | against job 28230544's nereus reference on set A; timestamps equal; `volint` now writes f64 |
 
+## Read path (jobs 28231623 and 28231676, after the validation)
+
+The validation's OHC and ice runs took about as long as the read probe, so the probe's own time was examined:
+`-fldmean -sellevel,<36 levels> -selname,temp` on 3 years of dart `temp` (16.38 GB, uncompressed NetCDF-4,
+chunks 3.2 MB), one exclusive node each (0.037 + 0.026 node-h), script `bench/unstructured/readpath.sbatch`, records in
+`/scratch/a/a270088/cdors-bench/readpath-<job>/runs.tsv`.
+
+> **From the page cache the probe now reads at 12.5–15.9 GB/s (was 8.1–9.2 GB/s). Cold reads stay at 2.2–2.5 GB/s:
+> they are bound by Lustre, not by cdors' decoding.**
+> - **The fix (commit 32b1dbd):** a chunk without filters is read straight into a vector of its element type, one
+>   copy instead of zero fill, copy and conversion; compressed chunks skip the zero fill. User CPU of a warm probe
+>   172–205 s → 53–62 s; outputs unchanged.
+> - **"Warm" in the validation was not warm.** The Lustre client keeps at most 24 GB of file data
+>   (`llite.*.max_cached_mb = 24576`). The validation's repeats read about 30 GB of distinct bytes (temp and a_ice)
+>   between two runs of the same set, so each repeat read mostly from Lustre again. Its "warm" rows (OHC 10.2 s,
+>   probe 7.6–8.7 s) are second cold runs; the warm mark of row 3 was never measured warm.
+> - **Cold reads:** a plain C `pread` probe on the same files (32 or 128 threads) reads 3.5–4.5 GB/s cold (3.1 GB/s with the
+>   client cache full, so that every read first evicts); cdors reads 2.2–2.5 GB/s (2.0 GB/s with the cache full).
+>   The files have a progressive layout (first 1 GB on one storage target, the next 3 GB on 4, the rest on 16), and
+>   cdors reads in time order, so mostly one `-cat` member at a time, and most reads of a member go to few targets.
+>
+> | probe, 3 years (16.38 GB) | before (cdors-base) | after (32b1dbd) | plain `pread`, 128 threads |
+> |---|---|---|---|
+> | cold (evicted) | 7.12–7.17 s, 2.28–2.30 GB/s | 7.42 s, 2.21 GB/s | 3.5–4.5 s, 3.5–4.5 GB/s |
+> | cold, client cache full | 7.99 s, 2.05 GB/s | – | 5.24 s, 3.05 GB/s |
+> | page cache (warm) | 1.79–2.03 s, 8.1–9.2 GB/s | 1.03–1.31 s, 12.5–15.9 GB/s | 0.24 s, 65 GB/s |
+
+**Follow-up (not done in round 1):** spread cold reads across storage targets: interleave the chunk reads of
+`-cat`/glob members (read the members' chunks in time order across files, not file after file), and order a file's
+reads so that its PFL components are read at once. The pread probe's 3.5–4.5 GB/s is the bar; at that rate the
+3-year OHC and ice runs, now bound by the cold read at 7–8 s, could take about 4–5 s.
+
 ## Before the fixes (master `be0136d`, jobs 28230544 and 28230657)
 
 

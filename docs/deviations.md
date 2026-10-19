@@ -91,7 +91,13 @@ output is created.
   (default 60 % of the Slurm allocation, on login nodes a quarter of the available memory, at most
   4 GiB) and refuses a run that cannot fit: `memory_limit` when the state of a single lane or two
   tiles in flight do not fit, `intermediate_too_large` when the inner results of a chain alive at
-  the same time exceed half of the budget (exit code 2).
+  the same time exceed half of the budget (exit code 2). A model mesh's resident arrays (centres,
+  areas, wet levels, the grids' copies) and the per-level areas the kernels load are held outside
+  the stages: the stages are planned for the budget less them (at least a quarter of it; a mesh
+  that leaves less gets the `mesh_memory` warning), and `--plan` counts them
+  (`memory.parts.mesh_resident`, `mesh_weights`). HDF5 and netCDF-C buffers and the allocator's
+  overhead are not modelled: on dart, a 0–700 m heat content under `--mem 2G` peaked 6–9 % over
+  the budget.
 - **Printed values** are limited by `--max-values` (see "Printing values: Flood guard").
 
 ## Statistics
@@ -174,7 +180,7 @@ output is created.
   `out=fraction` uses `fldmean`'s weights (with the `equal_weights` fallback and its warning)
   and divides by the whole valid area, below and above included. On a model mesh there is one
   histogram per level with that level's areas, dry levels left out. Three explicit edges would
-  look like `lo/hi/step`, hence the two keys.
+  look like `lo/hi/step`, hence the two keys. At most 100000 bins (`bad_arguments`).
 
 ## Model meshes (`-setgrid,fesom:<dir>`)
 
@@ -187,19 +193,25 @@ its mesh is read from `fesom.mesh.diag.nc` alone (no ASCII mesh files).
   with `grid_mismatch` otherwise, so horizontal selections belong above `setgrid`. Both FESOM
   dimension orders are read: `(time, nz1, nod2)` (FESOM 2.1 and later) and `(time, nod2, nz1)`
   (FESOM 2.0), with the same results; outputs keep the input's order. A FESOM 2.0 file without
-  the `nz1` coordinate variable (the PHC climatologies in `/pool/data/AWICM/FESOM2`) has no
-  vertical axis for cdo or cdors and is refused (`grid_mismatch`).
+  the `nz1` coordinate variable (the PHC climatologies in `/pool/data/AWICM/FESOM2`) is one
+  generic grid of nodes × levels for cdo (147580 = 3140 × 47 on pi); `setgrid` separates it into
+  the nodes and a level axis with the mesh's depths (|Z|, positive down, with the `zbar` layer
+  bounds), in either order, when the model's rules name both dimensions with the mesh's sizes;
+  the levels exist only from `setgrid` on, so `-sellevel` goes above it. Otherwise `grid_mismatch` names the grid and, when its size is a place times the levels, says
+  so.
 - **Units of the node coordinates** (mesh.diag `nodes` has no `units` attribute; core2 and dart
   store radians, ng5 degrees): radians if |lat| ≤ π/2 and |lon| ≤ 2π (within a small ε),
-  otherwise degrees; `fesom:<dir>,units=deg|rad` overrides, and `cdors mesh info` shows the
-  decision. Both mesh.diag layouts are read (older `nod_n`, `elem_n`, `nl`, `zbar`, `Z`; newer
+  otherwise degrees; `fesom:<dir>,units=deg|rad` overrides (other values: `bad_arguments`), and
+  `cdors mesh info` shows the decision. Both mesh.diag layouts are read (older `nod_n`, `elem_n`, `nl`, `zbar`, `Z`; newer
   `nod2`, `elem`, `nz`, `nz1`, `elements`/`face_nodes`). Element centres are the normalised mean
   of their three nodes' unit vectors.
 - **Mesh cache.** The mesh is converted once into a UGRID Zarr store in
   `$CDORS_CACHE/meshes/<key>.zarr` (key: path, size and mtime of each source file; a content
   fingerprint of the first and last MiB is checked on load). An entry that fails the check is
   renamed to `<key>.zarr.bad-<time>-<pid>` (warning `mesh_cache_rebuilt`), never deleted.
-  Without `CDORS_CACHE` the mesh is read from mesh.diag on every run.
+  `--plan` and refused runs never write the cache: they read a usable entry or the source files
+  and warn `mesh_cache_pending` (entry path, bytes and estimated build time). Without
+  `CDORS_CACHE` the mesh is read from mesh.diag on every run.
 - **Dry levels are missing.** A value at a level outside its cell's wet levels (below the bottom
   from `nlevels_nod2D`/`nlevels`, above `ulevels` under cavities) is missing for every operator
   that follows, whatever the value `setgrid` receives holds there (the file's 0, or what
@@ -211,8 +223,14 @@ its mesh is read from `fesom.mesh.diag.nc` alone (no ASCII mesh files).
 - **Field statistics use the mesh's areas, per level.** `fldmean`, `fldavg`, `fldstd`, `fldvar`
   (and their `1` forms) and `fldint` weight node `i` at layer `k` by `nod_area[k, i]` (the area at
   the layer's top interface; FESOM2 `nod_area` shrinks with depth along the coasts), elements by
-  `elem_area` at every level, and 2-D variables by the surface row. cdo, given the same file with
-  a grid description, would weight every level by one 2-D area. `--plan` names the weights
+  `elem_area` at every level, and 2-D variables by the surface row. Variables on the interfaces
+  (`nz`, e.g. `w`) weight interface `k` by `nod_area[k]` (all `nl` rows); a node's area there is
+  0 at its sea floor (its deepest wet interface), which is right for an area at the floor, so a
+  level where every wet node is at its floor has no area (mean missing, integral 0). After
+  `intlevel` each target depth is weighted by the layer that contains it (`nod_area[k]`, with
+  that layer's dry cells), so `-fldmean -intlevel,100 -setgrid,fesom:…` is the mean at 100 m. The
+  same weights serve `fldhist`, `zon*,zonal_<DY>` and `reg*`. cdo, given the same file with a grid
+  description, would weight every level by one 2-D area. `--plan` names the weights
   (`area_weights: "mesh_per_level"`) and counts the per-level areas in its memory estimate
   (`memory.parts.mesh_weights`). On dart, the surface area used for every layer gives a
   0.40 % higher Atlantic 0–700 m heat content than the per-level areas.
@@ -229,7 +247,10 @@ its mesh is read from `fesom.mesh.diag.nc` alone (no ASCII mesh files).
   by it. cdo, without layer bounds in the file, weights all levels equally. Dry levels are
   missing and drop out, so each cell is averaged over its own wet levels. **Full layers only**:
   FESOM2's partial bottom cells (`use_partial_cell`) and zstar layer thickness are not modelled.
-  The thickness-weighted operators refuse variables on the interfaces (`nz`).
+  The thickness-weighted operators refuse variables on the interfaces (`nz`). `setgrid` gives the
+  level axis of mid-level variables the mesh's layers as bounds (`nz1_bnds` from `zbar`, in the
+  sign of the axis values), so `vert*` after `transect`, `selpoints`, `timmean` or in a written
+  file still weigh by the layer thicknesses (`cdo zaxisdes` shows the bounds).
 - **`vertint` (cdors; cdo has none)** is Σ thickness·value over the valid values, the thickness
   from the layer bounds of the vertical axis (1 without bounds, with the
   `equal_vertical_weights` warning), on a mesh from its interfaces. `vertint,<z0>/<z1>` cuts the
@@ -240,8 +261,9 @@ its mesh is read from `fesom.mesh.diag.nc` alone (no ASCII mesh files).
   Σ area·dz·value over all cells and levels with valid values, and that divided by their volume
   Σ area·dz; areas per level on a mesh place that has them (FESOM2 nodes: `nod_area[k]`),
   otherwise the cell areas of `fldint`. `volmean` is not `fldmean -vertmean`: every wet cell
-  counts with its volume. Variables without levels are refused (`unsupported_dimension`). The
-  depth range does not limit what is read: select the levels as well (`-sellevel`).
+  counts with its volume. Variables without levels are refused (`unsupported_dimension`). With a
+  depth range (also `vertint,<z0>/<z1>`) only the levels whose layer reaches into it are read,
+  and only their per-level areas are loaded: no `-sellevel` is needed.
 - **`intlevel`** interpolates as cdo does (float32 weights, cdo's missing-value rule, targets
   outside the levels missing unless `extrapolate=true`), from positional targets or `level=`;
   `zdescription=` and `zvarname=` are not implemented. Every variable with more than one level

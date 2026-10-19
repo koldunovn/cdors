@@ -23,11 +23,10 @@ and a daily climatology over 1.1 TB within a 32 GB budget. What was shown and wh
 [docs/bench-results.md](docs/bench-results.md) and [docs/agent-check.md](docs/agent-check.md).
 
 **Round 1 (2026-10-19): FESOM2 meshes.** On 3.16 million nodes of AWI-CM3's dart mesh, values
-agree with nereus given the same mesh areas (Atlantic heat content 0–700 m to 2.9e-8, the float32
-output; ice extent to 3e-14), and the Atlantic and AR6 ocean masks are identical to nereus' and
-regionmask's (all nodes; AR6 on every 10th node). Three years of daily NH ice extent took 7.2 s on a compute node,
-17.7× faster than nereus; the Atlantic heat content took 15.4 s, 4.5× faster <!-- refresh: OHC
-time and factor after the volint fix -->. See "Model meshes (FESOM2)" below and
+agree with nereus given the same mesh areas (Atlantic heat content 0–700 m to 9e-15, ice extent to
+3e-14), and the Atlantic and AR6 ocean masks are identical to nereus' and regionmask's (all nodes;
+AR6 on every 10th node). On a compute node, three years of daily NH ice extent took 7.1 s, 17.8×
+faster than nereus, and the Atlantic heat content 8.3 s, 8.3× faster. See "Model meshes (FESOM2)" below and
 [docs/unstructured-results.md](docs/unstructured-results.md).
 
 **On Levante, without building:** `export PATH=/work/ab0995/a270088/cdors/bin:$PATH`. The guide with
@@ -149,10 +148,12 @@ gives the data its mesh:
   the file stores there, so `fldmin`, `fldmean`, `vertmean`, ... skip them; `vert*` and
   `vertint` use the mesh's layer thicknesses (full layers; FESOM2's default);
 - **both FESOM dimension orders**, `(time, nz1, nod2)` (FESOM 2.1 and later) and
-  `(time, nod2, nz1)` (FESOM 2.0), with the same results;
+  `(time, nod2, nz1)` (FESOM 2.0), with the same results, also FESOM 2.0 files without a depth
+  coordinate (the mesh supplies the levels; level selections then go above `setgrid`);
+  variables on the interfaces (`nz`, e.g. `w`) too;
 - **a mesh cache:** the first use converts the mesh into a UGRID Zarr store in
-  `$CDORS_CACHE/meshes/` (dart, 3.16 million nodes: 14 s on a login node, 1.2 GB); later runs
-  read it from there (0.7 s for `cdors mesh info`);
+  `$CDORS_CACHE/meshes/` (dart, 3.16 million nodes: 13 s on a login node, 1.2 GB); later runs
+  read it from there (0.6 s for `cdors mesh info`); `--plan` never writes it;
 - **`cdors mesh info fesom:<dir> [--json]`:** places, sizes, area sums, wet levels, how the units
   of the node coordinates were decided (radians or degrees; `fesom:<dir>,units=deg|rad`
   overrides), source files and the cache entry.
@@ -165,7 +166,7 @@ cdors mesh info fesom:/pool/data/AWICM/FESOM2/MESHES_FESOM2.1/dart
 ```
 ```
 mesh fesom2:dart (fesom2)
-  place nodes     3160340 cells, area sum 3.600464e14, wet levels 2..79, areas per level (79 levels, 1997334880 B, lazy)
+  place nodes     3160340 cells, area sum 3.600464e14, wet levels 2..79, areas per level (80 levels, 2022617600 B, lazy)
   place elements  6262485 cells, area sum 3.600464e14, wet levels 2..79
   table elem_nodes (elements -> nodes), 125249708 B, lazy
   vertical: 79 levels, interfaces [-6550.0,-0.0], full layers
@@ -188,9 +189,8 @@ them.
 **Recipes** (`<mesh>` is the mesh directory; also in `cdors guide`):
 
 ```sh
-# ocean heat content 0-700 m in J (4.09e6 = rho0*cp = 1025*3990 J m-3 K-1); select the layers above 700 m:
-# the depth range alone does not limit what is read
-cdors -mulc,4.09e6 -volint,0/700 -setgrid,fesom:<mesh> -sellevel,<the layers above 700 m> -selname,temp in.nc ohc.nc
+# ocean heat content 0-700 m in J (4.09e6 = rho0*cp = 1025*3990 J m-3 K-1); only the levels above 700 m are read
+cdors -mulc,4.09e6 -volint,0/700 -setgrid,fesom:<mesh> -selname,temp in.nc ohc.nc
 # northern-hemisphere ice area (m2), extent (area with a_ice >= 0.15, m2) and ice volume (m3)
 cdors -fldint -sellonlatbox,-180,180,0,90 -setgrid,fesom:<mesh> -selname,a_ice in.nc area.nc
 cdors -fldhist,edges=0.15/1 -sellonlatbox,-180,180,0,90 -setgrid,fesom:<mesh> -selname,a_ice in.nc extent.nc
@@ -211,14 +211,15 @@ from cdo and from nereus: [docs/deviations.md](docs/deviations.md).
 
 | 3 years, dart | cdors | nereus |
 |---|---|---|
-| NH ice extent from daily a_ice, cold | 7.2 s | 126 s |
-| Atlantic heat content 0–700 m, cold <!-- refresh --> | 15.4 s | 68.6 s |
-| first use of the mesh with the Atlantic mask | 19.7 s | 343 s |
-| values against nereus with the mesh's `nod_area` | heat content 2.9e-8, extent 3e-14 (relative) | |
-| peak memory <!-- refresh --> | ice 1.1–1.7 GB, heat content 3.0–3.3 GB | 5.1–6.2 GB |
+| NH ice extent from daily a_ice, cold | 7.1 s | 126 s |
+| Atlantic heat content 0–700 m, cold | 8.3 s | 68.6 s |
+| first use of the mesh with the Atlantic mask | 16.3 s | 343 s |
+| values against nereus with the mesh's `nod_area` | heat content 9.1e-15, extent 3.0e-14 (relative) | |
+| peak memory | ice 1.0–1.6 GB, heat content 2.4–3.9 GB (2.13–2.18 GB under `--mem 2G`) | 5.1–6.2 GB |
 
-The heat content misses its speed and memory marks: `volint` keeps only 10–15 of the 128 cores
-busy (one lane per output step) <!-- refresh: after the volint fix -->.
+All speed marks of the round pass except the second (warm) heat-content run, 10.2 s against a
+mark of 10 s; under `--mem 2G` the heat content peaks 6–9 % over the budget
+([docs/criteria-unstructured.md](docs/criteria-unstructured.md)).
 
 ## For agents
 
@@ -448,9 +449,8 @@ is accepted; the min/max inputs are not read.
 - Model meshes: FESOM2 only, read from `fesom.mesh.diag.nc` (no ASCII mesh files), full layers (no
   partial cells or zstar thickness), scalar fields only (no vectors, transports or MOC). Nodes have
   no cell polygons, so latitude bands on a mesh take each cell whole, in the band of its centre.
-  `volint` folds one lane per output step and keeps few cores busy on long series, and
-  `volint,<z0>/<z1>` reads every level unless the levels are selected (`-sellevel`)
-  <!-- refresh: after the volint fix -->.
+  `--mem` does not model HDF5/netCDF-C buffers and the allocator: runs on a mesh can peak a
+  few per cent over the budget.
 - Bit-identical agreement with cdo is not a goal; results agree within a few float32 units in the
   last place (see [docs/deviations.md](docs/deviations.md)).
 
