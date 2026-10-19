@@ -5,7 +5,7 @@
 //! record (first-dimension index) per chunk, so one level of FESOM2's `nod_area(nl, nod)` is one
 //! read, not the whole variable. Values are unpacked, missing values are NaN.
 
-use super::ChunkSource;
+use super::{ChunkSource, Values};
 use crate::error::Error;
 use crate::model::AttrValue;
 use cdors_mesh::{ArrayReader, Attr, MeshError, VarInfo};
@@ -75,9 +75,8 @@ impl ArrayReader for SourceReader {
             )));
         }
         let count: usize = ranges.iter().map(|r| r.len()).product();
-        let mut out = vec![f64::NAN; count];
         if count == 0 {
-            return Ok(out);
+            return Ok(Vec::new());
         }
         if shape.is_empty() {
             return self.read(var);
@@ -90,17 +89,33 @@ impl ArrayReader for SourceReader {
         let hi: Vec<u64> = (0..nd)
             .map(|d| ranges[d].end.div_ceil(cs[d]) as u64)
             .collect();
+        let read = |idx: &[u64]| {
+            self.src
+                .read_chunk(var, idx)
+                .and_then(|c| c.decode())
+                .map_err(read_err)
+        };
+        // a range that is exactly one chunk (one level of per-level areas in the mesh cache): its
+        // values as decoded, without a second buffer to assemble them in
+        if (0..nd).all(|d| lo[d] + 1 == hi[d]) {
+            let ch = read(&lo)?;
+            let exact = (0..nd).all(|d| {
+                ch.origin[d] as usize == ranges[d].start && ch.shape[d] == ranges[d].len()
+            });
+            if exact {
+                return Ok(match ch.values {
+                    Values::F64(v) => v,
+                    Values::F32(v) => v.into_iter().map(f64::from).collect(),
+                });
+            }
+        }
+        let mut out = vec![f64::NAN; count];
         let ostride: Vec<usize> = (0..nd)
             .map(|d| ranges[d + 1..].iter().map(|r| r.len()).product())
             .collect();
         let mut idx = lo.clone();
         loop {
-            let ch = self
-                .src
-                .read_chunk(var, &idx)
-                .and_then(|c| c.decode())
-                .map_err(read_err)?;
-            let vals = ch.values.to_f64();
+            let ch = read(&idx)?;
             let corig: Vec<usize> = ch.origin.iter().map(|&o| o as usize).collect();
             let cshape = &ch.shape;
             // the intersection of the chunk with the ranges, copied row by row (last dim)
@@ -121,7 +136,15 @@ impl ArrayReader for SourceReader {
                     }
                     let src = (0..nd).fold(0, |o, d| o * cshape[d] + (p[d] - corig[d]));
                     let dst: usize = (0..nd).map(|d| (p[d] - ranges[d].start) * ostride[d]).sum();
-                    out[dst..dst + len].copy_from_slice(&vals[src..src + len]);
+                    let row = &mut out[dst..dst + len];
+                    match &ch.values {
+                        Values::F64(v) => row.copy_from_slice(&v[src..src + len]),
+                        Values::F32(v) => {
+                            for (o, &x) in row.iter_mut().zip(&v[src..src + len]) {
+                                *o = f64::from(x);
+                            }
+                        }
+                    }
                 }
             }
             // next chunk
