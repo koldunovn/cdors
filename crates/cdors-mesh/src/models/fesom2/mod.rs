@@ -20,4 +20,17 @@ pub static MODEL: Model = Model {
     version: 2,
     dims: rules::DIMS,
     native: &["per_level_area", "elem_nodes", "wet_levels"],
+    places: &[
+        (
+            "nodes",
+            "the node coordinates of fesom.mesh.diag.nc (nodes)",
+            "nod_area: layer k weighs with row k, the area at the layer's top interface, which is 0 \
+             at and below the sea floor; 2-D fields with the surface row",
+        ),
+        (
+            "elements",
+            "the normalised mean of the unit vectors of the element's three nodes",
+            "elem_area, one area for all levels",
+        ),
+    ],
 };

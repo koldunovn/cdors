@@ -635,11 +635,7 @@ fn volume(node: &OpNode, mut input: Desc, srcs: &mut Sources) -> Result<Desc> {
             winfo.push(serde_json::json!({
                 "variable": v.name,
                 "area_weights": "mesh_per_level",
-                "description": format!(
-                    "areas of each level of place '{}' of the mesh {} (level k: the area at its \
-                     top interface)",
-                    lw.place, lw.mesh.name
-                ),
+                "description": fldstat::per_level_description(&lw),
             }));
             minfo.push(serde_json::json!({
                 "variable": v.name,
@@ -665,7 +661,7 @@ fn volume(node: &OpNode, mut input: Desc, srcs: &mut Sources) -> Result<Desc> {
                 Weights::PerLevel(lw) => Area::PerLevel(lw),
             }
         };
-        let thickness = serde_json::json!({
+        let mut thickness = serde_json::json!({
             "source": match &ml {
                 Some(m) => format!("full layers between the interfaces of the mesh {}", m.mask.mesh.name),
                 None => format!("bounds of the vertical axis '{zdim}'"),
@@ -674,6 +670,11 @@ fn volume(node: &OpNode, mut input: Desc, srcs: &mut Sources) -> Result<Desc> {
             "levels": nlev,
             "thickness": dz.iter().sum::<f64>(),
         });
+        if range.is_some() {
+            thickness["cut"] = serde_json::json!(
+                "a layer that a limit of the range cuts counts with the part inside the range"
+            );
+        }
         if let Some(w) = winfo.last_mut() {
             w["layers"] = thickness;
         }
@@ -751,6 +752,8 @@ fn volume(node: &OpNode, mut input: Desc, srcs: &mut Sources) -> Result<Desc> {
     if !minfo.is_empty() {
         info["mesh_weights"] = serde_json::json!(minfo);
     }
+    // the weights are the inner (level) fold's: the method note of `out` names them
+    out.method.extend(super::fold_note(node, Some(info.clone())));
     mid.fold = Some(Fold {
         input: Box::new(input),
         kernel: Arc::new(LevelKernel {

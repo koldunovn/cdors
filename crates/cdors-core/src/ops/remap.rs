@@ -500,6 +500,7 @@ fn write_grid_file(
         grids: vec![g.clone()],
         zaxes: Vec::new(),
         time: None,
+        method: Vec::new(),
         fold: None,
     };
     let plan = Plan::new(
@@ -1124,6 +1125,7 @@ pub fn describe(node: &OpNode, mut inputs: Vec<Desc>, srcs: &mut Sources) -> Res
         grids: vec![tgrid],
         zaxes: input.zaxes.clone(),
         time: input.time.clone(),
+        method: Vec::new(),
         fold: Some(Fold {
             input: Box::new(input),
             kernel: Arc::new(kernel),

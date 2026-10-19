@@ -893,6 +893,67 @@ pub fn used_inputs(node: &OpNode) -> usize {
 
 /// Output description of a data operator from the descriptions of its inputs (no data read).
 pub fn describe(node: &OpNode, inputs: Vec<Desc>, srcs: &mut Sources) -> Result<Desc> {
+    // method notes: the inputs' first, then what this operator adds (its own notes, and for a
+    // reduction what its kernel weighs with), each note once
+    let mut method: Vec<serde_json::Value> = Vec::new();
+    let add = |n: serde_json::Value, m: &mut Vec<serde_json::Value>| {
+        if !m.contains(&n) {
+            m.push(n);
+        }
+    };
+    for n in inputs.iter().flat_map(|d| d.method.iter()) {
+        add(n.clone(), &mut method);
+    }
+    let mut out = describe_op(node, inputs, srcs)?;
+    for n in std::mem::take(&mut out.method) {
+        add(n, &mut method);
+    }
+    if let Some(n) = out.fold.as_ref().and_then(|f| fold_note(node, f.kernel.plan_info())) {
+        add(n, &mut method);
+    }
+    out.method = method;
+    Ok(out)
+}
+
+/// The method note of a reduction from its kernel's `--plan` facts: the area weights (with the
+/// layers of vertical ranges) and warnings; mesh weights only where there are no area weights
+/// (region membership, sampling), without their byte counts.
+pub(crate) fn fold_note(
+    node: &OpNode,
+    info: Option<serde_json::Value>,
+) -> Option<serde_json::Value> {
+    let info = info?;
+    let mut n = serde_json::Map::new();
+    if let Some(a) = info.get("area_weights").filter(|a| a.as_array().is_some_and(|a| !a.is_empty())) {
+        n.insert("area_weights".into(), a.clone());
+    } else if let Some(m) = info.get("mesh_weights").and_then(|m| m.as_array()) {
+        let m: Vec<serde_json::Value> = m
+            .iter()
+            .map(|e| {
+                let mut e = e.clone();
+                if let Some(o) = e.as_object_mut() {
+                    o.retain(|k, _| !matches!(k.as_str(), "bytes" | "loaded" | "loaded_bytes"));
+                }
+                e
+            })
+            .collect();
+        if !m.is_empty() {
+            n.insert("mesh_weights".into(), m.into());
+        }
+    }
+    if let Some(w) = info.get("warnings").filter(|w| w.as_array().is_some_and(|w| !w.is_empty())) {
+        n.insert("warnings".into(), w.clone());
+    }
+    if n.is_empty() {
+        return None;
+    }
+    let mut o = serde_json::Map::new();
+    o.insert("operator".into(), crate::plan::explain::op_token(node).into());
+    o.extend(n);
+    Some(o.into())
+}
+
+fn describe_op(node: &OpNode, inputs: Vec<Desc>, srcs: &mut Sources) -> Result<Desc> {
     let spec = require_implemented(node)?;
     // the result of a fold used as input ends the inner stage: it is kept in memory as an
     // intermediate and read back like a stored dataset (`plan::intermediate`)

@@ -1411,6 +1411,9 @@ impl Ctx<'_> {
         if let Kind::Tab { keys, .. } = kind {
             o["keys"] = json!(keys.iter().map(|k| k.0).collect::<Vec<_>>());
         }
+        if !desc.method.is_empty() {
+            o["method"] = json!(desc.method);
+        }
         Ok(o)
     }
 }

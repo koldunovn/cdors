@@ -18,6 +18,10 @@ It never prompts and never reads stdin. Add `--json` to any command for machine-
 4. **Run.** Print values as JSON, or write a file (`.nc`: NetCDF-4, `.zarr`: Zarr):
    `cdors --json outputtab,date,value <chain>` prints
    `{"cdors_values":1, ..., "records":[{"date":"2020-07-16","value":291.88}, ...]}`.
+5. **Method.** The JSON result's `method` (also in `--plan`) says how the number was computed: for each operator
+   that chose, the area weights and where they come from, the layers of a depth range (cut at its limits), the
+   cells a box kept and how their centres are defined, a mesh's centres and areas, a grid file's coordinates.
+   It is what cdors did; there is no need to re-derive the weights to check them.
 
 ## Syntax
 

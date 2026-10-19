@@ -510,6 +510,7 @@ fn regmask(node: &OpNode, d: Desc, srcs: &mut Sources) -> Result<Desc> {
         grids: d.grids.clone(),
         zaxes,
         time: None,
+        method: Vec::new(),
         fold: None,
     })
 }

@@ -60,6 +60,9 @@ pub struct Model {
     pub dims: &'static [(&'static str, DimRule)],
     /// What the mesh provides natively (for `mesh info` and operators that need it).
     pub native: &'static [&'static str],
+    /// Per place: where the loader takes its centres and its areas from, in words (`place`,
+    /// `centres`, `areas`), for the method notes of results.
+    pub places: &'static [(&'static str, &'static str, &'static str)],
 }
 
 /// All models.
@@ -154,6 +157,13 @@ pub fn parse_spec(spec: &str) -> Option<Result<MeshSpec>> {
 pub fn dim_rule(mesh: &Mesh, dim: &str) -> Option<DimRule> {
     let m = model(&mesh.source.model)?;
     m.dims.iter().find(|(d, _)| *d == dim).map(|&(_, r)| r)
+}
+
+/// Where the centres and the areas of place `place` of `mesh` come from, in words (`None` for
+/// grids without a model and places the model does not describe).
+pub fn place_method(mesh: &Mesh, place: &str) -> Option<(&'static str, &'static str)> {
+    let m = model(&mesh.source.model)?;
+    m.places.iter().find(|(p, _, _)| *p == place).map(|&(_, c, a)| (c, a))
 }
 
 /// The wet indices of `cell` along a vertical dimension: mid-levels `top..bottom`, interfaces

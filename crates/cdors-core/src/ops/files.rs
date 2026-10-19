@@ -458,6 +458,7 @@ fn setgrid_mesh(spec: &MeshSpec, mut d: Desc, srcs: &mut Sources) -> Result<Desc
     };
     let split = split_levels(&mut d, &mesh);
     let mut replaced = false;
+    let (mut used, mut dry): (Vec<String>, bool) = (Vec::new(), false);
     let mut unmatched = Vec::new();
     for gi in 0..d.grids.len() {
         let old = &d.grids[gi];
@@ -526,10 +527,34 @@ fn setgrid_mesh(spec: &MeshSpec, mut d: Desc, srcs: &mut Sources) -> Result<Desc
                     v.dims[i].role = DimRole::Horizontal;
                 }
                 mask_dry_levels(v, &d.zaxes, &mesh, place, srcs);
+                dry |= matches!(v.expr, Expr::Mask(..));
             }
+        }
+        if !used.contains(&place.name) {
+            used.push(place.name.clone());
         }
     }
     layer_bounds(&mut d);
+    // method note: where the centres and areas of the places in use come from, and the dry layers
+    let notes: Vec<serde_json::Value> = used
+        .iter()
+        .map(|p| match cdors_mesh::models::place_method(&mesh, p) {
+            Some((c, a)) => serde_json::json!({"place": p, "centres": c, "areas": a}),
+            None => serde_json::json!({"place": p}),
+        })
+        .collect();
+    let mut note = serde_json::json!({
+        "operator": format!("setgrid,{}", loaded.spec),
+        "mesh": mesh.name,
+        "places": notes,
+    });
+    if dry {
+        note["dry_layers"] = serde_json::json!(
+            "values in the layers below the sea floor (the mesh's wet levels) are missing, \
+             whatever the file stores there, and drop out of statistics"
+        );
+    }
+    d.method.push(note);
     if !replaced {
         let hint = d
             .grids
@@ -642,7 +667,33 @@ fn setgrid(node: &OpNode, mut d: Desc, srcs: &mut Sources) -> Result<Desc> {
         )
         .with_hint("the new grid must have the same number of points (and the same rows and columns for 2-D grids)"));
     }
+    d.method.push(grid_note(node, &new.base));
     Ok(d)
+}
+
+/// The method note of `setgrid,<file>`: the grid it takes, its centres and its cell bounds.
+fn grid_note(node: &OpNode, g: &Grid) -> serde_json::Value {
+    let names = |f: fn(&crate::model::CoordAxis) -> Option<String>| -> Option<String> {
+        let (x, y) = (g.x.as_ref().and_then(f)?, g.y.as_ref().and_then(f)?);
+        Some(format!("{x}, {y}"))
+    };
+    let centres = names(|a| {
+        Some(match &a.units {
+            Some(u) => format!("{} ({u})", a.var),
+            None => a.var.clone(),
+        })
+    });
+    let bounds = names(|a| a.bounds_var.clone()).map(|b| match g.nvertex {
+        Some(n) => format!("{b} ({n} vertices per cell)"),
+        None => b,
+    });
+    serde_json::json!({
+        "operator": crate::plan::explain::op_token(node),
+        "grid": g.kind.name(),
+        "cells": g.size,
+        "centres": centres,
+        "bounds": bounds,
+    })
 }
 
 /// Output description of `copy` and `setgrid`.

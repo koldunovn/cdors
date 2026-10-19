@@ -717,6 +717,9 @@ fn describe_box(node: &OpNode, mut d: Desc) -> Result<Desc> {
                     .with_hint("attach coordinates with -setgrid,<grid or mesh file>"));
                 }
             };
+        let kept: usize = new_sel.iter().map(IndexMap::len).product();
+        let note = box_note(node, g, kept);
+        d.method.push(note);
         let g = &mut d.grids[gi];
         let was_healpix = g.kind == GridKind::Healpix;
         for (k, m) in new_sel.iter().enumerate() {
@@ -742,6 +745,36 @@ fn describe_box(node: &OpNode, mut d: Desc) -> Result<Desc> {
         }
     }
     Ok(d)
+}
+
+/// The method note of `sellonlatbox` on one grid ([`Desc::method`]): which cells it keeps, and
+/// where their centres come from on meshes, HEALPix and other unstructured grids.
+fn box_note(node: &OpNode, g: &GridDesc, kept: usize) -> serde_json::Value {
+    let cells = match g.kind {
+        GridKind::Regular | GridKind::Gaussian | GridKind::Curvilinear => {
+            "the smallest block of rows and columns that holds every cell whose centre lies in the \
+             box, edges included (as cdo)"
+        }
+        _ => "the cells whose centre lies in the box, edges included",
+    };
+    let centres = match (&g.base.mesh, &g.base.mesh_place) {
+        (Some(m), Some(p)) => match cdors_mesh::models::place_method(m, p) {
+            Some((c, _)) => format!("{p} of the mesh {}: {c}", m.name),
+            None => format!("{p} of the mesh {}", m.name),
+        },
+        _ if g.kind == GridKind::Healpix => "the HEALPix cell centres".to_owned(),
+        _ => match (&g.base.x, &g.base.y) {
+            (Some(x), Some(y)) => format!("the grid's cell centres {}, {}", x.var, y.var),
+            _ => "the grid's cell centres".to_owned(),
+        },
+    };
+    serde_json::json!({
+        "operator": crate::plan::explain::op_token(node),
+        "kept": kept,
+        "of": g.size(),
+        "cells": cells,
+        "centres": centres,
+    })
 }
 
 /// Output description of a selection operator.

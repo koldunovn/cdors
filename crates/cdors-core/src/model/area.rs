@@ -110,12 +110,17 @@ impl AreaSource {
     pub fn describe(&self) -> String {
         match self {
             Self::File(v) => format!("cell areas from the variable '{v}'"),
-            Self::Bounds => "cell areas from the cell bounds (stored, or generated between the \
-                             centres of regular and Gaussian grids)"
+            Self::Bounds => "cell areas: the spherical polygons of the cell bounds (the grid's \
+                             vertices; generated midway between the centres of regular and \
+                             Gaussian grids)"
                 .into(),
             Self::Healpix => "equal cell areas (HEALPix)".into(),
             Self::PseudoBounds => "cell areas of a single row or column".into(),
-            Self::ReducedRows => "cell areas from the rows of the reduced grid".into(),
+            Self::ReducedRows => "cell areas from the rows of the reduced grid: each point has \
+                                  its row's latitude band (bounds midway between neighbouring \
+                                  rows, the poles at the ends) divided by the row's number of \
+                                  points"
+                .into(),
             Self::Mesh(m) => format!("2-D cell areas of the {m}"),
             Self::Constant => "EQUAL WEIGHTS: no cell areas, no cell bounds".into(),
         }

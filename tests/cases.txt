@@ -418,6 +418,13 @@ ref:numpy.mesh_vert | -vertsum -selname,temp -setgrid,fesom:{fix}/fesom_pi_deg {
 ref:numpy.mesh_vert | -vertint,0/700 -selname,temp,v -setgrid,fesom:{fix}/fesom_pi {in} | fesom_pi_data fesom_pi_data_v20
 ref:numpy.mesh_vol | -volmean -selname,temp,u -setgrid,fesom:{fix}/fesom_pi {in} | fesom_pi_data fesom_pi_data_v20
 ref:numpy.mesh_vol | -volint,0/700 -selname,temp,salt -setgrid,fesom:{fix}/fesom_pi {in} | fesom_pi_data fesom_pi_data_v20
+# method notes (--json results and --plan): how a value was computed, one note per operator that chose
+json:(.out.method | map(.operator)) == ["fldmean"] and .out.method[0].area_weights[0].area_weights == "bounds" | --json outputtab,value -fldmean -seltimestep,1 {in} | r36x18_std
+json:(.out.method | map(.operator)) == ["sellonlatbox,0,90,0,60", "fldmean"] and (.out.method[0].cells | startswith("the cells whose centre")) and .out.method[0].kept < .out.method[0].of | --json outputtab,value -fldmean -sellonlatbox,0,90,0,60 -seltimestep,1 {in} | unst_360
+json:.out.method[0].dry_layers != null and .out.method[0].places[0].place == "nodes" and .out.method[1].area_weights[0].area_weights == "mesh_per_level" | --json outputtab,value -fldmean -sellevel,2.5 -seltimestep,1 -selname,temp -setgrid,fesom:{fix}/fesom_pi {in} | fesom_pi_data
+json:.out.method[1].operator == "volint,0/700" and .out.method[1].area_weights[0].layers.cut != null | --json outputtab,value -volint,0/700 -seltimestep,1 -selname,temp -setgrid,fesom:{fix}/fesom_pi {in} | fesom_pi_data
+json:(.out.method[0].places | map(.place)) == ["nodes", "elements"] and (.out.method[1].centres | contains("three nodes")) | --json outputtab,value -fldmean -sellonlatbox,-30,30,-20,20 -sellevel,2.5 -seltimestep,1 -selname,u -setgrid,fesom:{fix}/fesom_pi {in} | fesom_pi_data
+json:(.out.method | length) == 1 | --plan --json -fldmean {in} {out} | r36x18_std
 # FESOM 2.0 files without the nz1 coordinate (climatology_PHC): the reader groups nod2 x nz1 (and
 # elem x nz1) into one generic grid; setgrid separates cells and levels (depths from the mesh)
 ref:numpy.mesh_level_mean | -fldmean -selname,temp,u,a_ice -setgrid,fesom:{fix}/fesom_pi {in}  | fesom_pi_data_v20_nocoord

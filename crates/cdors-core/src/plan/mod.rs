@@ -875,6 +875,11 @@ pub struct Desc {
     pub time: Option<TimeDesc>,
     /// Set by reductions: the variables are computed by folding the stage of `input`.
     pub fold: Option<Fold>,
+    /// Method notes, one JSON object per operator that chose how to compute (`"operator"` plus
+    /// what it chose: the area weights of a statistic, the cells a box kept, where a mesh's centres
+    /// and areas come from). Collected along the chain by [`crate::ops::describe`] and printed with
+    /// `--json` results and in `--plan`, so that a result says how it was computed.
+    pub method: Vec<serde_json::Value>,
 }
 
 /// A reduction ending a stage: the description of its input and the kernel that folds it.
@@ -1068,6 +1073,7 @@ pub fn describe_source(srcs: &Sources, si: usize) -> Result<Desc> {
         grids,
         zaxes,
         time,
+        method: Vec::new(),
         fold: None,
     })
 }

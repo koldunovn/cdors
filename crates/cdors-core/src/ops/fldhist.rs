@@ -540,11 +540,7 @@ pub fn describe(node: &OpNode, mut inputs: Vec<Desc>, srcs: &Sources) -> Result<
                 winfo.push(serde_json::json!({
                 "variable": v.name,
                 "area_weights": "mesh_per_level",
-                "description": format!(
-                    "areas of each level of place '{}' of the mesh {} (level k: the area at its \
-                     top interface)",
-                    lw.place, lw.mesh.name
-                ),
+                "description": fldstat::per_level_description(&lw),
             }));
                 minfo.push(serde_json::json!({
                     "variable": v.name,

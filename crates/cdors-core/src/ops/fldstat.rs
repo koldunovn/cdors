@@ -1658,6 +1658,15 @@ fn bottom_ranks(
     ))
 }
 
+/// The `--plan` and method description of per-level mesh areas.
+pub(crate) fn per_level_description(lw: &LevelWeights) -> String {
+    format!(
+        "areas of each level of place '{}' of the mesh {} (level k: the area at its top interface, \
+         0 at and below the sea floor, so dry cells weigh nothing)",
+        lw.place, lw.mesh.name
+    )
+}
+
 /// Per-level weights of `v` on grid `g` if it has levels on a mesh place with per-level areas;
 /// with the bytes of the mesh levels it reads that `loaded` (mesh name, place, level) does not
 /// hold yet.
@@ -1806,11 +1815,7 @@ pub fn describe(node: &OpNode, mut inputs: Vec<Desc>, srcs: &Sources) -> Result<
                     None
                 };
                 let weights = if let Some((lw, bytes)) = per_level {
-                    let src = format!(
-                        "areas of each level of place '{}' of the mesh {} (level k: the area at \
-                         its top interface)",
-                        lw.place, lw.mesh.name
-                    );
+                    let src = per_level_description(&lw);
                     winfo.push(serde_json::json!({
                         "variable": v.name,
                         "area_weights": "mesh_per_level",

@@ -362,6 +362,7 @@ pub fn describe(node: &OpNode, mut inputs: Vec<Desc>) -> Result<Desc> {
         grids: vec![og],
         zaxes: input.zaxes.clone(),
         time: input.time.clone(),
+        method: Vec::new(),
         fold: Some(Fold {
             input: Box::new(input),
             kernel: Arc::new(FieldKernel {

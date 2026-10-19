@@ -14,7 +14,9 @@
 //! `tiles`, `chunks_read`, `bytes_decoded`, `bytes_compressed`, `kernel` (for `fld*`:
 //! `area_weights[]`), `variables[].leaves[]`), `totals`, `memory`, `remap_weights`, `settings`,
 //! `read_limit` and `warnings[]` (`warning`, `message`: results that are probably wrong, such as
-//! field means over a grid without cell areas). Byte counts are plain integers.
+//! field means over a grid without cell areas) and `method[]` (how the result is computed: one note
+//! per operator that chose area weights, cells or layers; also in `--json` value outputs). Byte
+//! counts are plain integers.
 
 use super::stage::Stage;
 use super::tiling::{LeafInfo, LeafRead, VarTiling};
@@ -246,7 +248,7 @@ pub fn fmt_bytes(b: u64) -> String {
 }
 
 /// `selname,tas`: an operator with its arguments, as on the command line.
-fn op_token(n: &OpNode) -> String {
+pub(crate) fn op_token(n: &OpNode) -> String {
     if n.args.is_empty() {
         n.name.clone()
     } else {
@@ -569,6 +571,8 @@ pub fn to_json(plan: &Plan, cmd: &Command, threads: usize, io_threads: usize) ->
             "exceeded": lim.limit.is_some_and(|l| src_dec > l),
         },
         "warnings": warnings,
+        // how the result is computed: one note per operator that chose weights, cells or layers
+        "method": plan.desc.method,
     })
 }
 
