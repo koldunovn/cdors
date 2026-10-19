@@ -158,8 +158,10 @@ def score(md, task, arm, transcript, tsv, run_id, wall_s, exit_code):
     if have_stream:
         row["tool_calls"] = len(seen)
         row["bash_calls"] = len(bash_cmds)
-        # the cdors binary, not paths such as cdors-agentcheck/ or cdors-bin/
-        row["cdors_calls"] = sum(bool(re.search(r"(?<![\w.-])cdors(?![\w.-])", c)) for c in bash_cmds)
+        # the cdors binary, also a frozen one (cdors-<commit>), not paths such as cdors-agentcheck/ or cdors-bin/
+        row["cdors_calls"] = sum(
+            bool(re.search(r"(?<![\w.-])cdors(-[0-9a-f]{7,40})?(?![\w.-])", c)) for c in bash_cmds
+        )
         row["cdo_calls"] = sum(bool(re.search(r"(?<![\w/.-])cdo\b(?!rs)|/cdo\b(?!rs)", c)) for c in bash_cmds)
         row["python_calls"] = sum(bool(re.search(r"\bpython\d?(\.\d+)?\b", c)) for c in bash_cmds)
     else:

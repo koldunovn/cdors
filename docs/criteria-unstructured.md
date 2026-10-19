@@ -1,17 +1,18 @@
 # The four round-1 criteria (analysis on FESOM2 meshes)
 
-Status 2026-10-19, master `32b1dbd`. The round-1 plan (`docs/plans/20261018-unstructured-round1.md`, Task 15) sets
+Status 2026-10-19, master `25aea2f`. The round-1 plan (`docs/plans/20261018-unstructured-round1.md`, Task 15) sets
 four criteria. Below, each is checked against the gate (`docs/unstructured-baseline.md`), the real-data validation
-(`docs/unstructured-results.md`) and the test suite. Correctness is met. Speed meets every mark but one: the
-second run of the heat content took 10.2 s against 10 s, and that run was not warm. The agent check has not run
-yet. Memory stays 6–9 % above a 2 GB budget.
+(`docs/unstructured-results.md`) and the test suite. Correctness is met. Speed meets every mark: the warm
+heat-content row, a miss by 0.2 s in the first validation, was re-measured warm and takes 5.9–6.5 s. Memory is met
+since a fix to the mesh reader: 1.72 GB under a 2 GB budget. The agent check's pilot is correct; the full ten
+sessions have not run yet.
 
 | | Criterion | Result | Main evidence |
 |---|---|---|---|
 | 1 | Correct: regionmask masks identical, nereus within tolerance, no silent cell loss | **met** | masks identical to regionmask and nereus' Atlantic mask on dart; OHC 9.1e-15 and ice extent 3.0e-14 from nereus; 562 of 562 harness cases |
-| 2 | Speed against the gate's marks | **met except row 3 (natural OHC chain, second run: 10.2 s vs ≤ 10 s)** | Atlantic OHC 0–700 m, 3 years, 8.3 s cold (8.3× nereus); NH ice extent 7.1 s (17.8×); first use of the mesh 16.3 s (nereus 343 s) |
-| 3 | Agents: 5 of 5, at a cost no higher than the Python arm | **pending** | five FESOM2 tasks, references and runner prepared; the start of the sessions was blocked by the permission classifier |
-| 4 | Memory bounded under `--mem` | **not met: 6–9 % over** | OHC under `--mem 2G` peaks at 2.13–2.18 GB; ice 1.03 GB |
+| 2 | Speed against the gate's marks | **met** | Atlantic OHC 0–700 m, 3 years, 8.3 s cold (8.3× nereus), 5.9–6.5 s warm (2.0× nereus warm); NH ice extent 7.1 s (17.8×); first use of the mesh 16.3 s (nereus 343 s) |
+| 3 | Agents: 5 of 5, at a cost no higher than the Python arm | **pending: pilot correct** | F5 with cdors correct in 9 turns, 64 s, $0.33 (job 28236330); the full run (ten sessions) not yet run |
+| 4 | Memory bounded under `--mem` | **met** | OHC under `--mem 2G` peaks at 1.72 GB (2.15–2.28 GB before the fix); ice 1.05 GB |
 
 ## 1. Correctness
 
@@ -65,15 +66,24 @@ numbers.
 |---|---|---|---|---|
 | 1 | Atlantic OHC 0–700 m, cold | ≤ 13 s (≥ 5× nereus 68.6 s) | 8.30 s with the natural chain (no `-sellevel`), 8.3× nereus; other year sets 10.4–11.1 s | pass |
 | 2 | NH ice extent, daily, cold | ≤ 12 s (≥ 10× nereus 126 s) | 7.11 s, 17.8× | pass |
-| 3 | second run: OHC / ice | ≤ 10 s / ≤ 8 s (≥ 2× nereus warm 20.5 s / 16.3 s) | OHC 10.20 s natural chain, 8.41 s with `-sellevel`; ice 7.82 s | **natural OHC: miss by 0.2 s** (still 2.0× nereus); the rest pass |
+| 3 | second run: OHC / ice | ≤ 10 s / ≤ 8 s (≥ 2× nereus warm) | OHC warm (job 28236403): 5.93–6.51 s natural chain, 5.75–7.16 s with `-sellevel`, 2.0–2.2× nereus warm (13.1 s); ice 7.82 s (job 28231368, 2.1× nereus' 16.3 s) | pass |
 | 4 | first use of the dart mesh (fresh cache, Atlantic mask, one step) | ≤ 60 s | 16.3 s (nereus 343 s) | pass |
 | 4b | the same with the cache | ≤ 5 s over row 1's per-step cost | 1.06 s | pass |
 | 6 | values against nereus | rel 1e-6 | 9.1e-15 / 3.0e-14 | pass |
 
-**Row 3 was not a warm measurement.** The Lustre client keeps at most 24 GB of file data, and the validation read
-about 30 GB of other data between two runs of the same set, so the "warm" runs mostly read from Lustre again. The read
-probe of the same bytes took 7.6–8.7 s in those runs, against 1.8–2.0 s from the page cache with the same binary
-and 1.0–1.3 s after the read fix (`docs/unstructured-results.md`, "Read path"). Row 3 was not re-run, so the miss of 0.2 s stands as measured.
+**Row 3 was re-measured warm** (job 28236403, the same binary `32b1dbd`, 0.06 node-h). The first validation's
+"warm" runs were not warm: the Lustre client keeps at most 24 GB of file data, and about 30 GB of other data was read
+between two runs of the same set (10.2 s, a miss by 0.2 s). The re-run reads only temp 1970–1972 between the repeats
+(16.4 GB of 36 layers):
+- Lustre cache in use: 3.5 GB at the start, 18.7 GB after the cold run, 20.2 GB after the cdors repeats, 24.7 GB
+  (full) after nereus.
+- cdors, natural chain: cold 8.88 s; three warm repeats 6.51, 5.93 and 6.35 s; after the nereus runs 3.13 and
+  3.46 s. With `-sellevel`: 7.16 and 5.75 s. Read probe of the same bytes: 4.20 and 3.98 s, later 1.35 s.
+- nereus, OHC only (file chunks, Task 1's mesh cache, 128 threads): the OHC phase took 28.6 s on its first run
+  (the first Python start on the node: import 16 s, opening the files 27 s) and 13.1 s on the second. Task 1's
+  20.5 s was not warm either.
+- The first warm repeats spent 220–270 s in the kernel, the later runs 47–54 s. Why it changed is not known.
+- Every warm repeat is under 10 s, and the slowest (6.51 s) is 2.0× faster than nereus warm in the same job.
 
 **Where the time goes.** OHC and ice now take about as long as reading their bytes (0.9–1.3× the probe). Cold reads
 run at 2.2–2.5 GB/s, against 3.5–4.5 GB/s for a plain `pread` of the same files. Spreading the reads over the
@@ -85,21 +95,21 @@ and `maskregion` as a per-cell node.
 
 ## 3. Agents
 
-**Pending.** The check is prepared (Task 14, `bench/agent_tasks.md`, FESOM2 set):
+**Pending; the pilot is correct.** The check (Task 14, `bench/agent_tasks.md`, FESOM2 set):
 - **Tasks:** F1 Atlantic OHC 0–700 m, F2 NH ice-extent seasonal cycle, F3 Drake section, F4 Niño 3.4 anomalies,
   F5 Arctic mean SST, all on dart.
 - **References:** independent NumPy references, with nereus as the second method (job 28230786).
 - **Arms:** arm A gets cdors with `cdors guide` only; arm B gets Python with nereus.
 
-Starting the sessions was blocked by the permission classifier ("Create Unsafe Agents"), so they must be started by
-Nikolay. Commands, with the frozen binary:
+**Pilot** (job 28236330, frozen binary `cdors-32b1dbd`, `bench/agent/results-20261019-082207.md`): F5 with cdors,
+correct to all six digits, 9 turns, 8 tool calls, 64 s, $0.33. The session read `cdors guide` and the operators'
+help, checked the chain with `--plan`, and ran it on 16 threads with `--mem 4G`.
+
+**Full run:** submitting it was blocked by the permission classifier, so Nikolay starts it:
 
 ```bash
 cd ~/cdo
-# pilot: one session (F5, cdors arm)
-TASKSET=fesom TASKS=F5 ARMS=A CDORS_BIN=/work/ab0995/a270088/cdors-target/frozen/cdors-32b1dbd \
-  sbatch --time=00:40:00 bench/agent_check.sbatch
-# full: five tasks, two arms, ten sessions one after another (~$3–4)
+# five tasks, two arms, ten sessions one after another (~$3–6)
 TASKSET=fesom CDORS_BIN=/work/ab0995/a270088/cdors-target/frozen/cdors-32b1dbd \
   sbatch --time=02:30:00 bench/agent_check.sbatch
 ```
@@ -110,22 +120,29 @@ arm A gets 5 of 5 right at a cost no higher than arm B's.
 
 ## 4. Memory under `--mem`
 
-| Run (3 years, dart) | Budget | Plan's estimate | Peak RSS |
-|---|---|---|---|
-| Atlantic OHC 0–700 m | `--mem 2G` | 1.62 GB, with 0.34 GB of resident mesh arrays | 2.13–2.18 GB (6–9 % over) |
-| NH ice extent | `--mem 2G` | | 1.03 GB |
-| Atlantic OHC 0–700 m | default (4 GB) | | 2.4–3.9 GB |
-| NH ice extent | default (4 GB) | | 1.0–1.6 GB |
+Peak RSS in GB of 10⁹ bytes, as `--mem` counts. (`/usr/bin/time` reports KiB; the first validation's
+"2.13–2.18 GB" were KiB / 10⁶, i.e. 2.18–2.23 GB.)
 
-- **What the plan counts:** since the round's fixes, the mesh's resident arrays and per-level areas are held
-  outside the stages' budget (`memory.parts.mesh_resident`, `mesh_weights`). This cut the overshoot from 12 % to
-  6–9 %.
-- **What it misses:** about 0.5 GB of RSS: HDF5 and netCDF-C buffers, the allocator, and copies of tiles in
-  flight.
-- **Follow-up:** measure these per open file and per I/O thread and reserve them in the plan, or lower the tile
-  budget by a fixed margin on NetCDF-4 inputs.
-- **Bounded growth:** memory does not grow with the length of the series. One OHC step peaks at 3.8 GB at the
-  default budget, 36 steps at 2.4–3.9 GB.
+| Run (dart) | Budget | Plan's estimate | Before (`32b1dbd`) | Now (`25aea2f`) |
+|---|---|---|---|---|
+| Atlantic OHC 0–700 m, 3 years | `--mem 2G` | 1.62 GB | 2.15–2.28 GB (8–14 % over) | **1.72 GB** |
+| the same, one step | `--mem 2G` | 1.62 GB | 2.00 GB | 1.74 GB |
+| Atlantic OHC 0–700 m, 3 years | default (4 GB) | 2.77 GB | 3.45 GB | 2.63 GB |
+| NH ice extent, 3 years | `--mem 2G` | | 1.05 GB | not affected |
+
+- **Where the overshoot was** (valgrind massif on one step, job 28236468; RSS sampled every 50 ms, jobs 28236403 and
+  28236588): the run stayed within the estimate once it streamed. The peak came in the first second, while the
+  36 levels of per-level areas (25 MB each) were read from the mesh cache next to the first tiles. Each level read
+  held the compressed chunk, the decoded chunk, a clone of it and a buffer to assemble the range in, and many
+  levels load at once on 128 threads. glibc keeps freed memory for reuse (no trim, for speed), so that early peak
+  stayed the RSS of the whole run.
+- **The fix** (`25aea2f`): a range that is exactly one chunk, as each level is in the cache, is returned as
+  decoded. Outputs are bit-identical, and the run is slightly faster (4.34 s against 4.52 s under `--mem 2G`).
+- **What is left:** the peak is still 0.1 GB (6 %) above the plan's estimate. It stays within the budget because
+  the tiles do not fill their share. The rest is compressed bytes of levels being loaded, thread stacks and 18 MB
+  of mapped binary and libraries. Variants (one malloc arena, 16 threads, the netCDF-C read path, a 1 MB mmap
+  threshold) peak at 1.47–1.72 GB.
+- **Bounded growth:** memory does not grow with the length of the series: one step 1.74 GB, 36 steps 1.72 GB.
 
 ## Cost
 
@@ -135,12 +152,14 @@ arm A gets 5 of 5 right at a cost no higher than arm B's.
 | Compute nodes: validation (jobs 28230544, 28230657, 28231368) | 0.20 node-h |
 | Compute nodes: read path (jobs 28231623, 28231676) | 0.06 node-h |
 | Compute nodes: Task 14 references (job 28230786) | 0.08 node-h (4 min 50 s) |
-| Total compute | 0.62 node-h |
-| Agent check | not yet run (~$3–4 estimated) |
+| Compute nodes: warm re-run and memory (jobs 28236403, 28236468, 28236548, 28236588) | 0.09 node-h |
+| Agent check pilot (job 28236330, shared partition) | 0.03 node-h, $0.33 |
+| Total compute | 0.74 node-h |
+| Agent check, full run | not yet run (~$3–6 estimated) |
 
 ## Open decisions
 
-- Run the agent check (commands above).
+- Run the full agent check (command above).
 - Start round 2 (neighbour operators, first plots) or not.
 - Publish: the shared install with `share/regions/`, its README (`docs/levante.md`) and the guide page, each after
   the exact text is approved.

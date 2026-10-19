@@ -9,6 +9,11 @@
 #   sbatch -t 15 bench/unstructured/validate.sh extra
 #                                            first use of the mesh without a plan before it, and
 #                                            timing splits of the OHC chain (job: see the results doc)
+#   CDORS=<binary> sbatch -t 25 bench/unstructured/validate.sh v3
+#                                            follow-up: the warm rows measured warm (cdors and
+#                                            nereus), and where RSS goes under --mem 2G
+#   CDORS=<binary> [CDORS2=<binary>] sbatch -t 10 bench/unstructured/validate.sh mem
+#                                            the memory runs of v3 alone (and with a second binary)
 #
 # Same years and cold/warm sets as Task 1 (bench/unstructured/baseline.sh):
 #   A = 1970-1972, B = 1980-1982 (cold for cdors on this node), C = 1990-1992 (read probe, cold).
@@ -25,7 +30,7 @@
 #                      the reference series; compare.py writes compare.json
 # Output (fresh directory, nothing is overwritten or deleted):
 #   /scratch/a/a270088/cdors-bench/unst-validate-<jobid>/  runs.tsv (name, years, wall_s,
-#   max_rss_gb, data_gb (bytes of the data leaves in --plan), gb_per_s, cpu_pct, user_s, sys_s, rc)
+#   max_rss_gb (1e9 bytes, as --mem counts; jobs up to 28236588 wrote KiB / 1e6, 2.4 % less), data_gb (bytes of the data leaves in --plan), gb_per_s, cpu_pct, user_s, sys_s, rc)
 #
 #SBATCH --job-name=cdors-unst-validate
 #SBATCH --partition=compute
@@ -39,7 +44,7 @@
 set -uo pipefail          # no -e: one failing run must not stop the others
 
 HERE=$(cd "$(dirname "$0")" && pwd)
-[ -f "$HERE/baseline.py" ] || HERE=/work/ab0995/a270088/cdors-wt/t13-realdata/bench/unstructured  # sbatch spool copy
+[ -f "$HERE/baseline.py" ] || HERE=/home/a/a270088/cdo/bench/unstructured  # sbatch spool copy
 CDORS=${CDORS:-/work/ab0995/a270088/cdors-target-r1-t13/release/cdors}
 PY="/work/ab0995/a270088/mambaforge/envs/nereus/bin/python -I"
 D=/work/ab0995/a270210/runtime/awicm3-v3.1_refactoring/TCO319L137-DART/hist1950d/outdata/fesom
@@ -78,7 +83,7 @@ timed() {  # timed NAME YEARS DATA_BYTES cmd...
     local rc=$?
     awk -F': ' -v n="$name" -v y="$years" -v b="$bytes" -v rc="$rc" '
         /Elapsed \(wall clock\)/ {k=split($2,a,":"); w=0; for(i=1;i<=k;i++) w=w*60+a[i]}
-        /Maximum resident/ {r=$2/1e6}
+        /Maximum resident/ {r=$2*1024/1e9}
         /Percent of CPU/ {c=$2+0}
         /User time/ {u=$2}
         /System time/ {s=$2}
@@ -103,6 +108,35 @@ run_cdors() {  # run_cdors NAME YEARS "OPTS" "CHAIN" INPUT...   (PLAN_AFTER=1: t
         "$OUT/$name.plan.json" 2>/dev/null || echo 0)
     # shellcheck disable=SC2086
     timed "$name" "$years" "${b:-0}" "$CDORS" -O -w $opts -P "$THREADS" $chain "$@" "$OUT/$name.nc"
+}
+
+lustre() {
+    echo "$1 $(lctl get_param -n llite.project-*.max_cached_mb 2>/dev/null | \
+        awk '/^used_mb/{u+=$2} /^max_cached_mb/{m=$2} END{print "used_mb", u, "max_mb", m}')" >> "$OUT/cache.txt"
+}
+rss_run() {  # rss_run NAME "ENV" "OPTS" "CHAIN" INPUT...  (the plan, then the run sampled)
+    local name=$1 envs=$2 opts=$3 chain=$4; shift 4
+    # shellcheck disable=SC2086
+    env $envs "$CDORS" -w $opts --plan --json -P "$THREADS" $chain "$@" "$OUT/$name.nc" \
+        > "$OUT/$name.plan.json" 2> "$OUT/$name.plan.stderr"
+    local b comm sp
+    b=$(/usr/bin/jq '.totals.bytes_decoded' "$OUT/$name.plan.json" 2>/dev/null || echo 0)
+    comm=$(basename "$CDORS" | cut -c1-15)
+    ( pid=""; for _ in $(seq 500); do pid=$(pgrep -n -x "$comm") && break; sleep 0.01; done
+      [ -n "$pid" ] || exit 0
+      while [ -r "/proc/$pid/status" ]; do
+          awk -v t="$(date +%s.%N)" '/^(VmRSS|RssAnon|RssFile|RssShmem|Threads):/{s=s" "$1$2} END{print t s}' \
+              "/proc/$pid/status" 2>/dev/null
+          sleep 0.05
+      done ) > "$OUT/$name.rss" &
+    sp=$!
+    # shellcheck disable=SC2086
+    timed "$name" 1970-1972 "${b:-0}" env $envs "$CDORS" -O -w $opts -P "$THREADS" $chain "$@" "$OUT/$name.nc"
+    wait "$sp"
+    { printf '%s env=[%s] opts=[%s] P=%s estimate=%s ' "$name" "$envs" "$opts" "$THREADS" \
+          "$(/usr/bin/jq '.memory.peak_bytes_estimate' "$OUT/$name.plan.json" 2>/dev/null)"
+      awk '{for(i=2;i<=NF;i++){split($i,a,":"); if(a[2]+0>m[a[1]]) m[a[1]]=a[2]+0}}
+           END{for(k in m) printf "%s_max=%d ", k, m[k]; print ""}' "$OUT/$name.rss"; } | tee -a "$OUT/rss_summary.txt"
 }
 
 S1="$D/temp.fesom.1975.nc"
@@ -136,6 +170,59 @@ if [ "$MODE" = v2 ]; then
     $PY "$HERE/compare.py" "$OUT" /scratch/a/a270088/cdors-bench/unst-validate-28230544/nereus_ref_A \
         > "$OUT/compare.stdout" 2>&1
     grep -v -i -e pyproj -e ca_bundle "$OUT/compare.stdout"
+    echo "done: $OUT"; date
+    exit 0
+fi
+if [ "$MODE" = v3 ]; then
+    # follow-up to job 28231368. (1) Warm rows measured warm: the Lustre client keeps at most 24 GB
+    # of file data, so between the repeats only temp 1970-1972 is read (16.4 GB of 36 layers), by
+    # cdors and by nereus (OHC only, file chunks, the Task 1 mesh cache: Task 1's warm row);
+    # llite used_mb is logged around them. (2) Where RSS goes under --mem 2G: RssAnon/RssFile of
+    # the cdors process sampled every 50 ms, in runs that vary the allocator, threads and read path.
+    NPZ=/scratch/a/a270088/cdors-bench/unst-baseline-28228738/dart_mesh_cache.npz
+    T_A=$(files temp 1970 1972)
+    "$CDORS" --json mesh info "fesom:$M" > "$OUT/mesh_info.json" 2>&1     # builds the mesh cache, untimed
+    lustre start
+    run_cdors ohc2_A_cold 1970-1972 "" "$OHC2" -cat $T_A
+    lustre after_cold
+    for i in 1 2 3; do run_cdors ohc2_A_warm$i 1970-1972 "" "$OHC2" -cat $T_A; done
+    for i in 1 2; do
+        run_cdors ohc_A_warm$i 1970-1972 "" "$OHC" -cat $T_A
+        run_cdors probe_temp_A_warm$i 1970-1972 "" "$PROBE_T" -cat $T_A
+    done
+    lustre after_cdors_warm
+    for i in 1 2; do
+        mkdir -p "$OUT/nereus_ohc_file_A_warm$i"
+        timed nereus_ohc_file_A_warm$i 1970-1972 0 \
+            $PY "$HERE/baseline.py" --years 1970-1972 --out "$OUT/nereus_ohc_file_A_warm$i" --workers "$THREADS" \
+            --chunks file --mesh-cache "$NPZ" --what ohc
+        /usr/bin/jq -c '{wall_s, decoded_gb, peak_rss_gb}' "$OUT/nereus_ohc_file_A_warm$i/nereus_timing.json" 2>/dev/null
+    done
+    lustre after_nereus
+    run_cdors ohc2_A_warm4 1970-1972 "" "$OHC2" -cat $T_A
+    lustre after_warm4
+fi
+if [ "$MODE" = v3 ] || [ "$MODE" = mem ]; then
+    # memory under --mem 2G (data warm; `mem` alone: one untimed pass first, and CDORS2 = a second
+    # binary run the same way, e.g. the build before a change)
+    if [ "$MODE" = mem ]; then
+        NPZ=; T_A=$(files temp 1970 1972)
+        "$CDORS" --json mesh info "fesom:$M" > "$OUT/mesh_info.json" 2>&1
+        run_cdors warmup_ohc2_A 1970-1972 "" "$OHC2" -cat $T_A
+    fi
+    rss_run mem_ohc2 "" "--mem 2G" "$OHC2" -cat $T_A
+    rss_run mem_ohc2_arena1 "MALLOC_ARENA_MAX=1" "--mem 2G" "$OHC2" -cat $T_A
+    rss_run mem_ohc2_mmap1M "MALLOC_MMAP_THRESHOLD_=1048576" "--mem 2G" "$OHC2" -cat $T_A
+    THREADS=16 rss_run mem_ohc2_P16 "" "--mem 2G" "$OHC2" -cat $T_A
+    rss_run mem_ohc2_netcdf "CDORS_NC4=netcdf" "--mem 2G" "$OHC2" -cat $T_A
+    rss_run mem_ohc2_1step "" "--mem 2G" "${OHC2/-selname,temp/-seltimestep,1 -selname,temp}" "$D/temp.fesom.1970.nc"
+    rss_run mem_probe "" "--mem 2G" "$PROBE_T" -cat $T_A
+    rss_run mem_ohc2_default "" "" "$OHC2" -cat $T_A
+    if [ -n "${CDORS2:-}" ]; then
+        CDORS=$CDORS2 rss_run b2_mem_ohc2 "" "--mem 2G" "$OHC2" -cat $T_A
+        CDORS=$CDORS2 rss_run b2_mem_ohc2_1step "" "--mem 2G" "${OHC2/-selname,temp/-seltimestep,1 -selname,temp}" "$D/temp.fesom.1970.nc"
+        CDORS=$CDORS2 rss_run b2_mem_ohc2_default "" "" "$OHC2" -cat $T_A
+    fi
     echo "done: $OUT"; date
     exit 0
 fi

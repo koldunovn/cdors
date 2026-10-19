@@ -1,0 +1,2 @@
+run_id	task	arm	verdict	variant	n_expected	answer	reference	max_rel_err	exit_code	wall_s	duration_ms	num_turns	tool_calls	bash_calls	cdors_calls	cdo_calls	python_calls	input_tokens	output_tokens	cache_creation_tokens	cache_read_tokens	cost_usd	stop	model	peeked	note
+20261019-082207	F5	A	correct		5	-0.196318 -0.055787 -0.0393658 -0.110217 -0.0799318	-0.196317738 -0.055786993 -0.039365774 -0.110216592 -0.079931765	3.7e-06	0	63.5	61389	9	8	8	0	0	0	16	3902	26635	170917	0.32536740000000003	success	claude-opus-5-5		

@@ -614,21 +614,20 @@ cdors -fldhist,edges=0.15/1 -sellonlatbox,-180,180,0,90 -setgrid,fesom:$M -selna
   -cat $F/a_ice.fesom.197[012].nc extent.nc
 ```
 
-On one compute node (128 cores, job 28231368), against nereus (Python, xarray and dask) given the same mesh areas:
+On one compute node (128 cores, jobs 28231368 and 28236403), against nereus (Python, xarray and dask) given the same mesh areas:
 
 | 3 years, dart, one node | cdors | nereus |
 |---|---|---|
 | Atlantic heat content 0–700 m, 36 months, cold | 8.3 s | 68.6 s |
-| the same, second run | 10.2 s | 20.5 s (warm) |
+| the same, warm | 5.9–6.5 s | 13.1 s |
 | NH ice extent, 1096 days, cold | 7.1 s | 126 s |
-| the same, second run | 7.8 s | 16.3 s (warm) |
+| the same, second run | 7.8 s | 16.3 s |
 | first use of the mesh and the Atlantic mask | 16.3 s | 343 s |
-| peak memory | 1.0–1.6 GB (ice), 2.4–3.9 GB (heat content) | 5.1–6.2 GB |
+| peak memory | 1.1–1.6 GB (ice), 2.6 GB (heat content; 1.72 GB with `--mem 2G`) | 5.1–6.2 GB |
 
-The values agree with nereus to 9e-15 (heat content) and 3e-14 (extent). The second runs were not faster than the
-first: the Lustre client keeps at most 24 GB of these files in memory, less than the job read between repeats. A
-faster NetCDF-4 read path came after this run (16 GB from the page cache in 1.0 s instead of 2.0 s); cold reads stay
-at about 2.2 GB/s, set by Lustre.
+The values agree with nereus to 9e-15 (heat content) and 3e-14 (extent). Warm means the files are in the Lustre
+client's cache, which keeps at most 24 GB of file data: between the warm heat-content runs only their 16 GB were
+read. Cold reads run at about 2.2 GB/s, set by Lustre.
 
 
 ## The rules in one minute

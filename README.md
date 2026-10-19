@@ -213,12 +213,12 @@ from cdo and from nereus: [docs/deviations.md](docs/deviations.md).
 |---|---|---|
 | NH ice extent from daily a_ice, cold | 7.1 s | 126 s |
 | Atlantic heat content 0–700 m, cold | 8.3 s | 68.6 s |
+| the same, warm | 5.9–6.5 s | 13.1 s |
 | first use of the mesh with the Atlantic mask | 16.3 s | 343 s |
 | values against nereus with the mesh's `nod_area` | heat content 9.1e-15, extent 3.0e-14 (relative) | |
-| peak memory | ice 1.0–1.6 GB, heat content 2.4–3.9 GB (2.13–2.18 GB under `--mem 2G`) | 5.1–6.2 GB |
+| peak memory | ice 1.1–1.6 GB, heat content 2.6 GB (1.72 GB under `--mem 2G`) | 5.1–6.2 GB |
 
-All speed marks of the round pass except the second (warm) heat-content run, 10.2 s against a
-mark of 10 s; under `--mem 2G` the heat content peaks 6–9 % over the budget
+All speed marks of the round pass, and the heat content stays within a `--mem 2G` budget
 ([docs/criteria-unstructured.md](docs/criteria-unstructured.md)).
 
 ## For agents

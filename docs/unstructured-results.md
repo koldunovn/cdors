@@ -2,16 +2,18 @@
 
 Status (2026-10-19): re-run after the Task 13 fixes on master `d47d8fc`, as job 28231368 (3 min 40 s, 0.06 node-h).
 The first measurement, before the fixes on `be0136d`, is kept below as "before": jobs 28230544 and 28230657.
-Dataset, sets and pass marks: `docs/unstructured-baseline.md`.
+Dataset, sets and pass marks: `docs/unstructured-baseline.md`. The follow-up the same morning (jobs 28236403 to
+28236588, section "Follow-up") re-measured the warm rows warm and fixed the memory bound (`25aea2f`).
 
-> **Every speed mark passes except one.** The natural OHC chain misses the warm ≤ 10 s mark by 0.2 s; it still
-> runs 2.0× faster than nereus warm, which meets that row's factor. **Values equal nereus to 9e-15 (OHC) and
-> 3e-14 (ice extent).** The `--mem 2G` bound is still exceeded, by 6–9 % of RSS.
+> **Every speed mark passes**, the warm OHC row after the follow-up's warm re-run (this run's "warm" OHC, 10.2 s,
+> was not warm). **Values equal nereus to 9e-15 (OHC) and 3e-14 (ice extent).** The `--mem 2G` bound holds since
+> the follow-up's mesh-reader fix: 1.72 GB.
 > - **Atlantic OHC 0–700 m, 3 years**, natural chain
 >   `-mulc,4089750 -volint,0/700 -maskregion,regions=basins,select=Atlantic_Basin -setgrid,fesom:dart -selname,temp`,
 >   which no longer needs `-sellevel`:
 >   - cold: **8.3 s**, **8.3×** faster than nereus (68.6 s); before the fixes 15.4 s, 4.5×;
->   - warm: 10.2 s, 2.0× faster than nereus warm. The old chain with `-sellevel` takes 8.4 s;
+>   - second run: 10.2 s here, but not warm; warm (follow-up): 5.9–6.5 s, 2.0× faster than nereus warm (13.1 s).
+>     The old chain with `-sellevel`: 8.4 s here, 5.8–7.2 s warm;
 >   - both chains read the same 16.38 GB and give bit-identical series.
 > - **NH ice extent, 3 years of daily a_ice:** cold **7.1 s**, **17.8×** faster than nereus (126 s); warm 7.8 s.
 > - **On par with the read probe.** OHC now takes about as long as reading its bytes. This run's probe took 9.4 s
@@ -23,8 +25,8 @@ Dataset, sets and pass marks: `docs/unstructured-baseline.md`.
 >   nereus needs 343 s for this. With the cache the mesh path adds **1.1 s** (before: 2.5 s).
 > - **Memory:**
 >   - Peak RSS with the default 4 GB budget: OHC 2.4–3.9 GB, ice 1.1–1.6 GB.
->   - Under `--mem 2G`: OHC peaks at 2.13–2.18 GB, ice at 1.03 GB. The plan estimates 1.62 GB for OHC, including
->     0.34 GB of resident mesh arrays, so 0.5 GB of RSS is still not in the estimate.
+>   - Under `--mem 2G`: OHC peaked at 2.18–2.23 GB of 10⁹ bytes (first written as 2.13–2.18, KiB / 10⁶), ice at
+>     1.05 GB. The plan estimates 1.62 GB for OHC. After the follow-up's fix OHC peaks at 1.72 GB.
 >
 > | 3 years, dart, 128 cores | cdors now | cdors before | nereus (Task 1) | read probe (this run) |
 > |---|---|---|---|---|
@@ -41,11 +43,46 @@ Dataset, sets and pass marks: `docs/unstructured-baseline.md`.
 |---|---|---|---|---|---|
 | 1 | OHC, 3 years, cold | ≤ 13 s (≥ 5× nereus 68.6 s) | natural 8.30 s (A), 11.13 s (C); `-sellevel` 10.41 s (B) | pass | 8.3× nereus; 0.88× this run's cold probe (9.39 s). Before: 15.39 s, miss |
 | 2 | NH ice extent, cold | ≤ 12 s (≥ 10× nereus 126 s) | 7.11 s (A), 8.61 s (B) | pass | 17.8× nereus |
-| 3 | warm: OHC / ice | ≤ 10 s / ≤ 8 s (≥ 2× nereus 20.5 s / 16.3 s) | OHC natural 10.20 s, `-sellevel` 8.41 s / ice 7.82 s | natural: **miss by 0.2 s**; `-sellevel` and ice: pass | 2.0× / 2.4× / 2.1× nereus warm. The warm probe of the same bytes took 7.6–8.7 s, so the warm runs were bound by the read path, and the two OHC chains swapped places between the repeats (10.2/11.5 s vs 8.4/10.6 s). Before: 13.92 s, miss |
+| 3 | warm: OHC / ice | ≤ 10 s / ≤ 8 s (≥ 2× nereus 20.5 s / 16.3 s) | OHC natural 10.20 s, `-sellevel` 8.41 s / ice 7.82 s | natural: **miss by 0.2 s**; `-sellevel` and ice: pass. Not warm; warm in the follow-up: **pass** | 2.0× / 2.4× / 2.1× nereus warm. The warm probe of the same bytes took 7.6–8.7 s, so the warm runs were bound by the read path, and the two OHC chains swapped places between the repeats (10.2/11.5 s vs 8.4/10.6 s). Before: 13.92 s, miss |
 | 4 | first use of the dart mesh (fresh `CDORS_CACHE`, Atlantic region, one step) | ≤ 60 s | 16.34 s | pass | timed before any `--plan`; `--plan` no longer writes the cache |
 | 4b | the same with the cache | ≤ 5 s overhead | 1.06 s | pass | 1.30 s for one step vs 0.24 s for the probe. Before: 2.5 s |
-| 5 | peak RSS, any row | ≤ 2 GB | ice 1.0–1.6 GB; OHC 2.4–3.9 GB at the default 4 GB budget; OHC under `--mem 2G` 2.13–2.18 GB | **miss** (OHC) | Under `--mem 2G` the plan estimates 1.62 GB, with 39 tiles in flight and 0.34 GB resident mesh. RSS is 6–9 % over the budget. One OHC step at the default budget peaks at 3.8 GB. Unaccounted: ~0.5 GB (HDF5/netCDF buffers, allocator, the tile copies in flight) |
+| 5 | peak RSS, any row | ≤ 2 GB | ice 1.0–1.6 GB; OHC 2.4–3.9 GB at the default 4 GB budget; OHC under `--mem 2G` 2.13–2.18 GB | **miss** (OHC); follow-up fix: **pass**, 1.72 GB | Under `--mem 2G` the plan estimates 1.62 GB, with 39 tiles in flight and 0.34 GB resident mesh. RSS is 6–9 % over the budget. One OHC step at the default budget peaks at 3.8 GB. Unaccounted: ~0.5 GB, first put down to HDF5/netCDF buffers and the allocator; the follow-up found copies in the mesh cache's level reads |
 | 6 | values vs nereus with the mesh's `nod_area` | rel 1e-6 | OHC 9.1e-15 (36 months, both chains), extent 3.0e-14 (1096 days) | pass | against job 28230544's nereus reference on set A; timestamps equal; `volint` now writes f64 |
+
+## Follow-up: warm re-run and memory (jobs 28236403, 28236468, 28236548, 28236588)
+
+The same morning, on one exclusive node each (0.09 node-h in all), mode `v3` and `mem` of
+`bench/unstructured/validate.sh`; records in `/scratch/a/a270088/cdors-bench/unst-validate-<job>/` (`runs.tsv`,
+`cache.txt`, `rss_summary.txt`, `*.rss` sampled every 50 ms).
+
+> **Warm, the natural OHC chain takes 5.9–6.5 s, 2.0–2.2× faster than nereus warm (13.1 s): row 3 passes. Under
+> `--mem 2G` OHC now peaks at 1.72 GB instead of 2.15–2.28 GB: row 5 passes. Outputs are bit-identical.**
+> - **Warm means warm** (job 28236403, binary `32b1dbd`). Only temp 1970–1972 (16.4 GB) was read between the
+>   repeats. The Lustre client cache held 18.7 GB after the cold run and 20.2 GB after the cdors repeats, under
+>   its 24 GB limit.
+>   - cdors natural chain: cold 8.88 s; warm 6.51, 5.93, 6.35 s; after the nereus runs 3.13 and 3.46 s.
+>   - With `-sellevel`: 7.16 and 5.75 s. Read probe: 4.20 and 3.98 s, later 1.35 s (12 GB/s).
+>   - nereus, OHC only, Task 1's settings (file chunks, mesh cache, 128 threads): OHC phase 28.6 s on the first run
+>     (the first Python start on the node), 13.1 s on the second.
+>   - The first warm repeats spent 220–270 s of system time, the later runs 47–54 s. Why is not known.
+> - **Where the memory went** (valgrind massif on one OHC step, job 28236468; RSS sampled every 50 ms). The run
+>   stays within the estimate while it streams. The peak comes in the first second, while the 36 levels of
+>   per-level areas (25 MB each) load from the mesh cache next to the first tiles. Each level read held the
+>   compressed chunk, the decoded chunk, a clone and a NaN-filled assembly buffer, and many levels load at once.
+>   glibc keeps freed memory for reuse, so the early peak stays the RSS. One step alone peaked at 2.00 GB.
+> - **The fix** (`25aea2f`, job 28236588 against the frozen `32b1dbd` in the same job): a range that is exactly one
+>   chunk is returned as decoded.
+>
+> | dart, 128 cores, warm | `32b1dbd` | `25aea2f` | wall `32b1dbd` → `25aea2f` |
+> |---|---|---|---|
+> | OHC 3 years, `--mem 2G` (estimate 1.62 GB) | 2.15 GB | **1.72 GB** | 4.52 → 4.34 s |
+> | OHC one step, `--mem 2G` | 2.00 GB | 1.74 GB | 1.12 → 1.00 s |
+> | OHC 3 years, default budget (estimate 2.77 GB) | 3.45 GB | 2.63 GB | 3.52 → 3.20 s |
+>
+> - **Variants of the new build under `--mem 2G`:** one malloc arena 1.65 GB, 16 threads 1.72 GB, netCDF-C read
+>   path 1.67 GB, 1 MB mmap threshold 1.47 GB (but 5.6 s). Read probe without a mesh: 0.52 GB.
+> - **Left:** the peak is 0.1 GB (6 %) above the estimate. The budget still holds because the tiles do not fill
+>   their share of it.
 
 ## Read path (jobs 28231623 and 28231676, after the validation)
 
@@ -62,7 +99,7 @@ chunks 3.2 MB), one exclusive node each (0.037 + 0.026 node-h), script `bench/un
 > - **"Warm" in the validation was not warm.** The Lustre client keeps at most 24 GB of file data
 >   (`llite.*.max_cached_mb = 24576`). The validation's repeats read about 30 GB of distinct bytes (temp and a_ice)
 >   between two runs of the same set, so each repeat read mostly from Lustre again. Its "warm" rows (OHC 10.2 s,
->   probe 7.6–8.7 s) are second cold runs; the warm mark of row 3 was never measured warm.
+>   probe 7.6–8.7 s) are second cold runs; the warm mark of row 3 was not measured warm until the follow-up.
 > - **Cold reads:** a plain C `pread` probe on the same files (32 or 128 threads) reads 3.5–4.5 GB/s cold (3.1 GB/s with the
 >   client cache full, so that every read first evicts); cdors reads 2.2–2.5 GB/s (2.0 GB/s with the cache full).
 >   The files have a progressive layout (first 1 GB on one storage target, the next 3 GB on 4, the rest on 16), and

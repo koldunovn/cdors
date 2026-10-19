@@ -5,10 +5,10 @@
 Briefing for Nikolay. Plan with per-task notes: `docs/plans/20261018-unstructured-round1.md`. The four criteria:
 `docs/criteria-unstructured.md`. Nothing of round 1 is pushed, published or installed yet.
 
-**In short.** Tasks 1–13 and 15 are done. Task 14, the agent check, is prepared, but starting its
-sessions was blocked by the permission classifier; it waits for you (commands below). Correctness is met. Speed
-meets every mark except one, which missed by 0.2 s on a run that was not really warm. Memory under `--mem 2G` is
-6–9 % over.
+**In short.** Tasks 1–13 and 15 are done. Task 14, the agent check: the pilot ran and is correct; submitting
+the full run was blocked by the permission classifier, so it waits for you (command below). Correctness, speed and
+memory are met: the warm heat-content row passes when measured warm (5.9–6.5 s), and since `25aea2f` the heat
+content peaks at 1.72 GB under `--mem 2G`.
 
 - **Built:**
   - **Meshes.** `-setgrid,fesom:<dir>` reads the FESOM2 mesh from `fesom.mesh.diag.nc`:
@@ -47,37 +47,40 @@ meets every mark except one, which missed by 0.2 s on a run that was not really 
   - Atlantic OHC 0–700 m over 3 years: 8.3 s cold, 8.3× nereus;
   - NH ice extent: 7.1 s, 17.8×;
   - first use of the mesh: 16.3 s (nereus 343 s);
-  - one miss: the second OHC run, 10.2 s against 10 s. The Lustre client's 24 GB cache had been flushed by the
-    other runs, so it was not warm. It was not re-run.
-- **Tests:** on `32b1dbd` plus this documentation (no code changed), `cargo test --release` passes and
-  `tests/run_cases.sh` passes 562 of 562 cases on both NetCDF read paths, with the Zarr and planner variants
-  (165 s on the first run of the build, 46 s on the second). The cases include 109 rows against references
+  - warm OHC (job 28236403, only the 16 GB of the chain read between repeats): 5.9–6.5 s, 2.0× nereus warm
+    (13.1 s). The first validation's 10.2 s was not warm: the Lustre client's 24 GB cache had been flushed by the
+    other runs.
+- **Memory** (job 28236588): OHC under `--mem 2G` peaks at 1.72 GB, before `25aea2f` 2.15–2.28 GB. The peak
+  came from per-level area reads of the mesh cache holding up to four copies of a level each.
+- **Tests:** on `25aea2f`, `cargo test --release` passes (37 tests) and `tests/run_cases.sh` passes 562 of 562
+  cases on both NetCDF read paths, with the Zarr and planner variants (109 s on the first run of the build, 30 s
+  with `CDORS_NC4=netcdf` after it); `tests/selftest_ref.sh` ok. The cases include 109 rows against references
   (67 NumPy, 28 regionmask, 14 nereus) and 67 `json:` rows.
-- **Compute used:** 0.62 node-h in all:
+- **Compute used:** 0.74 node-h in all:
   - gate 0.28 (job 28228738);
   - validation 0.20 (28230544, 28230657, 28231368);
   - read path 0.06 (28231623, 28231676);
-  - Task 14 references 0.08 (28230786).
+  - Task 14 references 0.08 (28230786);
+  - warm re-run and memory 0.09 (28236403, 28236468, 28236548, 28236588);
+  - agent check pilot 0.03 (28236330, shared partition) and $0.33.
 
-**The agent check (Task 14) needs you.** The sessions could not be started from the agent session ("Create Unsafe
-Agents" in the permission classifier). Pilot first, then the full set, with the frozen binary:
+**The agent check (Task 14) needs you.** The pilot (job 28236330: F5 with cdors, correct, 9 turns, 64 s, $0.33)
+went through; submitting the full run was blocked by the permission classifier. With the frozen binary:
 
 ```bash
 cd ~/cdo
-TASKSET=fesom TASKS=F5 ARMS=A CDORS_BIN=/work/ab0995/a270088/cdors-target/frozen/cdors-32b1dbd \
-  sbatch --time=00:40:00 bench/agent_check.sbatch                      # pilot: one session
 TASKSET=fesom CDORS_BIN=/work/ab0995/a270088/cdors-target/frozen/cdors-32b1dbd \
-  sbatch --time=02:30:00 bench/agent_check.sbatch                      # 10 sessions, ~$3–4
+  sbatch --time=02:30:00 bench/agent_check.sbatch                      # 10 sessions, ~$3–6
 ```
 
 **Open follow-ups.**
-1. **Memory:** about 0.5 GB of RSS is outside the `--mem` estimate (HDF5 and netCDF-C buffers, the allocator,
-   tile copies in flight), so OHC under `--mem 2G` peaks at 2.13–2.18 GB. Either reserve these per open file and
-   I/O thread, or keep a fixed margin on NetCDF-4 inputs.
+1. **Memory estimate:** the peak is still 0.1 GB (6 %) above the plan's estimate (compressed bytes of mesh levels
+   being loaded, thread stacks). The budget holds because the tiles do not fill their share; a tighter budget
+   would need these counted.
 2. **Cold reads:** 2.2–2.5 GB/s against 3.5–4.5 GB/s for a plain `pread` of the same files. Spread the reads over
    the files' storage targets: interleave the chunks of `-cat` and glob members, and read a file's progressive
    layout components at once (`docs/unstructured-results.md`, "Read path").
-3. **Agent check:** run it (above), then mark criterion 3 in `docs/criteria-unstructured.md` and move the plan to
+3. **Agent check:** run the full set (above), then mark criterion 3 in `docs/criteria-unstructured.md` and move the plan to
    `docs/plans/completed/`.
 4. **Publication, after you approve the exact text:**
    - the shared install, with `share/regions/` (the regions directory, 12 MB);
