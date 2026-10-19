@@ -11,13 +11,16 @@ radians, nod_area(nl, nod_n): area of layer k at index k, 0 below the floor; ele
 elem_area; zbar; nlevels_nod2D, layer k wet if k < nlevels_nod2D - 1). IFS: EERIE IFS-FESOM hist-1950,
 monthly means on the native O1280 grid through gribscan references (6 599 680 points in 2560 rows;
 W5 needs an eccodes that decodes them: env ecmwf (2.34) does, envs nereus (2.44) and hk25 (2.41) do not).
+ICON: EERIE ICON-ESM-ER control (erc2002), raw daily means on the native R2B8 grid (5 242 880 triangular
+cells; the files have no coordinates, the grid file holds clon/clat in radians and cell_area in m2).
 
   W1 level  global mean temperature of the 1600 m level (layer 1550-1650 m), area-weighted
   W2 layer  volume-mean temperature of the water between 1000 and 2000 m (2000 m cuts layer 1950-2050)
   W4 elem   mean surface zonal velocity u (on elements) over boxes, area-weighted by element area
   W5 ifs    global mean 2 m temperature (mean2t), January 1950, cell-area weighted on O1280
+  W6 icon   mean 2 m temperature (tas) south of 60 S, daily mean of 1 January 1991, cell-area weighted
 
-Run: python -I ref_trap.py W1|W2|W4|W5
+Run: python -I ref_trap.py W1|W2|W4|W5|W6
 """
 import json
 import sys
@@ -27,6 +30,9 @@ import numpy as np
 DATA = "/work/ab0995/a270210/runtime/awicm3-v3.1_refactoring/TCO319L137-DART/hist1950d/outdata/fesom"
 MESH = "/pool/data/AWICM/FESOM2/MESHES_FESOM2.1/dart"
 IFS = "/work/bm1344/a270228/phase1_hist/gribscan_1m_NATIVE/jsons.1950-1959/sfc.dir/atm2d_avg.json"
+ICON = ("/work/bm1344/k203123/experiments/erc2002/run_19910101T000000-19910131T235900/"
+        "erc2002_atm_2d_1d_mean_19910101T000000Z.nc")
+ICON_GRID = "/pool/data/ICON/grids/public/mpim/0033/icon_grid_0033_R02B08_G.nc"
 BOXES = {  # lon0, lon1, lat0, lat1
     "gulfstream": (-80, -40, 30, 50),
     "agulhas": (10, 40, -45, -30),
@@ -184,7 +190,10 @@ def w5():
            "points_per_row_first_last_equator": [int(counts[0]), int(counts[-1]), int(counts.max())]}
     pw = (w / counts)[inv]
     ref = mean(pw, t)
+    edges = np.concatenate([[90.0], 0.5 * (glat[1:] + glat[:-1]), [-90.0]])  # row bounds midway between rows
+    band = -np.diff(np.sin(np.radians(edges)))
     out["reference"] = ref
+    out["accepted"] = {"band_area_per_point": rel(mean((band / counts)[inv], t), ref)}
     out["naive"] = {
         "unweighted": rel(float(t.mean()), ref),
         "coslat_per_point": rel(mean(np.cos(np.radians(lat)), t), ref),
@@ -193,6 +202,40 @@ def w5():
     return out
 
 
+def w6(lat1=-60.0):
+    g = nc(ICON_GRID)
+    assert g["clat"].units == "radian"
+    lat = np.degrees(g["clat"][:].astype(np.float64))
+    a = g["cell_area"][:].astype(np.float64)
+    d = nc(ICON)
+    assert str(d["time"].units).startswith("minutes since 1950-1-1") and float(d["time"][0]) == 21565440.0
+    t = d["tas"][0, 0, :].astype(np.float64)  # stamped 1991-01-02 00:00: the mean of 1 January
+    s = lat <= lat1
+    ref = mean(a[s], t[s])
+    # spherical triangle areas from the vertices (another accepted way to get the cell areas)
+    vlon = g["clon_vertices"][s, :].astype(np.float64)
+    vlat = g["clat_vertices"][s, :].astype(np.float64)
+    p = np.stack([np.cos(vlat) * np.cos(vlon), np.cos(vlat) * np.sin(vlon), np.sin(vlat)], axis=-1)
+    p0, p1, p2 = p[:, 0], p[:, 1], p[:, 2]
+    tri = 2 * np.arctan2(np.abs(np.einsum("ij,ij->i", p0, np.cross(p1, p2))),
+                         1 + np.einsum("ij,ij->i", p0, p1) + np.einsum("ij,ij->i", p1, p2)
+                         + np.einsum("ij,ij->i", p2, p0))
+    blat = g["lat_cell_barycenter"][:].astype(np.float64)
+    blat = np.degrees(blat) if np.abs(blat).max() < 2 else blat
+    sb = blat <= lat1
+    return {
+        "task": "W6", "cells": int(t.size), "cells_south": int(s.sum()), "reference": ref,
+        "cell_area_ratio_max_min": float(a[s].max() / a[s].min()),
+        "accepted": {"vertex_triangle_area": rel(mean(tri, t[s]), ref),
+                     "barycenter_membership": rel(mean(a[sb], t[sb]), ref)},
+        "naive": {
+            "unweighted": rel(float(t[s].mean()), ref),
+            "coslat_weights": rel(mean(np.cos(np.radians(lat[s])), t[s]), ref),
+            "time_step_2": rel(mean(a[s], d["tas"][1, 0, :].astype(np.float64)[s]), ref),
+        },
+    }
+
+
 if __name__ == "__main__":
     task = sys.argv[1]
-    print(json.dumps({"W1": w1, "W2": w2, "W4": w4, "W5": w5}[task](), indent=1))
+    print(json.dumps({"W1": w1, "W2": w2, "W4": w4, "W5": w5, "W6": w6}[task](), indent=1))

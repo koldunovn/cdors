@@ -1,15 +1,18 @@
 # Agent check (Task 14): tasks, prompts and reference answers
 
-Two sets of five plain-language analysis tasks: the prototype's T1–T5 (HEALPix and regular-grid ICON data,
-2026-10-09) and round 1's F1–F5 (FESOM2 on the dart mesh, `TASKSET=fesom`, section
-[FESOM2 task set](#fesom2-task-set-round-1-tasksetfesom)). Each task is given to a headless `claude -p`
+Three sets of five plain-language analysis tasks: the prototype's T1–T5 (HEALPix and regular-grid ICON data,
+2026-10-09), round 1's F1–F5 (FESOM2 on the dart mesh, `TASKSET=fesom`, section
+[FESOM2 task set](#fesom2-task-set-round-1-tasksetfesom)) and the trap set W1, W2, W4, W5, W6 (weights that
+naive methods get wrong on FESOM2, IFS O1280 and ICON R2B8, `TASKSET=trap`, section
+[Trap task set](#trap-task-set-tasksettrap)). Each task is given to a headless `claude -p`
 session twice: arm **A** with `cdors` (and its built-in documentation) and arm **B** with `cdo` 2.6.0 and
-Python (xarray; for F1–F5 also nereus). The runner is `bench/agent_check.sh`; scoring and the summary are
+Python (xarray; for F1–F5 and the W tasks also nereus, for W5 gribscan instead). The runner is `bench/agent_check.sh`; scoring and the summary are
 `bench/agent/agent_score.py`.
 
 **This file is the single source of the prompts and the reference answers.** The runner extracts the text
-between a `<!-- prompt Tn -->` / `<!-- prompt Fn -->` (or `<!-- arm A -->`, `<!-- arm B -->`,
-`<!-- arm A fesom -->`, `<!-- arm B fesom -->`, `<!-- footer -->`) marker and the fenced block that follows
+between a `<!-- prompt Tn -->` / `<!-- prompt Fn -->` / `<!-- prompt Wn -->` (or `<!-- arm A -->`,
+`<!-- arm B -->`, `<!-- arm A fesom -->`, `<!-- arm B fesom -->`, `<!-- arm A trap -->`, `<!-- arm B trap -->`,
+`<!-- footer -->`) marker and the fenced block that follows
 it, and the JSON block after `<!-- reference -->`. Edit them here only.
 
 Reference answers were computed on 2026-10-09 on a Levante login node, independently of cdors: with xarray
@@ -114,6 +117,7 @@ RUN=1 TASKS=T5 ARMS=A bench/agent_check.sh    # one-session pilot (only with Nik
 RUN=1 bench/agent_check.sh                    # all 10 sessions, one after another (go-ahead again)
 TASKSET=fesom bench/agent_check.sh            # the FESOM2 set F1-F5 (DOCS=guide by default): dry run
 RUN=1 TASKSET=fesom bench/agent_check.sh      # its 10 sessions (go-ahead first; see the FESOM2 section)
+TASKSET=trap bench/agent_check.sh             # the trap set W1 W2 W4 W5 W6 (DOCS=guide): dry run
 ```
 
 Session settings (in `claude_args` of the runner): `-p` with `--output-format stream-json --verbose` (the
@@ -352,6 +356,122 @@ Tools: do the data reading and the computation with the command-line tool cdors 
 Tools: do the data reading and the computation with cdo 2.6.0 ({CDO}, first on PATH as cdo) and/or Python 3 with nereus 0.4.1 (diagnostics for unstructured ocean meshes: FESOM2 mesh loading, region masks, heat content, sea-ice extent and area, ...), xarray, dask, numpy, scipy, netCDF4, shapely, pandas and matplotlib ({PYTHON}; run it as python -I). ncdump ({NCDUMP}) is available too. Do not use cdors.
 ```
 
+## Trap task set (`TASKSET=trap`)
+
+Five tasks whose naive answers are wrong: the weights or the grid hide a convention that a careful NumPy
+answer must know and that cdors applies by default. The FESOM2 set (F1–F5) was answered correctly by both arms
+(10/10, cdors 1.10× the cost), because its prompts spelled out every convention (`nod_area` per level, the
+zeros below the sea floor). These prompts state the quantity as a scientist would ask for it, and leave the
+storage conventions to the agent. Candidates and their naive answers were checked first (step 1,
+`docs/agent-check.md`, "Trap candidates"); W3 (month-length weights) was dropped because cdors has no
+`yearmonmean`. Prepared 2026-10-19; not yet run.
+
+**Design decisions.**
+- **The prompt defines the quantity, not the method.** "Area-weighted over the ocean at that depth" means the
+  horizontal area of ocean at that depth, which on FESOM2 is the per-level `nod_area[k]` (0 below the floor),
+  not the surface area; "the water between 1000 m and 2000 m" means the layer that straddles 2000 m counts with
+  its upper half. The prompts do not say that the files store 0 below the sea floor, which variable holds the
+  areas, or that a reduced Gaussian point's weight is its row's share. Arm A gets these from cdors' defaults,
+  arm B has to find them.
+- **What the prompts do fix,** because a careful answer could otherwise legitimately differ: full cells between
+  the `zbar` interfaces with no partial bottom cells (W2; cdors and nereus both ignore them), element
+  membership by the centre of the three vertices (W4), the time step and its stamp (W5, W6), cells by their
+  centre (W6), and how to open a gribscan reference in Python (W5), so that arm B fails on weights, not on
+  reading GRIB.
+- **Accepted alternatives** that the tolerance must admit: W4 planar centres (identical membership in this
+  box), W5 cell areas from latitude bands midway between the Gaussian rows (8e-9), W6 spherical triangle areas
+  from the vertices (identical) and cell barycentres instead of centres (2.2e-6).
+- **Tolerance rel 1e-4 for all five**, above float32 storage and summation order (cdors and the references
+  agree to 3e-7 or better) and above the accepted alternatives, below the nearest naive answer: W1 surface area
+  over the wet nodes 6.0e-4, W2 cut layers with surface areas 4.4e-4, W4 all three vertices in the box 7.9e-3,
+  W5 unweighted 5.6e-3, W6 the second time step 2.7e-4 (unweighted 1.0e-3).
+- **Python environments for arm B:** nereus (W1, W2, W4, W6) and ecmwf for W5, the only env whose eccodes
+  (2.34) decodes these GRIB messages (nereus' 2.44 and hk25's 2.41 fail with `KeyValueNotFoundError`). cdo 2.6.0
+  cannot read them either. cdo does read W6 (`-setgrid,<grid file>` gives cell areas), so arm B has a correct
+  tool for W6 if it chooses cdo.
+- **Data read** per task is small (one month, one or 13 levels; W6 one day plus the grid's coordinates and
+  areas): seconds of I/O. nereus' `load_mesh` takes 4–5 min on a login node if arm B uses it.
+- **Risks in arm A:** writing the O1280 field to NetCDF and averaging the file loses the reduced rows (a cdors
+  gap): cdors then averages with equal weights, warns `equal_weights` and gives the unweighted variant. W6
+  without `-setgrid` gives the same warning and the unweighted variant.
+
+| | Task | Data | Reference | Strongest naive answers (rel. error) |
+|---|---|---|---|---|
+| W1 | mean temperature of the ocean at the 1600 m level, January 1990 | dart `temp`, one level | 2.75282665 °C | unweighted −39 %, surface area with the zeros −13 %, unweighted wet −9.3 %, surface area wet +6.0e-4 |
+| W2 | volume mean temperature 1000–2000 m, January 1990 | dart `temp`, 13 layers | 3.08316716 °C | nereus `volume_mean` with `mesh["area"]` −14 %, with per-level areas (whole layers by mid-depth) −1.3 %, no thickness +3.2 %, cut layers with surface area +4.4e-4 |
+| W4 | mean surface u over 10–40° E, 45–30° S (Agulhas), January 1990 | dart `u` on elements, top layer | 0.0278706695 m/s | cos(lat) −14 %, unweighted +9.4 %, all three vertices in the box −0.79 % |
+| W5 | global mean 2 m temperature, January 1950 | IFS O1280 `mean2t`, gribscan → GRIB | 284.897081 K | cos(lat) per point +1.8 %, unweighted +0.56 % (also what cdo's equal weights would give) |
+| W6 | mean 2 m temperature south of 60° S, 1 January 1991 | ICON R2B8 raw `tas` + grid file | 265.801638 K | cos(lat) +1.0 %, unweighted −1.0e-3, second time step +2.7e-4 |
+
+References: `bench/agent/ref_trap.py` (NumPy on netCDF4, float64); W1, W2, W4 in job 28250598
+(`/scratch/a/a270088/cdors-bench/trap-refs-28250598/`), W5 in env ecmwf and W6 on the login node
+(`/scratch/a/a270088/cdors-bench/trap-refs-step2-20261019-211112/`). The chains an expert would write, with
+the frozen binary `cdors-32b1dbd` (`M` the mesh directory, `D` the dart data directory, `G` the gribscan
+JSON, `I` the ICON file, `IG` the ICON grid file):
+
+```sh
+cdors --json outputtab,value -fldmean -sellevel,1600 -seltimestep,1 -setgrid,fesom:$M -selname,temp $D/temp.fesom.1990.nc  # W1 2.7528267
+cdors --json outputtab,value -volmean,1000/2000 -seltimestep,1 -setgrid,fesom:$M -selname,temp $D/temp.fesom.1990.nc     # W2 3.083167
+cdors --json outputtab,value -fldmean -sellonlatbox,10,40,-45,-30 -sellevel,2.5 -seltimestep,1 -setgrid,fesom:$M \
+  -selname,u $D/u.fesom.1990.nc                                                                                          # W4 0.02787067
+cdors --json outputtab,date,value -fldmean -seltimestep,1 -selname,mean2t $G                                             # W5 284.89715
+cdors --json outputtab,value -fldmean -sellonlatbox,-180,180,-90,-60 -seltimestep,1 -setgrid,$IG -selname,tas $I        # W6 265.80164
+```
+
+All five agree with the references to 3e-7 or better (cdors' float32 outputs for W1, W2, W4, W6).
+
+**Cost estimate for the 10 sessions.** The FESOM2 run (job 28244863) cost $4.27 for ten sessions ($0.23–0.76
+each, 44 min). These tasks read far less data but have less guidance in the prompt; arm B may also spend turns
+on gribscan (W5) and on element centres (W4). Expect $0.25–0.7 per session: **about $4–6 for all ten (range
+$3–7)**, 30–60 min on one shared node.
+
+### Prompts W1–W6
+
+The three FESOM2 prompts open with the same paragraph on the data and the mesh, without the conventions that
+the F prompts state. The arm notes `arm A trap` and `arm B trap` replace `arm A` and `arm B`; `{PYLIBS}` is the
+library list of the arm-B environment (nereus, or ecmwf for W5); the footer is the same.
+
+<!-- prompt W1 -->
+```text
+The AWI-CM3 historical simulation hist1950d has FESOM2 ocean output on the unstructured dart mesh (3160340 nodes, 6262485 triangular elements, 79 layers) in /work/ab0995/a270210/runtime/awicm3-v3.1_refactoring/TCO319L137-DART/hist1950d/outdata/fesom/, one NetCDF file of monthly means per variable and year (<variable>.fesom.<year>.nc). The mesh is in /pool/data/AWICM/FESOM2/MESHES_FESOM2.1/dart/ (fesom.mesh.diag.nc and the ASCII mesh files).
+
+Compute the mean temperature of the ocean at the model level at 1600 m depth (nz1 = 1600, the layer between 1550 m and 1650 m) in January 1990, which is the first time step of temp.fesom.1990.nc (temp, in degrees Celsius). Average over the ocean at that depth only, weighted by horizontal area at that depth. Report the value in degrees Celsius.
+```
+
+<!-- prompt W2 -->
+```text
+The AWI-CM3 historical simulation hist1950d has FESOM2 ocean output on the unstructured dart mesh (3160340 nodes, 6262485 triangular elements, 79 layers) in /work/ab0995/a270210/runtime/awicm3-v3.1_refactoring/TCO319L137-DART/hist1950d/outdata/fesom/, one NetCDF file of monthly means per variable and year (<variable>.fesom.<year>.nc). The mesh is in /pool/data/AWICM/FESOM2/MESHES_FESOM2.1/dart/ (fesom.mesh.diag.nc and the ASCII mesh files).
+
+Compute the volume-weighted mean temperature of the ocean water between 1000 m and 2000 m depth in January 1990, which is the first time step of temp.fesom.1990.nc (temp, in degrees Celsius). Treat the model layers as full cells between the mesh's layer interfaces (zbar in fesom.mesh.diag.nc), with no partial bottom cells, and count only the water between 1000 m and 2000 m. Report the value in degrees Celsius.
+```
+
+<!-- prompt W4 -->
+```text
+The AWI-CM3 historical simulation hist1950d has FESOM2 ocean output on the unstructured dart mesh (3160340 nodes, 6262485 triangular elements, 79 layers) in /work/ab0995/a270210/runtime/awicm3-v3.1_refactoring/TCO319L137-DART/hist1950d/outdata/fesom/, one NetCDF file of monthly means per variable and year (<variable>.fesom.<year>.nc). The mesh is in /pool/data/AWICM/FESOM2/MESHES_FESOM2.1/dart/ (fesom.mesh.diag.nc and the ASCII mesh files).
+
+The zonal velocity u is stored on the mesh elements (dimension elem). Compute the area-weighted mean surface zonal velocity (the top layer, nz1 = 2.5 m) in January 1990, which is the first time step of u.fesom.1990.nc, over the Agulhas Current region, the box 10 E to 40 E, 45 S to 30 S. An element belongs to the box if its centre (the mean position of its three vertices) lies inside. Report the value in m/s.
+```
+
+<!-- prompt W5 -->
+```text
+The EERIE IFS-FESOM hist-1950 simulation has monthly-mean IFS atmosphere output on the native octahedral reduced Gaussian grid O1280 (6599680 grid points in 2560 latitude rows), stored as GRIB files and indexed by gribscan references (kerchunk-style JSON). The surface fields of 1950-1959 are in /work/bm1344/a270228/phase1_hist/gribscan_1m_NATIVE/jsons.1950-1959/sfc.dir/atm2d_avg.json. Compute the area-weighted global mean 2 m temperature (variable mean2t) of January 1950, which is the first time step. Report the value in K. (In Python the reference opens with import gribscan, which registers the GRIB codec, and xarray.open_zarr(fsspec.filesystem("reference", fo=<the JSON file>).get_mapper(""), consolidated=False).)
+```
+
+<!-- prompt W6 -->
+```text
+The EERIE ICON-ESM-ER control-1950 simulation (experiment erc2002) has raw daily-mean atmosphere output on the native ICON grid R02B08 (5242880 triangular cells). The file /work/bm1344/k203123/experiments/erc2002/run_19910101T000000-19910131T235900/erc2002_atm_2d_1d_mean_19910101T000000Z.nc holds the 31 daily means of model January 1991. It has no coordinates; its grid is /pool/data/ICON/grids/public/mpim/0033/icon_grid_0033_R02B08_G.nc. Take the daily-mean 2 m air temperature tas of 1 January 1991, which is the first time step of the file (each daily mean is stamped at the end of its day, so this one is stamped 1991-01-02T00:00). Compute its area-weighted mean over the cells whose centre lies south of 60 S. Report the value in K.
+```
+
+<!-- arm A trap -->
+```text
+Tools: do the data reading and the computation with the command-line tool cdors ({CDORS}). cdors re-implements a subset of CDO's operators (same operator names, arguments and operator chaining), reads NetCDF files, Zarr stores, kerchunk references and gribscan references to GRIB files, and knows FESOM2 meshes and ICON grid files. Its documentation: {CDORS_DOCS}. cdors writes results to NetCDF or Zarr files, and prints values directly with its information operators (info, infon, output, outputf, outputtab; add --json for machine-readable output). Do not use cdo, Python or other programs to read or compute the data; shell tools for looking at text output and small calculations that read no data are fine.
+```
+
+<!-- arm B trap -->
+```text
+Tools: do the data reading and the computation with cdo 2.6.0 ({CDO}, first on PATH as cdo) and/or Python 3 with {PYLIBS} ({PYTHON}; run it as python -I). ncdump ({NCDUMP}) is available too. Do not use cdors.
+```
+
 ## Reference answers (machine-readable)
 
 `tol_rel`: |answer − ref| ≤ tol_rel · |ref|; `tol_abs`: |answer − ref| ≤ tol_abs. Every value must pass. A
@@ -397,7 +517,23 @@ list gives one tolerance per value (F3: the count must be exact).
          "variants": {"unweighted": [-0.199316882, -0.059312426, -0.044623059, -0.116396284, -0.085264337],
                       "days_weighted": [-0.190564178, -0.049414619, -0.035046585, -0.104333903, -0.073043536],
                       "lat_gt_66": [-0.137979286, -0.008627595, 0.013593602, -0.047890482, -0.015438926],
-                      "nereus_arctic_basin": [-0.618014505, -0.566699424, -0.537093758, -0.807307764, -0.853199395]}}
+                      "nereus_arctic_basin": [-0.618014505, -0.566699424, -0.537093758, -0.807307764, -0.853199395]}},
+  "W1": {"values": [2.752826646], "units": "degC", "tol_rel": 1e-4,
+         "variants": {"surface_area_wet": [2.754466051], "unweighted_wet": [2.497588448],
+                      "surface_area_with_zeros": [2.395082684], "unweighted_with_zeros": [1.667510185]}},
+  "W2": {"values": [3.083167163], "units": "degC", "tol_rel": 1e-4,
+         "variants": {"cut_surface_area_wet": [3.084537540], "nereus_volume_mean_level_area": [3.044035400],
+                      "whole_layers_inside_range": [3.126302262], "no_thickness": [3.180841455],
+                      "cut_surface_area_with_zeros": [2.692753915], "nereus_volume_mean_mesh_area": [2.655336580]}},
+  "W4": {"values": [0.0278706695], "units": "m/s", "tol_rel": 1e-4,
+         "variants": {"all_vertices_in_box": [0.0276510764], "unweighted": [0.0304948618],
+                      "coslat_weights": [0.0239582316]}},
+  "W5": {"values": [284.897080734], "units": "K", "tol_rel": 1e-4,
+         "variants": {"unweighted": [286.484167498], "coslat_per_point": [290.036648937],
+                      "gauss_weight_per_point": [290.036649349]}},
+  "W6": {"values": [265.801637753], "units": "K", "tol_rel": 1e-4,
+         "variants": {"second_time_step": [265.872575366], "unweighted": [265.535760076],
+                      "coslat_weights": [268.509437328]}}
 }
 ```
 

@@ -135,7 +135,7 @@ def score(md, task, arm, transcript, tsv, run_id, wall_s, exit_code):
     texts = []
     def peeks(s):
         """the reference answers, the reference scripts/logs or another session's directory"""
-        if re.search(r"agent_tasks|bench/agent|ref_t\d|ref_cdo|ref_fesom|cdors-bench|results-|/prep\b", s):
+        if re.search(r"agent_tasks|bench/agent|ref_t\d|ref_cdo|ref_fesom|ref_trap|cdors-bench|results-|/prep\b", s):
             return True
         if re.search(r"(^|[\s'\"=;(])\.\.($|[\s/'\";)])", s):  # parent directory of the session
             return True

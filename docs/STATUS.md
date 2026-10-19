@@ -88,6 +88,8 @@ against $2.03).
    - **weights:** per-level areas, dry levels stored as 0, month lengths;
    - **grids other than regular lon-lat:** elements, reduced Gaussian, HEALPix nested.
    For each task, the naive answer has to fall outside the tolerance, or the task is dropped.
+   Prepared 2026-10-19 as `TASKSET=trap` (W1, W2, W4, W5 and W6 on ICON R2B8; `bench/agent_tasks.md`): every
+   naive answer misses by 2.7e-4 to 39 % and cdors matches; the 10 sessions (≈ $4–6) wait for Nikolay's sbatch.
 4. **Publication, after you approve the exact text:**
    - the shared install, with `share/regions/` (the regions directory, 12 MB);
    - its README (= `docs/levante.md`, Example 7 and "Three years of FESOM2");

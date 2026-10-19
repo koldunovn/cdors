@@ -186,3 +186,18 @@ Gaps in cdors found on the way:
 - A reduced Gaussian field written by cdors to NetCDF loses its rows: read back, it is unstructured, and `fldmean`
   falls back to equal weights with the loud warning (286.484 K instead of 284.897 K), although the file keeps
   `gridType = "reduced_gg"` and `N = 1280`.
+
+### Step 2: the trap set is ready to run (2026-10-19)
+
+The four candidates and a fifth task on ICON form `TASKSET=trap` (`bench/agent_tasks.md`, "Trap task set"):
+- **W6 ICON:** the mean 2 m temperature south of 60° S of 1 January 1991, on the native R2B8 grid of the raw
+  erc2002 output (no coordinates in the file; the grid file has `clon`/`clat` in radians and `cell_area`).
+  Reference 265.801638 K, cdors `-fldmean -sellonlatbox,-180,180,-90,-60 -setgrid,<grid file>` 265.80164.
+  Naive answers: cos(lat) +1.0 %, no weights −1.0e-3 (cell areas vary 1.43× there; the global mean would miss
+  by only 1.4e-5), the second time step +2.7e-4.
+- **Prompts:** they state the quantity and leave the storage conventions to the agent (unlike F1–F5).
+- **Tolerances:** rel 1e-4 for all five tasks, which admits the accepted alternatives (≤ 2.2e-6) and rejects
+  the nearest naive answer (≥ 2.7e-4).
+- **Arm B environment:** nereus for W1, W2, W4 and W6; ecmwf for W5.
+- **Dry run and scoring:** the dry run prints all ten prompts. The scorer marks the naive answers as their
+  variants.
