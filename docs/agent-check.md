@@ -146,3 +146,43 @@ refused by the 64 GB read limit.
 Run: `TASKSET=fesom bench/agent_check.sh` (dry run); on a compute node `TASKSET=fesom CDORS_BIN=<binary> sbatch
 --time=02:30:00 bench/agent_check.sbatch` (add `TASKS=F5 ARMS=A` and `--time=00:40:00` for a pilot). Estimated
 beforehand at $4–6 for the ten sessions and 40–90 min; it took $4.27 and 44 min.
+
+## Trap candidates for the next set (step 1, 2026-10-19)
+
+Ten of ten correct answers in both arms measure only cost. The next set should have tasks where an agent without
+cdors gets a plausible but wrong number (Nikolay, 2026-10-19). Step 1 checked four candidates. For each one,
+`bench/agent/ref_trap.py` computes, independent of cdors, the reference (careful NumPy, float64) and the answers of
+the naive methods an agent is likely to use. A task is kept only if those naive answers miss the tolerance and the
+chain an agent would write with cdors gives the reference. **All four pass**: the naive methods miss by 0.04–39 %,
+and cdors agrees with every reference to 3e-7 or better.
+
+Job 28250598 (shared partition, 32 cores, 14.5 min, `bench/agent/ref_trap.sh`, outputs in
+`/scratch/a/a270088/cdors-bench/trap-refs-28250598/`). W5's reference was computed on the login node in env
+`ecmwf` (`W5_ecmwf.json` there): only that env's eccodes 2.34 decodes these GRIB messages; envs `nereus` (2.44) and
+`hk25` (2.41) fail with "Key/value not found".
+
+| | Task (dart, January 1990; W5 IFS, January 1950) | Reference | cdors chain | Naive answers |
+|---|---|---|---|---|
+| W1 | global mean temperature at the 1600 m level | 2.752827 °C | `-fldmean -sellevel,1600` 2.7528267 | no weights −39 %; surface areas with the zeros below the floor −13 %; no weights, zeros dropped −9.3 %; surface areas, zeros dropped +0.06 % |
+| W2 | volume-mean temperature of the water between 1000 and 2000 m | 3.083167 °C | `-volmean,1000/2000` 3.083167 | nereus `volume_mean(…, mesh["area"], …, depth_min=1000, depth_max=2000)` −13.9 %; the same with 2-D `nod_area` −1.3 % (whole layers by mid-depth: 1950–2050 m counted whole); layers without thickness +3.2 %; whole layers inside +1.4 %; cut, surface areas, wet only +0.04 % |
+| W4 | mean surface zonal velocity (on elements) over the Agulhas box 10–40° E, 45–30° S | 0.0278707 m/s | `-fldmean -sellonlatbox,10,40,-45,-30 -sellevel,2.5` 0.02787067 | cos(lat) weights −14 %; no weights +9.4 %; elements with all three vertices in the box −0.8 % |
+| W5 | global mean 2 m temperature on the native O1280 grid (gribscan references) | 284.89708 K | `-fldmean -selname,mean2t` 284.89715 | cos(lat) per point +1.8 % (+5.1 K); no weights +0.56 % (+1.6 K), also what cdo gives on reduced Gaussian grids |
+
+Notes:
+- **Dry levels:** in dart they are stored as exactly 0 (1 050 345 of 3 160 340 nodes at 1600 m), so anything that
+  does not use the per-level areas (`nod_area[k]`, 0 below the floor) or the wet levels averages zeros in.
+- **W4 boxes:** element areas vary 28–137 km² in the Agulhas box. Of the five boxes tried, it gives the largest
+  naive errors. In the Gulf Stream box no weights miss by −1.7 %, in the Nordic Seas cos(lat) misses by +16 %; in
+  Drake Passage and Niño 3.4 the errors are below 4 %.
+- **W5:** the reference weights each point by its row's Gaussian quadrature weight divided by the points in the
+  row (rows match the Gauss–Legendre latitudes to 1e-12°). cdors uses the area between the rows' latitude bounds,
+  2.5e-7 apart. The `cdo` in arm B cannot read these messages (2.6.0); arm B needs the `ecmwf` env to decode them.
+- **Partial bottom cells:** dart has them (`zbar_n_bottom` equals a `zbar` interface at only 4 % of the nodes). Like
+  nereus, cdors uses the full `zbar` layers (`docs/deviations.md`), so W2's prompt must say so.
+- **Dropped:** a day-weighted annual mean from monthly means, because cdors lacks `yearmonmean`.
+
+Gaps in cdors found on the way:
+- `yearmonmean` is not implemented.
+- A reduced Gaussian field written by cdors to NetCDF loses its rows: read back, it is unstructured, and `fldmean`
+  falls back to equal weights with the loud warning (286.484 K instead of 284.897 K), although the file keeps
+  `gridType = "reduced_gg"` and `N = 1280`.
