@@ -241,17 +241,18 @@ only on W2.
 cdors 38ec395 adds a `method` list to `--json` results and `--plan`. It records the weights and their source, the
 layers cut at a depth limit, the cells a box kept and how their centres are defined, the mesh's centres and areas,
 and the grid file's coordinates. Job 28270068 reran arm A only, with the default model (Opus 5.5). Job 28270070
-ran both arms with Sonnet 5.5. All 15 answers were correct
-(`bench/agent/results-20261020-104003.md`, `results-20261020-105123.md`; 10 and 8 min).
+ran both arms with Sonnet 5.5, job 28273732 with Haiku 5.5. All 25 answers were correct
+(`bench/agent/results-20261020-104003.md`, `results-20261020-105123.md`, `results-20261020-122858.md`; 10, 8
+and 8 min).
 
-| Task | Opus A, old (32b1dbd) | Opus A, `method` (38ec395) | Opus B (job 28256601) | Sonnet A | Sonnet B |
-|---|---|---|---|---|---|
-| W1 | 5, 75, 0.20 | 5, 77, 0.21 | 3, 41, 0.19 | 2, 55, 0.07 | 2, 66, 0.07 |
-| W2 | 7, 56, 0.26 | 8, 64, 0.30 | 7, 67, 0.42 | 3, 53, 0.07 | 2, 24, 0.07 |
-| W4 | 15, 131, 0.60 | 15, 191, 0.70 | 4, 47, 0.20 | 3, 38, 0.07 | 2, 21, 0.06 |
-| W5 | 11, 153, 0.46 | 6, 42, 0.22 | 8, 120, 0.44 | 2, 17, 0.06 | 2, 51, 0.05 |
-| W6 | 8, 58, 0.33 | 5, 35, 0.23 | 5, 65, 0.22 | 2, 16, 0.06 | 2, 20, 0.05 |
-| total | 46, 472, 1.85 | 39, 409, 1.68 | 27, 340, 1.48 | 12, 178, 0.33 | 10, 182, 0.31 |
+| Task | Opus A, old (32b1dbd) | Opus A, `method` (38ec395) | Opus B (job 28256601) | Sonnet A | Sonnet B | Haiku A | Haiku B |
+|---|---|---|---|---|---|---|---|
+| W1 | 5, 75, 0.20 | 5, 77, 0.21 | 3, 41, 0.19 | 2, 55, 0.07 | 2, 66, 0.07 | 5, 55, 0.006 | 4, 29, 0.006 |
+| W2 | 7, 56, 0.26 | 8, 64, 0.30 | 7, 67, 0.42 | 3, 53, 0.07 | 2, 24, 0.07 | 5, 49, 0.007 | 5, 66, 0.011 |
+| W4 | 15, 131, 0.60 | 15, 191, 0.70 | 4, 47, 0.20 | 3, 38, 0.07 | 2, 21, 0.06 | 6, 43, 0.008 | 3, 31, 0.006 |
+| W5 | 11, 153, 0.46 | 6, 42, 0.22 | 8, 120, 0.44 | 2, 17, 0.06 | 2, 51, 0.05 | 4, 24, 0.005 | 3, 59, 0.007 |
+| W6 | 8, 58, 0.33 | 5, 35, 0.23 | 5, 65, 0.22 | 2, 16, 0.06 | 2, 20, 0.05 | 4, 22, 0.006 | 2, 68, 0.004 |
+| total | 46, 472, 1.85 | 39, 409, 1.68 | 27, 340, 1.48 | 12, 178, 0.33 | 10, 182, 0.31 | 24, 193, 0.032 | 17, 253, 0.033 |
 
 Each cell gives tool calls, wall seconds and USD.
 
@@ -270,10 +271,15 @@ Each cell gives tool calls, wall seconds and USD.
   Gauss–Legendre weights divided by the points of each row, and `cell_area` from the ICON grid. W1 came closest
   to a miss. Arm B printed the top, bottom and mean interface areas (the bottom one is 4.3e-4 off) and chose the
   top area "because I believe FESOM2 uses it". It said it had not confirmed this.
+- **Nor Haiku.** Arm B took `nod_area[50]` with `nlevels_nod2D` (W1). It checked that the nonzero `nod_area`
+  rows match the wet layers and clipped the layers to 1000–2000 m (W2). It used Gauss weights shared among the
+  `pl` points of each row, after matching the row latitudes to the Gauss–Legendre nodes (W5). The arms cost the
+  same ($0.032 vs $0.033); Haiku arm A used more calls (24 vs 17) and less wall time (193 s vs 253 s). A Haiku
+  session costs about a tenth of a Sonnet session.
 - **With Sonnet the arms cost the same:** arm A $0.33 against arm B $0.31 (1.07×), with the same wall time.
   Sonnet sessions cost about a fifth of Opus sessions. Sonnet arm A ran the cdors chain and answered, without
   the extra checks.
 - **Conclusion:** the five trap tasks test conventions that both models know: FESOM2 per-level areas, reduced
-  Gaussian rows and ICON `cell_area`. Neither model makes the naive mistakes. When an answer takes one Python
+  Gaussian rows and ICON `cell_area`. None of the three models makes the naive mistakes. When an answer takes one Python
   script, cdors can save only the script, and the arms cost about the same. A difference in cost needs tasks
   where the script is long: transports through a section and the MOC, which nereus does not provide.

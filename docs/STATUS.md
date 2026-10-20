@@ -94,7 +94,8 @@ against $2.03).
    the extra calls verifying which weights cdors used (`docs/agent-check.md`, "Trap set run").
    **With a `method` list in the results (38ec395; jobs 28270068 and 28270070, 2026-10-20), all answers were
    correct again (15/15).** Opus arm A cost $1.68: 1.14× arm B, 0.77× without W4, where it still tests edge
-   membership. Sonnet 5.5 also avoided every trap, and its two arms cost the same ($0.33 vs $0.31). A
+   membership. Sonnet 5.5 and Haiku 5.5 (job 28273732) also avoided every trap, and their arms cost the same
+   (Sonnet $0.33 vs $0.31, Haiku $0.032 vs $0.033). A
    difference in cost needs tasks with long scripts (transports through a section, MOC).
 4. **Publication, after you approve the exact text:**
    - the shared install, with `share/regions/` (the regions directory, 12 MB);
