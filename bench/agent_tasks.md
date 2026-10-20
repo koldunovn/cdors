@@ -531,6 +531,53 @@ The AWI-CM3 historical simulation hist1950d has FESOM2 ocean output on the unstr
 Compute the strength of the Atlantic meridional overturning circulation (AMOC) at 26.5 N in January 1990, which is the first time step of w.fesom.1990.nc (the vertical velocity w, positive upward, in m/s, on the mesh nodes at the layer interfaces, dimension nz). The overturning streamfunction psi(z) at 26.5 N is the northward volume transport across 26.5 N in the Atlantic between the surface and the interface at depth z; compute it from w by continuity (do not use the horizontal velocities). The Atlantic is the region Atlantic_MOC of the MOC basin polygons of nereus (from MPAS geometric_features, MOCBasins). The AMOC strength is the maximum of psi over the interfaces. Report two numbers: the AMOC strength in Sv (10^6 m3/s) and the depth of the interface where the maximum is reached, in m.
 ```
 
+### H2: transport through Drake Passage
+
+H2 is the volume transport through Drake Passage from u and v on the elements: the elements a section crosses,
+the faces of their dual cells (or another discretisation of the line), the normal component, the layer
+thicknesses and the elements' wet layers. In cdors it is one operator, `transport` (commit 8e48256). Prepared
+2026-10-20; reference job 28291761 (`bench/agent/ref_transport.sh`, 53 s); not yet run.
+
+- **The prompt defines the quantity:** the integral over the section of the velocity component normal to it,
+  positive eastward. It names the section (a great circle between two points on land) and asks for full cells
+  between the `zbar` interfaces. It does not say that the velocities are already geographic
+  (`FESOM_autorotate_back_to_geo = -1` in the files' attributes), how to find the crossed elements, or which
+  layers of an element are wet.
+- **Accepted alternatives:** the chord between the actual cut points −7.7e-6; lengths on a 6371 km sphere
+  +5.5e-4; layer thicknesses from the spacing of `nz1` +4.1e-4 (close by chance); pyfesom2's
+  `cross_section_transport` method (a straight line in lon/lat, arithmetic midpoints, WGS84 east-north lengths)
+  +3.0e-3; points every 2 km along the great circle with the velocity of the element that holds each segment
+  −4.4e-3.
+- **Naive answers:** the velocities rotated once more with pyfesom2's `vec_rotate_r2g(50, 15, -90)` (its default
+  `uvrotated=True`) +13.5 %; the zonal component alone −20.5 %; the sign reversed.
+- **Tolerance:** rel 1e-2, above the accepted alternatives (4.4e-3 at most) and below the nearest naive answer
+  (13.5 %).
+- **Data read:** one time step of u and v (2 × 2.0 GB if read whole; cdors reads only the chunks of the 232
+  crossed elements, 0.36 GB) and the mesh's `elem`, `nodes`, `nlevels`, `zbar`. The reference script takes 27 s on
+  16 cores, cdors 18 s (with the mesh cache made in that run; 1.1 s with it).
+
+| | Task | Data | Reference | Naive answers (rel. error) |
+|---|---|---|---|---|
+| H2 | volume transport through Drake Passage (68 W 54 S to 63 W 65.5 S), January 1990 | dart `u`, `v`, one month | 161.191441 Sv | rotated again +13.5 %, u alone −20.5 %, sign reversed |
+
+The chain an expert would write (`cdors-8e48256`, equal to the reference to 2e-16; per layer to 4e-15):
+
+```sh
+cdors --json outputtab,value -vertsum -transport,-68,-54,-63,-65.5 -setgrid,fesom:$M -seltimestep,1 -selname,u \
+  $D/u.fesom.1990.nc -setgrid,fesom:$M -seltimestep,1 -selname,v $D/v.fesom.1990.nc            # 161.19144
+```
+
+**Cost estimate for the two sessions (Opus).** Arm A has to find `transport` (guide and help) and give the two
+inputs: 5–15 calls, $0.3–0.8. Arm B has to find the crossed elements among 6.3M, the normal lengths, the layers
+and the sign, and check them: 20–40 calls, $1–3, 10–25 min. **About $1.5–4 for both.**
+
+<!-- prompt H2 -->
+```text
+The AWI-CM3 historical simulation hist1950d has FESOM2 ocean output on the unstructured dart mesh (3160340 nodes, 6262485 triangular elements, 79 layers) in /work/ab0995/a270210/runtime/awicm3-v3.1_refactoring/TCO319L137-DART/hist1950d/outdata/fesom/, one NetCDF file of monthly means per variable and year (<variable>.fesom.<year>.nc). The mesh is in /pool/data/AWICM/FESOM2/MESHES_FESOM2.1/dart/ (fesom.mesh.diag.nc and the ASCII mesh files).
+
+Compute the volume transport through Drake Passage in January 1990, which is the first time step of u.fesom.1990.nc and v.fesom.1990.nc (the zonal and the meridional velocity, in m/s, on the mesh elements, dimension elem, and the layers, dimension nz1). The section is the great circle from 68 W 54 S (Tierra del Fuego) to 63 W 65.5 S (the Antarctic Peninsula); both ends are on land. The transport is the integral over the section, from the surface to the sea floor, of the velocity component normal to the section, counted positive eastward (from the Pacific into the Atlantic). Treat the model layers as full cells between the mesh's layer interfaces (zbar in fesom.mesh.diag.nc), with no partial bottom cells. Report the transport in Sv (10^6 m3/s).
+```
+
 ## Reference answers (machine-readable)
 
 `tol_rel`: |answer − ref| ≤ tol_rel · |ref|; `tol_abs`: |answer − ref| ≤ tol_abs. Every value must pass. A
@@ -597,7 +644,11 @@ list gives one tolerance per value (F3: the count must be exact).
          "variants": {"pyfesom2_like": [17.473898413, 950], "nodes_nod_area": [17.534001, 950],
                       "surface_term_removed": [17.258882373, 950], "nodes_surface_term_removed": [17.3185, 950],
                       "with_sea_floor": [23.739173, 900], "global": [14.238147, 950],
-                      "from_south": [9.486877, 3300]}}
+                      "from_south": [9.486877, 3300]}},
+  "H2": {"values": [161.191441256], "units": "Sv", "tol_rel": 1e-2,
+         "variants": {"exact_chord": [161.190203], "radius_6371": [161.280043], "pyfesom2_like": [161.679203],
+                      "sampled_2km": [160.483871], "dz_from_nz1": [161.257342], "u_only": [128.152326],
+                      "rotated": [182.876733], "sign_reversed": [-161.191441]}}
 }
 ```
 

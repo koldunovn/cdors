@@ -7,7 +7,7 @@
 # FESOM2 set (round 1): ~$4-6 at list price for 10 sessions (bench/agent_tasks.md, "Cost estimate");
 # pilot first:  RUN=1 TASKSET=fesom TASKS=F5 ARMS=A bench/agent_check.sh
 # Trap set (W1, W2, W4, W5, W6): ~$4-7 for 10 sessions (bench/agent_tasks.md, "Trap task set")
-# Long-script set (H1): ~$1.5-3 for 2 sessions with Opus (bench/agent_tasks.md, "Long-script task set")
+# Long-script set (H1, H2): ~$1.5-3 and ~$1.5-4 for 2 sessions each with Opus (bench/agent_tasks.md, "Long-script task set")
 # =====================================================================================================
 #
 # Agent check (plan Task 14): five analysis tasks (bench/agent_tasks.md), each given to a headless
@@ -17,7 +17,8 @@
 # on the dart mesh, round 1; arm B gets the nereus environment, arm A CDORS_REGIONS for the basins) and
 # TASKSET=trap (W1 W2 W4 W5 W6: weights that naive methods get wrong on FESOM2, IFS O1280 and ICON R2B8;
 # arm B gets the nereus environment, for W5 the ecmwf environment, whose eccodes decodes the GRIB) and
-# TASKSET=long (H1: the AMOC at 26.5 N from w on dart, a quantity whose Python script is long; arm B nereus).
+# TASKSET=long (H1: the AMOC at 26.5 N from w on dart, H2: the Drake Passage transport from u and v; quantities
+# whose Python script is long; arm B nereus).
 #
 # Usage:
 #   bench/agent_check.sh               DRY RUN (default): checks the tools, prints every prompt and the
@@ -26,9 +27,9 @@
 #   RUN=1 bench/agent_check.sh         runs the sessions (needs Nikolay's go-ahead, see above)
 #
 # Environment (defaults in brackets):
-#   TASKSET [prototype] prototype (T1-T5), fesom (F1-F5), trap (W1 W2 W4 W5 W6) or long (H1); sets the
+#   TASKSET [prototype] prototype (T1-T5), fesom (F1-F5), trap (W1 W2 W4 W5 W6) or long (H1 H2); sets the
 #           default TASKS and, for fesom, trap and long, DOCS=guide
-#   TASKS ["T1 T2 T3 T4 T5" | "F1 F2 F3 F4 F5" | "W1 W2 W4 W5 W6" | "H1"]  ARMS ["A B"]  RUN_ID [YYYYmmdd-HHMMSS]
+#   TASKS ["T1 T2 T3 T4 T5" | "F1 F2 F3 F4 F5" | "W1 W2 W4 W5 W6" | "H1 H2"]  ARMS ["A B"]  RUN_ID [YYYYmmdd-HHMMSS]
 #   TIME_LIMIT [1800] wall seconds per session (timeout; the transcript so far is kept and scored)
 #   MAX_TURNS [50] passed as --max-turns (empty: not passed)
 #   MAX_BUDGET_USD [] passed as --max-budget-usd when set (only enforced for API-key billing)
@@ -59,7 +60,7 @@ case $TASKSET in
   prototype) TASKS=${TASKS:-T1 T2 T3 T4 T5}; DOCS=${DOCS:-full} ;;
   fesom) TASKS=${TASKS:-F1 F2 F3 F4 F5}; DOCS=${DOCS:-guide} ;;
   trap) TASKS=${TASKS:-W1 W2 W4 W5 W6}; DOCS=${DOCS:-guide} ;;
-  long) TASKS=${TASKS:-H1}; DOCS=${DOCS:-guide} ;;
+  long) TASKS=${TASKS:-H1 H2}; DOCS=${DOCS:-guide} ;;
   *) echo "agent_check: unknown TASKSET=$TASKSET (prototype, fesom, trap or long)" >&2; exit 1 ;;
 esac
 ARMS=${ARMS:-A B}
