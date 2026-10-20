@@ -1,0 +1,3 @@
+run_id	task	arm	verdict	variant	n_expected	answer	reference	max_rel_err	exit_code	wall_s	duration_ms	num_turns	tool_calls	bash_calls	cdors_calls	cdo_calls	python_calls	input_tokens	output_tokens	cache_creation_tokens	cache_read_tokens	cost_usd	stop	model	peeked	note
+20261020-230056	H2	A	correct		1	161.191441	161.191441	1.59e-09	0	89.8	87710	8	7	7	6	0	0	16	3982	24717	157234	0.3088868	success	claude-opus-5-5		
+20261020-230056	H2	B	correct		1	161.181	161.191441	6.48e-05	0	232.6	231632	9	8	7	0	0	3	18	13580	29491	192828	0.5461656000000001	success	claude-opus-5-5		

@@ -316,3 +316,30 @@ The naive answers are 19–46 % off. One Opus 5.5 session per arm, frozen binary
   output minus its top interface (`-sub moc.nc -sellevel,0 moc.nc`). An option in `moc` itself would need
   the surface interface in every batch of fields, so there is none. One session per arm is a single sample;
   a repeat costs about $1.2.
+
+### The Drake Passage transport (job 28291911, 2026-10-20)
+
+H2 asks for the volume transport through Drake Passage in January 1990 on dart. The section is the great circle
+from 68 W 54 S to 63 W 65.5 S, and the transport is the integral of the normal velocity, positive eastward
+(`bench/agent_tasks.md`, "H2"). In cdors it is one operator, `transport` (8e48256). The reference is
+161.191441 Sv, from job 28291761, and cdors agrees with it to 2e-16. Velocities rotated a second time give
++13.5 % and u alone −20.5 %. One Opus 5.5 session per arm, frozen binary `cdors-8e48256`:
+
+| Arm | Answer | Calls | Wall s | USD |
+|---|---|---|---|---|
+| A (cdors) | 161.191441 Sv | 7 | 90 | 0.31 |
+| B (Python, nereus) | 161.181 Sv (−6.5e-5) | 8 | 233 | 0.55 |
+
+- **Arm A cost 0.57× arm B.** Over H1 and H2 together the cdors arm cost 0.48× ($0.67 against $1.41) and took 0.31× the
+  wall time (164 s against 536 s).
+- **Arm A** read the guide and `cdors help transport`, planned, and ran the chain once with `-P 16`. It
+  checked that the velocities are geographic (`FESOM_autorotate_back_to_geo`) and that there was no
+  `section_open_ends` warning.
+- **Arm B** wrote one 150-line script and one check, and did not look at pyfesom2 this time. It cut the section
+  into its pieces inside each wet triangle, which is the exact chord, not the dual-cell faces. It took the pole
+  of the great circle as the normal, `nlevels − 1` layers and `r_earth`, and checked the radius against
+  `elem_area`. It took u and v as geographic without checking. The rotation trap only catches an agent that
+  copies pyfesom2's code with `uvrotated=True`.
+- **Both arm A sessions** (H1 and H2) spent a call on threads. The jobs ran on the shared partition with
+  `--mem=64G`, which Slurm turns into 70 cores (940 MB per core), and cdors planned 140 or 108 threads because
+  it counts SMT siblings. The agents set `-P 16` themselves.

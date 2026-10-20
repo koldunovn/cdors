@@ -183,7 +183,9 @@ Peak RSS in GB of 10⁹ bytes, as `--mem` counts. (`/usr/bin/time` reports KiB; 
   (`docs/agent-check.md`, "Trap set run"). With the method stated in the results, the ratio became 1.14×
   (0.77× without W4). With Sonnet 5.5 the ratio was 1.07×, with Haiku
   5.5 0.97×; both models' arm B also avoided every trap. The first long-script task (H1, the AMOC from w with
-  the operator `moc`; job 28288688) cost 0.42× ($0.36 vs $0.87, one Opus session per arm, both correct).
+  the operator `moc`; job 28288688) cost 0.42× ($0.36 vs $0.87, one Opus session per arm, both correct). The second
+  (H2, the Drake Passage transport with the operator `transport`; job 28291911) cost 0.57× ($0.31 vs $0.55); both
+  together 0.48×.
 - Start round 2 (neighbour operators, first plots) or not.
 - Publish: the shared install with `share/regions/`, its README (`docs/levante.md`) and the guide page, each after
   the exact text is approved.

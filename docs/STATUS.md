@@ -101,6 +101,9 @@ against $2.03).
    cost 0.42× without cdors** ($0.36 vs $0.87, 74 s vs 303 s, one Opus session per arm). Both answers are correct.
    Arm B's was first scored wrong: it removed the surface term (0.216 Sv), which the prompt's definition allows,
    so the tolerance was widened (`docs/agent-check.md`, "A long-script task").
+   **The second, the Drake Passage transport from u and v (H2, the new operator `transport`, 8e48256; job
+   28291911), cost 0.57×** ($0.31 vs $0.55, 90 s vs 233 s), both correct. Over H1 and H2 together the cost is 0.48× and the wall
+   time 0.31×.
 4. **Publication, after you approve the exact text:**
    - the shared install, with `share/regions/` (the regions directory, 12 MB);
    - its README (= `docs/levante.md`, Example 7 and "Three years of FESOM2");
