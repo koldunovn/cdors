@@ -573,3 +573,16 @@ err:bad_arguments         | -moc,dlat=0 -setgrid,fesom:{fix}/fesom_pi -selname,w
 err:bad_arguments         | -moc,lat=26.5,fill=nearest,regions=moc -setgrid,fesom:{fix}/fesom_pi -selname,w {in} | fesom_pi_w
 err:unsupported_grid      | -moc -setgrid,fesom:{fix}/fesom_pi -selname,temp {in}           | fesom_pi_data
 err:unsupported_grid      | -moc -selname,w {in}                                            | fesom_pi_w
+# transport (cdors operator): the flux of u, v across the broken lines through the elements a
+# great-circle path crosses (NumPy reference: plane cuts of the element edges, paired per element)
+ref:numpy.mesh_transport  | -transport,-67,-54,-62,-66 -setgrid,fesom:{fix}/fesom_pi -selname,u {in} -setgrid,fesom:{fix}/fesom_pi -selname,v {in} | fesom_pi_data
+ref:numpy.mesh_transport  | -transport,-80.5,26.5,-13,26.5 -setgrid,fesom:{fix}/fesom_pi -selname,u {in} -setgrid,fesom:{fix}/fesom_pi -selname,v {in} | fesom_pi_data
+ref:numpy.mesh_transport  | -transport,-70,-54,-64,-60,-58,-65 -setgrid,fesom:{fix}/fesom_pi -selname,u {in} -setgrid,fesom:{fix}/fesom_pi -selname,v {in} | fesom_pi_data
+ref:numpy.mesh_transport  | -transport,-67,-54,-62,-66 -sellevel,2.5,975,1600 -setgrid,fesom:{fix}/fesom_pi -selname,u {in} -sellevel,2.5,975,1600 -setgrid,fesom:{fix}/fesom_pi -selname,v {in} | fesom_pi_data
+json:(.out.method | map(select(.operator | startswith("transport")))[0] | (.sign | test("right of the path to its left")) and (.elements | test("^6 of")) and (.path | test("6367500"))) and (.out.records | length) == 1 and (.out.records[0].value | . < -100) | --json outputtab,value -vertsum -transport,-67,-54,-62,-66 -setgrid,fesom:{fix}/fesom_pi -seltimestep,1 -selname,u {in} -setgrid,fesom:{fix}/fesom_pi -seltimestep,1 -selname,v {in} | fesom_pi_data
+json:any(.out.warnings[]; .warning == "section_open_ends" and .elements == 1) | --plan --json -transport,-67,-54,-63,-60 -setgrid,fesom:{fix}/fesom_pi -selname,u {in} -setgrid,fesom:{fix}/fesom_pi -selname,v {in} {out} | fesom_pi_data
+err:bad_arguments         | -transport,-67,-54,-62,-66 -setgrid,fesom:{fix}/fesom_pi -selname,u,v {in} -setgrid,fesom:{fix}/fesom_pi -selname,v {in} | fesom_pi_data
+err:bad_arguments         | -transport,10,20,15,25 -setgrid,fesom:{fix}/fesom_pi -selname,u {in} -setgrid,fesom:{fix}/fesom_pi -selname,v {in} | fesom_pi_data
+err:bad_arguments         | -transport,-67,-54 -setgrid,fesom:{fix}/fesom_pi -selname,u {in} -setgrid,fesom:{fix}/fesom_pi -selname,v {in} | fesom_pi_data
+err:unsupported_grid      | -transport,-67,-54,-62,-66 -setgrid,fesom:{fix}/fesom_pi -selname,temp {in} -setgrid,fesom:{fix}/fesom_pi -selname,salt {in} | fesom_pi_data
+err:unsupported_grid      | -transport,-67,-54,-62,-66 -selname,u {in} -selname,v {in} | fesom_pi_data

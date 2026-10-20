@@ -482,6 +482,35 @@ A cdors operator; cdo has none. The usual FESOM2 tool is pyfesom2's `xmoc_data`.
     `linspace(-90, 90, nlats)`, and masks the zeros.
   - Both leave out the elements' sea-floor interfaces.
 
+## Section transport: `transport`
+
+A cdors operator; cdo has none. The usual FESOM2 tool is pyfesom2's `cross_section_transport`.
+
+- **`transport,<lon0>,<lat0>,<lon1>,<lat1>[,...]`** (or `file=<GeoJSON LineString>`) takes two
+  inputs, the eastward and the northward velocity on the elements and layers of a mesh (FESOM2
+  `u`, `v` on `elem`, `nz1`), one variable each. The path is great-circle arcs through the
+  waypoints. In each element it crosses, the flux goes through the broken line from the midpoint of
+  the edge where the path enters, through the centre, to the midpoint of the edge where it leaves.
+  These are the faces of FESOM2's median-dual cells. With one velocity per element only the
+  line's two ends matter, so each element keeps the chord between the two midpoints, as its east
+  and north extent (dE, dN) at the element's centre. Per layer, T = Σ (u·(−dN) + v·dE)·dz over the
+  crossed elements with water in the layer, in Sv for m/s.
+- **Sign:** positive from the right of the path to its left: northward across a west-to-east
+  path, eastward across a north-to-south one. pyfesom2 fixes the sign by the section's
+  orientation (zonal: northward, meridional: eastward), which is the same for paths drawn west
+  to east or north to south.
+- **Lengths** are on a sphere of the model's radius (FESOM2 `r_earth`, 6367.5 km); pyfesom2
+  uses the WGS84 ellipsoid (local east-north-up), which makes its lengths 0.2–0.4 % longer at
+  high latitudes. Layer thicknesses are the |zbar| differences (full cells, no partial bottom
+  cells).
+- **Ends:** an element where the path starts or ends (an end in the ocean) has only one crossed
+  edge and is left out, as in pyfesom2; the warning `section_open_ends` counts them.
+- **Velocities are taken as stored.** FESOM2 writes them rotated back to geographic
+  coordinates when `FESOM_autorotate_back_to_geo` is set (`-1` in the file's attributes). pyfesom2
+  rotates them by default (`uvrotated=True`), which is wrong for such files.
+- The output is one point (the path's middle) with the input's layers; `-vertsum` gives the
+  total, `-sellevel` before the operator a depth range.
+
 ## Units of integrals
 
 - **The integrals of cdors operators write float64 with the integral's units:** `vertint`

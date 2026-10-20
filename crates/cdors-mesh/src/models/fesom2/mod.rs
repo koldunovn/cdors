@@ -33,4 +33,6 @@ pub static MODEL: Model = Model {
             "elem_area, one area for all levels",
         ),
     ],
+    // r_earth of FESOM2 (src/oce_modules.F90)
+    radius_m: 6_367_500.0,
 };

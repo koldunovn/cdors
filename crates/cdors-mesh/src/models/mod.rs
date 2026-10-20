@@ -63,6 +63,9 @@ pub struct Model {
     /// Per place: where the loader takes its centres and its areas from, in words (`place`,
     /// `centres`, `areas`), for the method notes of results.
     pub places: &'static [(&'static str, &'static str, &'static str)],
+    /// The planet radius (m) the model measures lengths with (FESOM2: `r_earth`), for lengths
+    /// operators compute on its mesh (section transports).
+    pub radius_m: f64,
 }
 
 /// All models.
@@ -157,6 +160,11 @@ pub fn parse_spec(spec: &str) -> Option<Result<MeshSpec>> {
 pub fn dim_rule(mesh: &Mesh, dim: &str) -> Option<DimRule> {
     let m = model(&mesh.source.model)?;
     m.dims.iter().find(|(d, _)| *d == dim).map(|&(_, r)| r)
+}
+
+/// The planet radius (m) of the model of `mesh` ([`Model::radius_m`]; `None` without a model).
+pub fn radius_m(mesh: &Mesh) -> Option<f64> {
+    model(&mesh.source.model).map(|m| m.radius_m)
 }
 
 /// Where the centres and the areas of place `place` of `mesh` come from, in words (`None` for

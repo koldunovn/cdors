@@ -26,6 +26,7 @@ pub mod models;
 pub mod reader;
 pub mod regions;
 pub mod sample;
+pub mod section;
 pub mod ugrid;
 
 pub use mesh::{

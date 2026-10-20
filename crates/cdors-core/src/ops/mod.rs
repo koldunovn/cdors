@@ -23,6 +23,7 @@ pub mod fldstat;
 pub mod healpix;
 pub mod info;
 pub mod moc;
+pub mod transport;
 pub mod output;
 pub mod pctl;
 pub mod places;
@@ -254,6 +255,7 @@ const IMPLEMENTED: &[&str] = &[
     "selpoints",
     "transect",
     "moc",
+    "transport",
     "mergetime",
     "cat",
     "selregion",
@@ -633,6 +635,20 @@ fn build_registry() -> Vec<OpSpec> {
             true,
         ),
         op(
+            "transport",
+            two,
+            1,
+            vec![args_of("params", Str)],
+            Reduction,
+            "Transport across a section of a model mesh (cdors operator): \
+             <lon0>,<lat0>,<lon1>,<lat1>[,...] or file=<GeoJSON LineString>; two inputs, the \
+             eastward and the northward velocity on the elements and layers; the flux across \
+             the broken lines through the crossed elements (FESOM2's dual-cell faces) times the \
+             layer thickness, Sv, positive from the right of the path to its left; \
+             transport(time, nz1, lat, lon)",
+            true,
+        ),
+        op(
             "hpupgrade",
             one,
             1,
@@ -1004,6 +1020,7 @@ fn describe_op(node: &OpNode, inputs: Vec<Desc>, srcs: &mut Sources) -> Result<D
         n if regions::handles(n) => return regions::describe(node, inputs, srcs),
         n if regstat::handles(n) => return regstat::describe(node, inputs, srcs),
         n if moc::handles(n) => return moc::describe(node, inputs),
+        n if transport::handles(n) => return transport::describe(node, inputs, srcs),
         n if vertical::handles(n) => return vertical::describe(node, inputs, srcs),
         _ => {}
     }

@@ -1534,6 +1534,79 @@ def mesh_moc(args, inputs, out):
         o[:] = np.ma.masked_invalid(res)
 
 
+@reference()
+def mesh_transport(args, inputs, out):
+    """transport,<lon0>,<lat0>,<lon1>,<lat1>[,...] of the two components the row's -selname
+    pick (eastward, then northward; both from {in}) on the elements and layers of a FESOM2 mesh.
+    Each great-circle arc a -> b cuts the edges whose nodes lie on opposite sides of its plane
+    (n . p >= 0 counts as the left), where the edge's chord meets the plane (normalised), if that
+    point's angle from a about n lies in [0, |ab|]; each element's cuts in path order pair up
+    (entry, exit), an unpaired last one is left out; the chord between the edges' midpoints
+    (normalised node sums) projected on east and north at the element's centre (normalised mean
+    of the nodes' unit vectors), times r_earth = 6367500 m; T(k) = sum of (u * -dN + v * dE) *
+    dz_k over the crossed elements wet at k (top_e <= k < wet_e) with finite values, times 1e-6
+    (Sv); missing where there is none."""
+    op = next(a for a in args if a.startswith("-transport,"))
+    nums = [float(x) for x in op.split(",")[1:]]
+    pts = list(zip(nums[0::2], nums[1::2]))
+    names = [a.split(",")[1] for a in args if a.startswith("-selname,")]
+    mesh = read_mesh(args)
+    lon, lat = fesom_nodes(args)
+    el = mesh["elem"]
+    P = unit(lon, lat)
+    c = P[el].sum(axis=1)
+    c /= np.linalg.norm(c, axis=1)[:, None]
+    clon, clat = np.arctan2(c[:, 1], c[:, 0]), np.arcsin(c[:, 2])
+    cuts, done = [], 0.0
+    for p0, p1 in zip(pts[:-1], pts[1:]):
+        a, b = unit(*p0), unit(*p1)
+        n = np.cross(a, b)
+        nn = n / np.linalg.norm(n)
+        arc = np.arctan2(np.linalg.norm(n), a @ b)
+        left = P @ n >= 0
+        for i, j in ((0, 1), (1, 2), (2, 0)):
+            e = np.nonzero(left[el[:, i]] != left[el[:, j]])[0]
+            pi, pj = P[el[e, i]], P[el[e, j]]
+            di, dj = pi @ n, pj @ n
+            x = pi + (di / (di - dj))[:, None] * (pj - pi)
+            x /= np.linalg.norm(x, axis=1)[:, None]
+            pos = np.arctan2(np.cross(a, x) @ nn, x @ a)
+            ok = (pos >= 0) & (pos <= arc)
+            mid = pi + pj
+            mid /= np.linalg.norm(mid, axis=1)[:, None]
+            cuts += [(int(k), done + q, m) for k, q, m in zip(e[ok], pos[ok], mid[ok])]
+        done += arc
+    cuts.sort(key=lambda h: (h[0], h[1]))
+    cross = {}                                          # element -> [first cut, dE, dN]
+    for k in sorted({h[0] for h in cuts}):
+        hs = [h for h in cuts if h[0] == k]
+        if len(hs) < 2:
+            continue
+        lo, la = clon[k], clat[k]
+        east = np.array([-np.sin(lo), np.cos(lo), 0.0])
+        north = np.array([-np.sin(la) * np.cos(lo), -np.sin(la) * np.sin(lo), np.cos(la)])
+        d = sum(hs[q + 1][2] - hs[q][2] for q in range(0, len(hs) - 1, 2))
+        cross[k] = (hs[0][1], d @ east * 6367500.0, d @ north * 6367500.0)
+    order = sorted(cross, key=lambda k: (cross[k][0], k))
+    ee = np.array(order)
+    dE = np.array([cross[k][1] for k in order])
+    dN = np.array([cross[k][2] for k in order])
+    dz = np.diff(mesh["zbar"])
+    with netCDF4.Dataset(inputs[0]) as src, netCDF4.Dataset(out, "w") as dst:
+        copy_time(src, dst)
+        xu, lev, _ = to_tlc(src[names[0]], args)
+        xv, _, _ = to_tlc(src[names[1]], args)
+        w = wet(mesh, xu.shape[2], lev, False)[:, ee]          # (levels, crossed)
+        fu = np.where(w[None], xu[:, :, ee], np.nan)
+        fv = np.where(w[None], xv[:, :, ee], np.nan)
+        f = np.nan_to_num(fu) * -dN + np.nan_to_num(fv) * dE
+        has = np.isfinite(fu) | np.isfinite(fv)
+        res = np.where(has.any(axis=2), f.sum(axis=2) * dz[lev][None, :] * 1e-6, np.nan)
+        dst.createDimension("lev", len(lev))
+        o = dst.createVariable("transport", "f8", ("time", "lev"), fill_value=netCDF4.default_fillvals["f8"])
+        o[:] = np.ma.masked_invalid(res)
+
+
 def nh_nodes(args):
     """Nodes of the row's -sellonlatbox,-180,180,0,90 (latitude >= 0, both edges included)."""
     if not any(a.startswith("-sellonlatbox,-180,180,0,90") for a in args):

@@ -179,6 +179,30 @@ WARNINGS
 EXAMPLE
     AMOC at 26.5 N, January 1990 (the maximum over depth is the AMOC strength):
     cdors --json outputtab,lev,value -moc,lat=26.5,regions=moc,select=Atlantic_MOC -setgrid,fesom:<meshdir> -seltimestep,1 -selname,w w.fesom.1990.nc
+%%% transport
+NAME
+    transport - Transport across a section of a model mesh, per layer
+SYNOPSIS
+    cdors -transport,<lon0>,<lat0>,<lon1>,<lat1>[,<lon>,<lat>...] <east> <north> <out>
+    cdors -transport,file=<GeoJSON LineString> <east> <north> <out>
+    <east>, <north>: one variable each, on the elements and layers of a mesh (FESOM2: u, v)
+PARAMETERS
+    waypoints  great-circle arcs through them; put both ends on land for the whole flow
+OUTPUT
+    transport(time, nz1, lat, lon) in Sv (velocities in m/s; else <units> m2): at each layer
+    the sum over the elements the path crosses of (u * -dN + v * dE) * dz, (dE, dN) the extent
+    of the broken line from the midpoint of the edge where the path enters the element,
+    through its centre, to the midpoint of the edge where it leaves (FESOM2's dual-cell faces,
+    as pyfesom2's cross_section_transport), on the model's sphere (FESOM2 r_earth); dz the
+    layer thickness. Positive from the right of the path to its left (eastward across a
+    north-to-south path). Missing in layers no crossed element has water in. One point (the
+    path's middle). -vertsum gives the total. --json and --plan state the method.
+WARNINGS
+    section_open_ends (an end in the ocean: the elements where the path starts or ends are left
+    out). Velocities are taken as stored: rotate rotated-grid output back first.
+EXAMPLE
+    cdors --json outputtab,value -vertsum -transport,-68,-54,-63,-65.5 -setgrid,fesom:<mesh> \
+          -selname,u u.nc -setgrid,fesom:<mesh> -selname,v v.nc     # Drake Passage, Sv
 %%% tonodes toelems
 NAME
     tonodes, toelems - Map a variable between the places of a model mesh
