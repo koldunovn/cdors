@@ -335,7 +335,7 @@ from 68 W 54 S to 63 W 65.5 S, and the transport is the integral of the normal v
 - **Arm A** read the guide and `cdors help transport`, planned, and ran the chain once with `-P 16`. It
   checked that the velocities are geographic (`FESOM_autorotate_back_to_geo`) and that there was no
   `section_open_ends` warning.
-- **Arm B** wrote one 150-line script and one check, and did not look at pyfesom2 this time. It cut the section
+- **Arm B** wrote one 134-line script and one check, and did not look at pyfesom2 this time. It cut the section
   into its pieces inside each wet triangle, which is the exact chord, not the dual-cell faces. It took the pole
   of the great circle as the normal, `nlevels − 1` layers and `r_earth`, and checked the radius against
   `elem_area`. It took u and v as geographic without checking. The rotation trap only catches an agent that
