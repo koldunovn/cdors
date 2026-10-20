@@ -22,6 +22,7 @@ pub mod fldhist;
 pub mod fldstat;
 pub mod healpix;
 pub mod info;
+pub mod moc;
 pub mod output;
 pub mod pctl;
 pub mod places;
@@ -252,6 +253,7 @@ const IMPLEMENTED: &[&str] = &[
     "tonodes",
     "selpoints",
     "transect",
+    "moc",
     "mergetime",
     "cat",
     "selregion",
@@ -616,6 +618,21 @@ fn build_registry() -> Vec<OpSpec> {
             false,
         ),
         op(
+            "moc",
+            one,
+            1,
+            vec![ArgSpec {
+                default: Some("dlat=1"),
+                ..args_of("params", Str)
+            }],
+            Reduction,
+            "Meridional overturning streamfunction from the vertical velocity on a model mesh \
+             (cdors operator): [dlat=<deg>|lat=<lat>[/<lat>...]][,regions=<set>,select=<abbrev>]; \
+             -sum of element-mean w times elem_area north of each latitude line, Sv; \
+             moc(time, nz, lat, lon)",
+            true,
+        ),
+        op(
             "hpupgrade",
             one,
             1,
@@ -905,10 +922,19 @@ pub fn describe(node: &OpNode, inputs: Vec<Desc>, srcs: &mut Sources) -> Result<
         add(n.clone(), &mut method);
     }
     let mut out = describe_op(node, inputs, srcs)?;
-    for n in std::mem::take(&mut out.method) {
+    let own = std::mem::take(&mut out.method);
+    // an operator that wrote its own note of the method (moc) needs no note of its kernel
+    let token = serde_json::Value::from(crate::plan::explain::op_token(node));
+    let noted = own.iter().any(|n| n.get("operator") == Some(&token));
+    for n in own {
         add(n, &mut method);
     }
-    if let Some(n) = out.fold.as_ref().and_then(|f| fold_note(node, f.kernel.plan_info())) {
+    if let Some(n) = out
+        .fold
+        .as_ref()
+        .filter(|_| !noted)
+        .and_then(|f| fold_note(node, f.kernel.plan_info()))
+    {
         add(n, &mut method);
     }
     out.method = method;
@@ -977,6 +1003,7 @@ fn describe_op(node: &OpNode, inputs: Vec<Desc>, srcs: &mut Sources) -> Result<D
         n if ymonarith::handles(n) => return ymonarith::describe(node, inputs),
         n if regions::handles(n) => return regions::describe(node, inputs, srcs),
         n if regstat::handles(n) => return regstat::describe(node, inputs, srcs),
+        n if moc::handles(n) => return moc::describe(node, inputs),
         n if vertical::handles(n) => return vertical::describe(node, inputs, srcs),
         _ => {}
     }

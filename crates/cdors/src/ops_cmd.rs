@@ -399,7 +399,7 @@ pub fn notes(name: &str) -> Vec<String> {
                 .to_owned(),
         );
     }
-    if matches!(name, "regmask" | "maskregion") || ops::regstat::handles(name) {
+    if matches!(name, "regmask" | "maskregion" | "moc") || ops::regstat::handles(name) {
         n.extend(
             ops::regions::catalog_text()
                 .into_iter()

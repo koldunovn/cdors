@@ -450,11 +450,38 @@ one point per call), which cdors keeps unchanged.
   figure. On cdors' points, nereus' nearest-node rule (scipy's cKDTree on unit vectors) picks
   the same nodes: Drake on pi (checked against nereus itself) and on dart.
 
+## Overturning: `moc`
+
+A cdors operator; cdo has none. The usual FESOM2 tool is pyfesom2's `xmoc_data`.
+
+- **`moc[,dlat=<deg>|lat=<lat>[/<lat>...]][,regions=<set>,select=<abbrev,...>]`** takes the
+  vertical velocity on the mesh's interfaces (FESOM2 `w` on `nz`). Each element gets the mean
+  of `w` at its three nodes, at the interfaces that top its wet layers; the sea floor below them
+  is left out, since no flow crosses it. At each interface, ψ(φ) = −Σ w_e·A_e over the basin's
+  elements whose centre lies on or north of the line φ (`elem_area`; centres: the normalised
+  mean of the nodes' unit vectors). The streamfunction thus closes at the basin's northern
+  end. It is written in Sv for `w` in m/s.
+- **The basin** is the elements whose centre lies in the selected regions, by `regmask`'s
+  rules (`regions=moc,select=Atlantic_MOC`: MPAS/nereus, 34° S to the Nordic Seas and Baffin
+  Bay, without the Arctic Ocean). Without `regions=` it is the whole mesh. `fill=nearest` is
+  refused.
+- **Lines:** every `dlat` degrees from −90 to 90 (default 1), or the latitudes of `lat=`. A
+  line's value is missing below the deepest element of the basin that the line crosses (the
+  latitudes of its vertices span the line).
+- **Differences from pyfesom2's `xmoc_data`:**
+  - pyfesom2 masks the nodes and then averages each element over all three, so an element on
+    the basin's edge counts with zeros for its outside nodes; cdors takes an element whole or not
+    at all.
+  - pyfesom2 bins elements by the arithmetic mean of their nodes' latitudes, on lines
+    `linspace(-90, 90, nlats)`, and masks the zeros.
+  - Both leave out the elements' sea-floor interfaces.
+
 ## Units of integrals
 
 - **The integrals of cdors operators write float64 with the integral's units:** `vertint`
   `<input units> m`, `regint` `<input units> m2`, `volint` `<input units> m3` (just `m`, `m2`,
-  `m3` without input units); `fldhist,out=area` writes m², `out=fraction` `1`.
+  `m3` without input units); `fldhist,out=area` writes m², `out=fraction` `1`; `moc` writes Sv
+  for a velocity in m/s (else `<input units> m2`).
 - **cdo-named operators keep cdo's behaviour:** `fldint` and `zonint` keep the input's units
   and type (cdo 2.6.0's `fldint`: float32, units unchanged). `volmean`, `regmean` and the other
   means keep the input's units and type.

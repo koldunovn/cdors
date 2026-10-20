@@ -68,7 +68,12 @@ cdors -fldhist,edges=0.15/1 -sellonlatbox,-180,180,0,90 -setgrid,fesom:mesh -sel
 cdors -fldint -setgrid,fesom:mesh -selname,m_ice in.nc vol.nc  # ice volume, m3
 cdors --json outputtab,date,value -regmean,regions=basins,select=Atlantic_Basin -setgrid,fesom:mesh -selname,sst in.nc  # Atlantic
 cdors -transect,-65,-55,-60,-65 -setgrid,fesom:mesh -selname,temp in.nc drake.nc  # temp(time,nz1,distance)
+cdors --json outputtab,lev,value -moc,lat=26.5,regions=moc,select=Atlantic_MOC -setgrid,fesom:mesh -selname,w w.nc  # AMOC at 26.5 N, Sv per interface
 ```
+
+`moc` integrates `w` from the north: minus the sum of the element means of `w` times `elem_area` over the basin
+north of each line (`dlat=<deg>` lines, default 1, or `lat=`), in Sv, missing below the deepest element a line
+crosses. Its maximum over depth is the overturning strength.
 
 `vertint`, `regint`, `volint` write float64 with the units times m, m2, m3 (`fldint` keeps them, as cdo). `-mulc`
 keeps units: the OHC above reads "C m3" but is in J.

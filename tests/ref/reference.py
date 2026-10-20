@@ -1460,6 +1460,80 @@ for _op in ("zonmean", "zonint", "zonsum"):
     REFERENCES["mesh_" + _op] = (lambda op: lambda a, i, o: mesh_zonal(a, i, o, op))(_op)
 
 
+@reference()
+def mesh_moc(args, inputs, out):
+    """moc[,dlat=<d>|lat=<a>/<b>...][,regions=<set>,select=<name>...] of w on the interfaces of
+    a FESOM2 mesh: each element's mean of w at its valid nodes at the interfaces top_e <= k <
+    wet_e (the tops of its wet layers) times elem_area; psi(line) = -sum over the elements whose
+    centre latitude is >= the line, times 1e-6 (Sv); missing at k where no element whose vertex
+    latitudes span the line has k among its interfaces (top_e <= k <= wet_e). The basin: element
+    centres in the regions' polygons of $CDORS_REGIONS/<set>.geojson (shapely, longitudes wrapped
+    into the polygons' range); centres: normalised mean of the nodes' unit vectors."""
+    import json
+    import shapely
+    from shapely.geometry import shape
+    op = next(a for a in args if a.startswith("-moc")).split(",")[1:]
+    lines = np.arange(-90.0, 90.0 + 1e-9, 1.0)
+    rset, sel = None, []
+    for p in op:
+        k, _, v = p.partition("=")
+        if k == "dlat":
+            d = float(v)
+            lines = -90.0 + d * np.arange(int(np.floor(180.0 / d + 1e-9)) + 1)
+        elif k == "lat":
+            lines = np.unique([float(x) for x in v.split("/")])
+        elif k == "regions":
+            rset = v
+        elif k == "select" or (not v and rset):
+            sel.append(v or k)
+    mesh = read_mesh(args)
+    lon, lat = fesom_nodes(args)
+    el = mesh["elem"]
+    p = unit(lon, lat)[el].sum(axis=1)
+    p /= np.linalg.norm(p, axis=1)[:, None]
+    elon, elat = np.degrees(np.arctan2(p[:, 1], p[:, 0])), np.degrees(np.arcsin(p[:, 2]))
+    basin = np.ones(len(el), bool)
+    if rset:
+        with open(os.path.join(os.environ["CDORS_REGIONS"], rset + ".geojson")) as f:
+            feats = json.load(f)["features"]
+        basin[:] = False
+        for ft in feats:
+            pr = ft["properties"]
+            if sel and pr.get("abbrev") not in sel and pr.get("name") not in sel:
+                continue
+            g = shape(ft["geometry"])
+            x = elon if g.bounds[2] <= 180 else np.where(elon < g.bounds[0], elon + 360.0, elon)
+            basin |= shapely.contains_xy(g, x, elat)
+    top, end = mesh["top_elem"], mesh["wet_elem"]       # wet layers top..end
+    vlo, vhi = lat[el].min(axis=1), lat[el].max(axis=1)
+    with netCDF4.Dataset(inputs[0]) as src, netCDF4.Dataset(out, "w") as dst:
+        copy_time(src, dst)
+        v = src[selected(args, data_vars(src))[0]]
+        x, lev, last = to_tlc(v, args)
+        nt, nl, _ = x.shape
+        x = np.where(wet(mesh, x.shape[2], lev, False, True)[None], x, np.nan)
+        res = np.full((nt, nl, len(lines)), np.nan)
+        for j, k in enumerate(lev):
+            on = basin & (top <= k) & (k < end)
+            has = basin & (top <= k) & (k <= end)
+            crossed = [(has & (vlo <= y) & (y <= vhi)).any() for y in lines]
+            for t in range(nt):
+                xe = x[t, j][el]
+                n = np.isfinite(xe).sum(axis=1)
+                with np.errstate(invalid="ignore"):
+                    we = np.where(np.isfinite(xe), xe, 0).sum(axis=1) / n
+                ok = on & (n > 0)
+                c = we[ok] * mesh["elem_area"][ok]
+                for i, y in enumerate(lines):
+                    if crossed[i]:
+                        res[t, j, i] = -c[elat[ok] >= y].sum() * 1e-6
+        dst.createDimension("lev", nl)
+        dst.createDimension("lat", len(lines))
+        dims, res = (("time", "lat", "lev"), np.swapaxes(res, 1, 2)) if last else (("time", "lev", "lat"), res)
+        o = dst.createVariable("moc", "f8", dims, fill_value=netCDF4.default_fillvals["f8"])
+        o[:] = np.ma.masked_invalid(res)
+
+
 def nh_nodes(args):
     """Nodes of the row's -sellonlatbox,-180,180,0,90 (latitude >= 0, both edges included)."""
     if not any(a.startswith("-sellonlatbox,-180,180,0,90") for a in args):

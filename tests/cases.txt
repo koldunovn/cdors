@@ -559,3 +559,16 @@ json:(.out.stages[0].kernel.mesh_weights | map(select(.weights == "per_level"))[
 ref:regionmask.regmin     | -regmin,regions=ar6.ocean -setgrid,fesom:{fix}/fesom_pi -selname,temp,a_ice {in} | fesom_pi_data
 ref:regionmask.regsum     | -regsum,regions=ar6.ocean -setgrid,fesom:{fix}/fesom_pi -selname,temp,a_ice {in} | fesom_pi_data
 ref:nereus.nereus_regint  | -regint,regions=basins,select=Atlantic_Basin,Pacific_Basin,Indian_Basin,Arctic_Basin,Southern_Ocean_Basin -setgrid,fesom:{fix}/fesom_pi -selname,a_ice {in} | fesom_pi_data
+# moc (cdors operator): minus the sum of the element means of w (interfaces that top the wet layers)
+# times elem_area north of each latitude line, Sv; missing below the deepest element a line crosses.
+# The whole mesh, the Atlantic of the moc set (NumPy: shapely on the same polygons), w20 with its
+# levels last, a level selection; the method note; arguments and inputs it refuses
+ref:numpy.mesh_moc        | -moc,dlat=10 -setgrid,fesom:{fix}/fesom_pi -selname,w {in}             | fesom_pi_w
+ref:numpy.mesh_moc        | -moc,lat=-30/26.5/45,regions=moc,select=Atlantic_MOC -setgrid,fesom:{fix}/fesom_pi -selname,w {in} | fesom_pi_w
+ref:numpy.mesh_moc        | -moc,dlat=15 -setgrid,fesom:{fix}/fesom_pi -selname,w20 {in}           | fesom_pi_w
+ref:numpy.mesh_moc        | -moc,lat=0/40 -sellevel,0,100,1000 -setgrid,fesom:{fix}/fesom_pi -selname,w {in} | fesom_pi_w
+json:(.out.method | map(select(.operator | startswith("moc")))[0] | (.basin | test("Atlantic_MOC of the set moc")) and .lines == 1 and (.w_e | test("three nodes"))) and (.out.method | length) == 2 | --json outputtab,lev,value -moc,lat=26.5,regions=moc,select=Atlantic_MOC -setgrid,fesom:{fix}/fesom_pi -seltimestep,1 -selname,w {in} | fesom_pi_w
+err:bad_arguments         | -moc,dlat=0 -setgrid,fesom:{fix}/fesom_pi -selname,w {in}       | fesom_pi_w
+err:bad_arguments         | -moc,lat=26.5,fill=nearest,regions=moc -setgrid,fesom:{fix}/fesom_pi -selname,w {in} | fesom_pi_w
+err:unsupported_grid      | -moc -setgrid,fesom:{fix}/fesom_pi -selname,temp {in}           | fesom_pi_data
+err:unsupported_grid      | -moc -selname,w {in}                                            | fesom_pi_w
