@@ -182,7 +182,8 @@ Peak RSS in GB of 10⁹ bytes, as `--mem` counts. (`/usr/bin/time` reports KiB; 
   naive answer, and cdors cost 1.25× as much, because arm A checked which weights cdors had used
   (`docs/agent-check.md`, "Trap set run"). With the method stated in the results, the ratio became 1.14×
   (0.77× without W4). With Sonnet 5.5 the ratio was 1.07×, with Haiku
-  5.5 0.97×; both models' arm B also avoided every trap.
+  5.5 0.97×; both models' arm B also avoided every trap. The first long-script task (H1, the AMOC from w with
+  the operator `moc`; job 28288688) cost 0.42× ($0.36 vs $0.87, one Opus session per arm, both correct).
 - Start round 2 (neighbour operators, first plots) or not.
 - Publish: the shared install with `share/regions/`, its README (`docs/levante.md`) and the guide page, each after
   the exact text is approved.

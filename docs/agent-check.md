@@ -283,3 +283,34 @@ Each cell gives tool calls, wall seconds and USD.
   Gaussian rows and ICON `cell_area`. None of the three models makes the naive mistakes. When an answer takes one Python
   script, cdors can save only the script, and the arms cost about the same. A difference in cost needs tasks
   where the script is long: transports through a section and the MOC, which nereus does not provide.
+
+### A long-script task: the AMOC from w (job 28288688, 2026-10-20)
+
+H1 asks for the AMOC at 26.5 N in January 1990 on dart: the maximum over depth of the northward transport above
+each interface, from w by continuity, in the Atlantic_MOC basin of nereus (`bench/agent_tasks.md`, "Long-script
+task set"). In cdors this is one operator, `moc` (3ffcfbb). Without cdors it takes a script: nereus has no MOC.
+The reference, 17.4749385 Sv at 950 m, is in job 28281059. cdors agrees with it to 1e-12 at every interface.
+The naive answers are 19–46 % off. One Opus 5.5 session per arm, frozen binary `cdors-3ffcfbb`:
+
+| Arm | Answer | Calls | Wall s | USD |
+|---|---|---|---|---|
+| A (cdors) | 17.4749385 Sv, 950 m | 9 | 74 | 0.36 |
+| B (Python, nereus) | 17.3185 Sv, 950 m | 15 | 303 | 0.87 |
+
+- **Arm A cost 0.42× arm B,** in a quarter of the wall time. This is the first task where the cost differs
+  clearly. Arm A read the guide and `cdors help moc`, planned, ran the chain once and took the maximum with jq.
+- **Arm B was correct, and the first verdict was not.** It used w · `nod_area[k]` over the basin's nodes north of
+  the line, summed from the north. Then it removed the surface term, −∫w(0) dA = 0.216 Sv, because the prompt
+  defines psi as the transport between the surface and z, so psi(0) = 0. cdors and pyfesom2's `xmoc_data`
+  compute −∫w(z) dA, which is minus the transport below z. With the linear free surface the two differ by the
+  net surface flux north of the line. The prompt allows both readings, so the tolerance was widened from
+  0.09 Sv to 0.25 Sv after the run. That changes the verdict from fail to correct
+  (`bench/agent/results-20261020-204205-rescored.md`; the first scoring is kept in `results-20261020-204205.md`).
+  Arm A described cdors' sum as "the northward transport above" the interface. It did not notice that psi(0) =
+  0.22 Sv contradicts that.
+- **Arm B read pyfesom2's source** (`xmoc_data`, from the user's home directory; pyfesom2 itself was not on its
+  PATH) to pick the direction of the sum. The scorer does not flag this, because it is not our reference. It
+  spent two runs on node coordinates stored in radians.
+- **What this says for cdors:** the method note should say which transport psi is (minus the transport below
+  the interface, so psi(0) = −∫w(0) dA is not 0). cdors could also offer the other reading (psi(0) = 0). Neither
+  is done yet. One session per arm is a single sample; a repeat costs about $1.2.

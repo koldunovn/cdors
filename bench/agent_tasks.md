@@ -494,8 +494,16 @@ closed end. In cdors it is one operator (`moc`, commit 3ffcfbb). Prepared 2026-1
 - **Naive answers:** the element's sea-floor interface included (w there is not 0: the nodes are shared with
   deeper elements) +36 % at 900 m; the whole ocean instead of the basin −19 %; the sum from the south (the
   Atlantic is open at 34 S) −46 % at 3300 m.
-- **Tolerance:** 0.09 Sv on the strength (5.2e-3, above the nodes variant, 0.059 Sv) and 50 m on the depth (one
-  interface either side: the profile is within 0.2 % of its maximum at 900 m and 1000 m).
+- **Two definitions, both accepted.** The prompt defines psi(z) as the transport between the surface and z, so
+  psi(0) = 0. cdors, pyfesom2's `xmoc_data` and the reference compute −∫w(z) dA north of the line, which is
+  minus the transport below z: it differs from the transport above z by the net flux through the surface north
+  of the line, −∫w(0) dA = 0.216 Sv here (with the linear free surface, w(0) ≠ 0). Removing it gives
+  17.2588823 Sv at 950 m (elements) and 17.3185 Sv (nodes, arm B of the first run). The first run's arm B took
+  this reading; the prompt's wording allows it, so the tolerance was widened after that run.
+- **Tolerance:** 0.25 Sv on the strength (1.4 %: both definitions with elements or nodes, the farthest 0.216 Sv
+  away; the nearest naive answer is 3.2 Sv away) and 50 m on the depth (one interface either side: the profile is
+  within 0.2 % of its maximum at 900 m and 1000 m). Until the first run (job 28288688) it was 0.09 Sv, which
+  admitted only the −∫w(z) definition.
 - **Data read:** one time step of w (80 × 3160340 float32, 1.0 GB) and the mesh's `elem`, `nlevels`, `elem_area`
   or `nod_area`. The reference script (`ref_moc.py`, NumPy and shapely) takes 79 s on 16 cores, cdors 24 s.
 
@@ -585,8 +593,9 @@ list gives one tolerance per value (F3: the count must be exact).
   "W6": {"values": [265.801637753], "units": "K", "tol_rel": 1e-4,
          "variants": {"second_time_step": [265.872575366], "unweighted": [265.535760076],
                       "coslat_weights": [268.509437328]}},
-  "H1": {"values": [17.474938542, 950], "units": "Sv, m", "tol_abs": [0.09, 50],
+  "H1": {"values": [17.474938542, 950], "units": "Sv, m", "tol_abs": [0.25, 50],
          "variants": {"pyfesom2_like": [17.473898413, 950], "nodes_nod_area": [17.534001, 950],
+                      "surface_term_removed": [17.258882373, 950], "nodes_surface_term_removed": [17.3185, 950],
                       "with_sea_floor": [23.739173, 900], "global": [14.238147, 950],
                       "from_south": [9.486877, 3300]}}
 }

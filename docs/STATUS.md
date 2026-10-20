@@ -97,6 +97,10 @@ against $2.03).
    membership. Sonnet 5.5 and Haiku 5.5 (job 28273732) also avoided every trap, and their arms cost the same
    (Sonnet $0.33 vs $0.31, Haiku $0.032 vs $0.033). A
    difference in cost needs tasks with long scripts (transports through a section, MOC).
+   **The first long-script task, the AMOC at 26.5 N from w (H1, the new operator `moc`, 3ffcfbb; job 28288688),
+   cost 0.42× without cdors** ($0.36 vs $0.87, 74 s vs 303 s, one Opus session per arm). Both answers are correct.
+   Arm B's was first scored wrong: it removed the surface term (0.216 Sv), which the prompt's definition allows,
+   so the tolerance was widened (`docs/agent-check.md`, "A long-script task").
 4. **Publication, after you approve the exact text:**
    - the shared install, with `share/regions/` (the regions directory, 12 MB);
    - its README (= `docs/levante.md`, Example 7 and "Three years of FESOM2");
