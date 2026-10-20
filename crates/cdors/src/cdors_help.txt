@@ -167,12 +167,15 @@ PARAMETERS
 OUTPUT
     moc(time, nz, lat, lon) in Sv (w in m/s; other units: the sum in <units> m2): at each
     interface, minus the sum of w_e * A_e over the basin's elements whose centre lies on or
-    north of the line, w_e the mean of w at the element's three nodes at the interfaces that
-    top its wet layers (not at the sea floor), A_e the element area (FESOM2 elem_area). The
-    overturning closes at the basin's northern end (as pyfesom2's xmoc_data). Missing below
-    the deepest element of the basin that the line crosses. One longitude (0); the levels are
-    the input's. --json value outputs and --plan state the method (method[]).
-    Print with: outputtab,lat,lev,value
+    north of the line; w_e the mean of w at the element's three nodes at the interfaces that
+    top its wet layers (not the sea floor), A_e the element area (FESOM2 elem_area). This is
+    minus the northward transport below the interface, closed at the basin's northern end (as
+    pyfesom2's xmoc_data). Missing below the deepest element the line crosses. One longitude
+    (0); the input's levels. --json and --plan state the method. Print: outputtab,lat,lev,value
+WARNINGS
+    At the top interface the output is the net flow through the sea surface north of the line,
+    not 0. The transport above the interface (0 at the surface) is the output minus its top
+    interface: cdors -sub moc.nc -sellevel,0 moc.nc above.nc (FESOM2: nz starts at 0).
 EXAMPLE
     AMOC at 26.5 N, January 1990 (the maximum over depth is the AMOC strength):
     cdors --json outputtab,lev,value -moc,lat=26.5,regions=moc,select=Atlantic_MOC -setgrid,fesom:<meshdir> -seltimestep,1 -selname,w w.fesom.1990.nc

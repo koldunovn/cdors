@@ -311,6 +311,8 @@ The naive answers are 19–46 % off. One Opus 5.5 session per arm, frozen binary
 - **Arm B read pyfesom2's source** (`xmoc_data`, from the user's home directory; pyfesom2 itself was not on its
   PATH) to pick the direction of the sum. The scorer does not flag this, because it is not our reference. It
   spent two runs on node coordinates stored in radians.
-- **What this says for cdors:** the method note should say which transport psi is (minus the transport below
-  the interface, so psi(0) = −∫w(0) dA is not 0). cdors could also offer the other reading (psi(0) = 0). Neither
-  is done yet. One session per arm is a single sample; a repeat costs about $1.2.
+- **What this says for cdors:** the method note, the help and the guide now say which transport psi is: minus
+  the transport below the interface, so psi(0) = −∫w(0) dA is not 0. They also give the other reading, the
+  output minus its top interface (`-sub moc.nc -sellevel,0 moc.nc`). An option in `moc` itself would need
+  the surface interface in every batch of fields, so there is none. One session per arm is a single sample;
+  a repeat costs about $1.2.

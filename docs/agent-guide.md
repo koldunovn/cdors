@@ -73,7 +73,9 @@ cdors --json outputtab,lev,value -moc,lat=26.5,regions=moc,select=Atlantic_MOC -
 
 `moc` integrates `w` from the north: minus the sum of the element means of `w` times `elem_area` over the basin
 north of each line (`dlat=<deg>` lines, default 1, or `lat=`), in Sv, missing below the deepest element a line
-crosses. Its maximum over depth is the overturning strength.
+crosses. That is minus the northward transport below each interface, so at the surface it is the net surface
+flow, not 0. For the transport above each interface, subtract the top interface:
+`cdors -sub moc.nc -sellevel,0 moc.nc above.nc`. The maximum over depth is the overturning strength.
 
 `vertint`, `regint`, `volint` write float64 with the units times m, m2, m3 (`fldint` keeps them, as cdo). `-mulc`
 keeps units: the OHC above reads "C m3" but is in J.

@@ -7,8 +7,11 @@
 //!   that top its wet layers: the sea floor below them is left out, no flow crosses it;
 //! - ψ(φ, k) = −Σ w̄·A over the basin's elements whose centre lies on or north of the latitude
 //!   line φ, A the element area (FESOM2 `elem_area`), centres as the mesh defines them (FESOM2:
-//!   the normalised mean of the nodes' unit vectors): the overturning that closes at the basin's
-//!   northern end, as pyfesom2's `xmoc_data`. In Sv for w in m/s, else Σ in `<units> m2`;
+//!   the normalised mean of the nodes' unit vectors): minus the northward transport across φ
+//!   below interface k, the overturning that closes at the basin's northern end, as pyfesom2's
+//!   `xmoc_data`. It is the transport above k only where no net flow crosses the sea surface
+//!   north of φ: ψ at the top interface is that flow, not 0. In Sv for w in m/s, else Σ in
+//!   `<units> m2`;
 //! - the basin: the elements whose centre lies in the selected regions of a catalog set
 //!   (`regions=moc,select=Atlantic_MOC`; membership as `regmask`), the whole mesh without
 //!   `regions=`;
@@ -386,10 +389,14 @@ pub fn describe(node: &OpNode, mut inputs: Vec<Desc>) -> Result<Desc> {
         "operator": token,
         "streamfunction": format!(
             "psi(lat, k) = -sum of w_e * A_e over the basin's elements whose centre lies on or north \
-             of the line, at each interface k ({out_units}{}): the overturning that closes at the \
-             basin's northern end",
+             of the line, at each interface k ({out_units}{}): minus the northward transport across \
+             the line below k, the overturning that closes at the basin's northern end",
             if scale != 1.0 { ", 1 Sv = 1e6 m3/s" } else { "" }
         ),
+        "surface": "psi at the top interface is the net flow through the sea surface north of the \
+                    line (-sum of w_e * A_e there), not 0; psi is the northward transport above k \
+                    only where that flow is 0. For psi = 0 at the surface (the transport above k) \
+                    subtract the top interface: -sub <moc chain> -sellevel,<top> <moc chain>",
         "w_e": if on_nodes {
             "the mean of the input at the element's three nodes (missing nodes left out), at the \
              interfaces that top the element's wet layers; not at the sea floor"

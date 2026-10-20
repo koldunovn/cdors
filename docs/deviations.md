@@ -459,8 +459,14 @@ A cdors operator; cdo has none. The usual FESOM2 tool is pyfesom2's `xmoc_data`.
   of `w` at its three nodes, at the interfaces that top its wet layers; the sea floor below them
   is left out, since no flow crosses it. At each interface, ψ(φ) = −Σ w_e·A_e over the basin's
   elements whose centre lies on or north of the line φ (`elem_area`; centres: the normalised
-  mean of the nodes' unit vectors). The streamfunction thus closes at the basin's northern
-  end. It is written in Sv for `w` in m/s.
+  mean of the nodes' unit vectors). This is minus the northward transport below the interface,
+  so the streamfunction closes at the basin's northern end. It is written in Sv for `w` in m/s.
+- **ψ at the surface is not 0.** At the top interface ψ is the net flow through the sea surface
+  north of the line (FESOM2's linear free surface: `w` there is not 0). ψ equals the
+  northward transport above the interface only where that flow is 0. On dart, AMOC at 26.5° N
+  in January 1990, it is 0.216 Sv, and the maximum is 17.47 Sv. The transport above the interface (0 at the
+  surface, 17.26 Sv) is the output minus its top interface:
+  `cdors -sub moc.nc -sellevel,0 moc.nc above.nc`. pyfesom2 also leaves the surface term in.
 - **The basin** is the elements whose centre lies in the selected regions, by `regmask`'s
   rules (`regions=moc,select=Atlantic_MOC`: MPAS/nereus, 34° S to the Nordic Seas and Baffin
   Bay, without the Arctic Ocean). Without `regions=` it is the whole mesh. `fill=nearest` is
