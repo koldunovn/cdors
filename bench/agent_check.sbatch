@@ -13,6 +13,7 @@
 #   TASKSET=fesom TASKS=F5 ARMS=A CDORS_BIN=<binary> sbatch --time=00:40:00 bench/agent_check.sbatch   # pilot
 #   TASKSET=fesom CDORS_BIN=<binary> sbatch --time=02:30:00 bench/agent_check.sbatch                   # 10 sessions
 #   TASKSET=trap CDORS_BIN=<binary> sbatch --time=01:30:00 bench/agent_check.sbatch                    # trap set, 10 sessions
+#   TASKSET=long CDORS_BIN=<binary> sbatch --time=01:00:00 bench/agent_check.sbatch                    # H1, 2 sessions
 cd /home/a/a270088/cdo || exit 1
 export PATH=/home/a/a270088/.local/bin:$PATH
 echo "start $(date -Is) on $(hostname): TASKSET=$TASKSET TASKS=${TASKS:-all} ARMS=${ARMS:-A B} CDORS_BIN=$CDORS_BIN"

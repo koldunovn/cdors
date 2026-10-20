@@ -7,6 +7,7 @@
 # FESOM2 set (round 1): ~$4-6 at list price for 10 sessions (bench/agent_tasks.md, "Cost estimate");
 # pilot first:  RUN=1 TASKSET=fesom TASKS=F5 ARMS=A bench/agent_check.sh
 # Trap set (W1, W2, W4, W5, W6): ~$4-7 for 10 sessions (bench/agent_tasks.md, "Trap task set")
+# Long-script set (H1): ~$1.5-3 for 2 sessions with Opus (bench/agent_tasks.md, "Long-script task set")
 # =====================================================================================================
 #
 # Agent check (plan Task 14): five analysis tasks (bench/agent_tasks.md), each given to a headless
@@ -15,7 +16,8 @@
 # Three task sets: TASKSET=prototype (T1-T5: HEALPix/ICON, 2026-10-09), TASKSET=fesom (F1-F5: FESOM2
 # on the dart mesh, round 1; arm B gets the nereus environment, arm A CDORS_REGIONS for the basins) and
 # TASKSET=trap (W1 W2 W4 W5 W6: weights that naive methods get wrong on FESOM2, IFS O1280 and ICON R2B8;
-# arm B gets the nereus environment, for W5 the ecmwf environment, whose eccodes decodes the GRIB).
+# arm B gets the nereus environment, for W5 the ecmwf environment, whose eccodes decodes the GRIB) and
+# TASKSET=long (H1: the AMOC at 26.5 N from w on dart, a quantity whose Python script is long; arm B nereus).
 #
 # Usage:
 #   bench/agent_check.sh               DRY RUN (default): checks the tools, prints every prompt and the
@@ -24,9 +26,9 @@
 #   RUN=1 bench/agent_check.sh         runs the sessions (needs Nikolay's go-ahead, see above)
 #
 # Environment (defaults in brackets):
-#   TASKSET [prototype] prototype (T1-T5), fesom (F1-F5) or trap (W1 W2 W4 W5 W6); sets the default TASKS
-#           and, for fesom and trap, DOCS=guide
-#   TASKS ["T1 T2 T3 T4 T5" | "F1 F2 F3 F4 F5" | "W1 W2 W4 W5 W6"]  ARMS ["A B"]  RUN_ID [YYYYmmdd-HHMMSS]
+#   TASKSET [prototype] prototype (T1-T5), fesom (F1-F5), trap (W1 W2 W4 W5 W6) or long (H1); sets the
+#           default TASKS and, for fesom, trap and long, DOCS=guide
+#   TASKS ["T1 T2 T3 T4 T5" | "F1 F2 F3 F4 F5" | "W1 W2 W4 W5 W6" | "H1"]  ARMS ["A B"]  RUN_ID [YYYYmmdd-HHMMSS]
 #   TIME_LIMIT [1800] wall seconds per session (timeout; the transcript so far is kept and scored)
 #   MAX_TURNS [50] passed as --max-turns (empty: not passed)
 #   MAX_BUDGET_USD [] passed as --max-budget-usd when set (only enforced for API-key billing)
@@ -57,7 +59,8 @@ case $TASKSET in
   prototype) TASKS=${TASKS:-T1 T2 T3 T4 T5}; DOCS=${DOCS:-full} ;;
   fesom) TASKS=${TASKS:-F1 F2 F3 F4 F5}; DOCS=${DOCS:-guide} ;;
   trap) TASKS=${TASKS:-W1 W2 W4 W5 W6}; DOCS=${DOCS:-guide} ;;
-  *) echo "agent_check: unknown TASKSET=$TASKSET (prototype, fesom or trap)" >&2; exit 1 ;;
+  long) TASKS=${TASKS:-H1}; DOCS=${DOCS:-guide} ;;
+  *) echo "agent_check: unknown TASKSET=$TASKSET (prototype, fesom, trap or long)" >&2; exit 1 ;;
 esac
 ARMS=${ARMS:-A B}
 RUN_ID=${RUN_ID:-$(date +%Y%m%d-%H%M%S)}
@@ -102,7 +105,7 @@ CLAUDE_BIN=${CLAUDE_BIN:-$(command -v claude)} || die "claude CLI not found"   #
 [ -x "$CDORS_BIN" ] || die "cdors binary not found: $CDORS_BIN"
 [ -x "$CDO_BIN" ] || die "cdo 2.6.0 not found: $CDO_BIN"
 [ -x "$PY_BIN" ] || die "python (hk25) not found: $PY_BIN"
-case " $TASKS " in *" F"*|*" W"*)
+case " $TASKS " in *" F"*|*" W"*|*" H"*)
   [ -x "$PY_FESOM" ] || die "python (nereus) not found: $PY_FESOM"
   "$PY_FESOM" -I -c 'import nereus' 2>/dev/null || die "nereus does not import in $PY_FESOM"
   [ -f "$CDORS_REGIONS/basins.geojson" ] || die "no basins.geojson in CDORS_REGIONS=$CDORS_REGIONS" ;;
@@ -137,7 +140,7 @@ if [ "$DOCS" = full ] && [ -f "$REPO/docs/deviations.md" ]; then
   CDORS_DOCS+=", and docs/deviations.md (known differences from cdo)"; DOC_FILES+=("$REPO/docs/deviations.md")
 fi
 
-py_for() { case $1 in W5) echo "$PY_IFS";; F*|W*) echo "$PY_FESOM";; *) echo "$PY_BIN";; esac; }   # task -> arm-B python
+py_for() { case $1 in W5) echo "$PY_IFS";; F*|W*|H*) echo "$PY_FESOM";; *) echo "$PY_BIN";; esac; }   # task -> arm-B python
 pylibs_for() {  # task -> the arm-B python's libraries, as the trap notes name them
   case $1 in
     W5) echo "gribscan (opens the gribscan references), eccodes, cfgrib, fsspec, xarray, zarr, dask, numpy, scipy, netCDF4, pandas and healpy" ;;
@@ -147,7 +150,7 @@ pylibs_for() {  # task -> the arm-B python's libraries, as the trap notes name t
 
 prompt_for() {  # task arm
   local note key="arm $2"
-  case $1 in F*) key="arm $2 fesom";; W*) key="arm $2 trap";; esac
+  case $1 in F*) key="arm $2 fesom";; W*|H*) key="arm $2 trap";; esac
   note=$(py extract "$TASKS_MD" "$key")
   note=${note//\{CDORS\}/$CDORS_BIN}
   note=${note//\{CDORS_DOCS\}/$CDORS_DOCS}

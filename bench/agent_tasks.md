@@ -472,6 +472,57 @@ Tools: do the data reading and the computation with the command-line tool cdors 
 Tools: do the data reading and the computation with cdo 2.6.0 ({CDO}, first on PATH as cdo) and/or Python 3 with {PYLIBS} ({PYTHON}; run it as python -I). ncdump ({NCDUMP}) is available too. Do not use cdors.
 ```
 
+## Long-script task set (`TASKSET=long`)
+
+The trap set (W1–W6) did not separate the arms: Opus, Sonnet and Haiku knew every convention in Python, and a
+cdors chain saved too little over a short NumPy script to show in the cost. These tasks need a long script
+without cdors. H1 is the Atlantic overturning from the vertical velocity: element averages of w and their
+areas, the elements' wet interfaces, basin membership from a polygon, and a cumulative sum from the basin's
+closed end. In cdors it is one operator (`moc`, commit 3ffcfbb). Prepared 2026-10-20; reference job 28281059
+(`bench/agent/ref_moc.sh`, 1 min 49 s); not yet run.
+
+**Design decisions.**
+- **The prompt defines the quantity, not the method:** the streamfunction is the northward transport above a
+  depth, computed from w by continuity. It does not say where to start the sum (from the north: the Atlantic
+  is open at 34 S), whether to average w to the elements, or that w below the sea floor is 0.
+- **What the prompt fixes:** the basin (Atlantic_MOC of nereus' MOC basins, the same polygon as cdors' set
+  `moc`), the time step, and that w, not v, is used.
+- **Accepted alternatives:** pyfesom2's `xmoc_data` method (the basin masked on the nodes, outside nodes counted
+  as 0 in the element mean, arithmetic-mean centres) −6.0e-5; arithmetic-mean centres alone 0 (the same
+  1887094 elements); the nodes instead of the elements (w · `nod_area[k]` over the basin's nodes north of the
+  line) +3.4e-3. All three put the maximum at 950 m.
+- **Naive answers:** the element's sea-floor interface included (w there is not 0: the nodes are shared with
+  deeper elements) +36 % at 900 m; the whole ocean instead of the basin −19 %; the sum from the south (the
+  Atlantic is open at 34 S) −46 % at 3300 m.
+- **Tolerance:** 0.09 Sv on the strength (5.2e-3, above the nodes variant, 0.059 Sv) and 50 m on the depth (one
+  interface either side: the profile is within 0.2 % of its maximum at 900 m and 1000 m).
+- **Data read:** one time step of w (80 × 3160340 float32, 1.0 GB) and the mesh's `elem`, `nlevels`, `elem_area`
+  or `nod_area`. The reference script (`ref_moc.py`, NumPy and shapely) takes 79 s on 16 cores, cdors 24 s.
+
+| | Task | Data | Reference | Naive answers (rel. error) |
+|---|---|---|---|---|
+| H1 | AMOC at 26.5 N, January 1990: max over depth of the streamfunction from w | dart `w`, one month | 17.4749385 Sv at 950 m | sea floor included +36 %, no basin −19 %, from the south −46 % |
+
+The chain an expert would write (`M` the mesh directory, `D` the dart data directory; `cdors-3ffcfbb`, agrees with
+the reference to 1e-12 at every interface):
+
+```sh
+cdors --json outputtab,lev,value -moc,lat=26.5,regions=moc,select=Atlantic_MOC -setgrid,fesom:$M -seltimestep,1 \
+  -selname,w $D/w.fesom.1990.nc                                                    # max 17.474939 at lev 950
+```
+
+**Cost estimate for the two sessions (Opus).** Arm A should find `moc` in the guide (one recipe line) and need
+5–15 calls: $0.3–0.8. Arm B has to write the script above from scratch (mesh arrays, the elements' wet
+interfaces, polygon membership for 6.3M elements, the sum from the north) and to check it: 20–40 calls,
+$0.8–2.5, 10–25 min. **About $1.5–3 for both**, 20–40 min on one shared node.
+
+<!-- prompt H1 -->
+```text
+The AWI-CM3 historical simulation hist1950d has FESOM2 ocean output on the unstructured dart mesh (3160340 nodes, 6262485 triangular elements, 79 layers, 80 layer interfaces) in /work/ab0995/a270210/runtime/awicm3-v3.1_refactoring/TCO319L137-DART/hist1950d/outdata/fesom/, one NetCDF file of monthly means per variable and year (<variable>.fesom.<year>.nc). The mesh is in /pool/data/AWICM/FESOM2/MESHES_FESOM2.1/dart/ (fesom.mesh.diag.nc and the ASCII mesh files).
+
+Compute the strength of the Atlantic meridional overturning circulation (AMOC) at 26.5 N in January 1990, which is the first time step of w.fesom.1990.nc (the vertical velocity w, positive upward, in m/s, on the mesh nodes at the layer interfaces, dimension nz). The overturning streamfunction psi(z) at 26.5 N is the northward volume transport across 26.5 N in the Atlantic between the surface and the interface at depth z; compute it from w by continuity (do not use the horizontal velocities). The Atlantic is the region Atlantic_MOC of the MOC basin polygons of nereus (from MPAS geometric_features, MOCBasins). The AMOC strength is the maximum of psi over the interfaces. Report two numbers: the AMOC strength in Sv (10^6 m3/s) and the depth of the interface where the maximum is reached, in m.
+```
+
 ## Reference answers (machine-readable)
 
 `tol_rel`: |answer − ref| ≤ tol_rel · |ref|; `tol_abs`: |answer − ref| ≤ tol_abs. Every value must pass. A
@@ -533,7 +584,11 @@ list gives one tolerance per value (F3: the count must be exact).
                       "gauss_weight_per_point": [290.036649349]}},
   "W6": {"values": [265.801637753], "units": "K", "tol_rel": 1e-4,
          "variants": {"second_time_step": [265.872575366], "unweighted": [265.535760076],
-                      "coslat_weights": [268.509437328]}}
+                      "coslat_weights": [268.509437328]}},
+  "H1": {"values": [17.474938542, 950], "units": "Sv, m", "tol_abs": [0.09, 50],
+         "variants": {"pyfesom2_like": [17.473898413, 950], "nodes_nod_area": [17.534001, 950],
+                      "with_sea_floor": [23.739173, 900], "global": [14.238147, 950],
+                      "from_south": [9.486877, 3300]}}
 }
 ```
 
