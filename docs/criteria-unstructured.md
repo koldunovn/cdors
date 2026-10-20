@@ -180,7 +180,8 @@ Peak RSS in GB of 10⁹ bytes, as `--mem` counts. (`/usr/bin/time` reports KiB; 
   agents without cdors get the answer wrong: weights and grids other than regular lon-lat (`docs/STATUS.md`,
   follow-up 3). That set (W1, W2, W4, W5, W6; job 28256601) gave 10/10 correct again: the Python arm avoided every
   naive answer, and cdors cost 1.25× as much, because arm A checked which weights cdors had used
-  (`docs/agent-check.md`, "Trap set run").
+  (`docs/agent-check.md`, "Trap set run"). With the method stated in the results, the ratio became 1.14×
+  (0.77× without W4). With Sonnet 5.5 the ratio was 1.07×, and Sonnet's arm B also avoided every trap.
 - Start round 2 (neighbour operators, first plots) or not.
 - Publish: the shared install with `share/regions/`, its README (`docs/levante.md`) and the guide page, each after
   the exact text is approved.

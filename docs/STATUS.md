@@ -92,6 +92,10 @@ against $2.03).
    naive answer misses by 2.7e-4 to 39 % and cdors matches. **Run (job 28256601): 10/10 correct again; arm B
    (Opus 5.5) avoided every naive answer; cdors $1.85 vs $1.48 (1.25×).** Arm A had the answer early and spent
    the extra calls verifying which weights cdors used (`docs/agent-check.md`, "Trap set run").
+   **With a `method` list in the results (38ec395; jobs 28270068 and 28270070, 2026-10-20), all answers were
+   correct again (15/15).** Opus arm A cost $1.68: 1.14× arm B, 0.77× without W4, where it still tests edge
+   membership. Sonnet 5.5 also avoided every trap, and its two arms cost the same ($0.33 vs $0.31). A
+   difference in cost needs tasks with long scripts (transports through a section, MOC).
 4. **Publication, after you approve the exact text:**
    - the shared install, with `share/regions/` (the regions directory, 12 MB);
    - its README (= `docs/levante.md`, Example 7 and "Three years of FESOM2");

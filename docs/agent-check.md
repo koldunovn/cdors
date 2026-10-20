@@ -235,3 +235,45 @@ only on W2.
   result that states its method would save these calls: the weights' source and the membership rule, in `--json`
   output and in `--plan`. Examples: `per-level nod_area, dry layers excluded`; `reduced Gaussian row areas`;
   `cell_area from the grid file`; `elements by the centre of their three vertices`.
+
+### Results that state their method, and a weaker model (jobs 28270068 and 28270070, 2026-10-20)
+
+cdors 38ec395 adds a `method` list to `--json` results and `--plan`. It records the weights and their source, the
+layers cut at a depth limit, the cells a box kept and how their centres are defined, the mesh's centres and areas,
+and the grid file's coordinates. Job 28270068 reran arm A only, with the default model (Opus 5.5). Job 28270070
+ran both arms with Sonnet 5.5. All 15 answers were correct
+(`bench/agent/results-20261020-104003.md`, `results-20261020-105123.md`; 10 and 8 min).
+
+| Task | Opus A, old (32b1dbd) | Opus A, `method` (38ec395) | Opus B (job 28256601) | Sonnet A | Sonnet B |
+|---|---|---|---|---|---|
+| W1 | 5, 75, 0.20 | 5, 77, 0.21 | 3, 41, 0.19 | 2, 55, 0.07 | 2, 66, 0.07 |
+| W2 | 7, 56, 0.26 | 8, 64, 0.30 | 7, 67, 0.42 | 3, 53, 0.07 | 2, 24, 0.07 |
+| W4 | 15, 131, 0.60 | 15, 191, 0.70 | 4, 47, 0.20 | 3, 38, 0.07 | 2, 21, 0.06 |
+| W5 | 11, 153, 0.46 | 6, 42, 0.22 | 8, 120, 0.44 | 2, 17, 0.06 | 2, 51, 0.05 |
+| W6 | 8, 58, 0.33 | 5, 35, 0.23 | 5, 65, 0.22 | 2, 16, 0.06 | 2, 20, 0.05 |
+| total | 46, 472, 1.85 | 39, 409, 1.68 | 27, 340, 1.48 | 12, 178, 0.33 | 10, 182, 0.31 |
+
+Each cell gives tool calls, wall seconds and USD.
+
+- **The `method` list removed the checks on W5 and W6.** Calls fell from 11 to 6 and from 8 to 5; cost fell
+  from $0.46 to $0.22 and from $0.33 to $0.23. Arm A ran the chain, then checked only min/max and
+  missing values. Opus arm A now costs 1.14× its arm B from job 28256601. Without W4 it costs 0.77×
+  ($0.98 vs $1.27).
+- **W4 is unchanged.** Arm A had 0.02787067 at call 5. It spent the other 10 calls on elements whose centres lie
+  within a few metres of the box edges. It shifted the box by 1e-3° and 2e-5°, and listed those elements. It
+  rebuilt their centres from the vertices with awk to see whether the result depends on the definition of the
+  centre. The note says how the centres are defined, not how many cells sit on an edge, so this check is a
+  sensitivity test the note does not answer. A count of the kept cells whose centres lie within a small
+  distance of an edge would answer it; that is not implemented.
+- **The traps did not catch Sonnet either.** Arm B wrote one script per task. It used per-level `nod_area` by
+  `nlevels_nod2D`, cut the 1950–2050 m layer with a clip, and used `elem_area` with vertex-mean centres. It used
+  Gauss–Legendre weights divided by the points of each row, and `cell_area` from the ICON grid. W1 came closest
+  to a miss. Arm B printed the top, bottom and mean interface areas (the bottom one is 4.3e-4 off) and chose the
+  top area "because I believe FESOM2 uses it". It said it had not confirmed this.
+- **With Sonnet the arms cost the same:** arm A $0.33 against arm B $0.31 (1.07×), with the same wall time.
+  Sonnet sessions cost about a fifth of Opus sessions. Sonnet arm A ran the cdors chain and answered, without
+  the extra checks.
+- **Conclusion:** the five trap tasks test conventions that both models know: FESOM2 per-level areas, reduced
+  Gaussian rows and ICON `cell_area`. Neither model makes the naive mistakes. When an answer takes one Python
+  script, cdors can save only the script, and the arms cost about the same. A difference in cost needs tasks
+  where the script is long: transports through a section and the MOC, which nereus does not provide.
