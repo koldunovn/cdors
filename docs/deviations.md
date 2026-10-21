@@ -497,6 +497,11 @@ A cdors operator; cdo has none. The usual FESOM2 tool is pyfesom2's `cross_secti
   line's two ends matter, so each element keeps the chord between the two midpoints, as its east
   and north extent (dE, dN) at the element's centre. Per layer, T = Σ (u·(−dN) + v·dE)·dz over the
   crossed elements with water in the layer, in Sv for m/s.
+- **On the nodes** (`unod`, `vnod` of FESOM2 and of fesom3_jax), each crossed element
+  takes the mean of its nodes' valid values, as `toelems`, and only those nodes are read. A
+  `-toelems` right before `transport` is done the same way. Elsewhere in a chain `toelems`
+  would keep the whole field on the elements, all time steps, in memory (5.7 GB for 62 years
+  on core2_hil, `intermediate_too_large`).
 - **Sign:** positive from the right of the path to its left: northward across a west-to-east
   path, eastward across a north-to-south one. pyfesom2 fixes the sign by the section's
   orientation (zonal: northward, meridional: eastward), which is the same for paths drawn west

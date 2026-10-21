@@ -185,7 +185,8 @@ NAME
 SYNOPSIS
     cdors -transport,<lon0>,<lat0>,<lon1>,<lat1>[,<lon>,<lat>...] <east> <north> <out>
     cdors -transport,file=<GeoJSON LineString> <east> <north> <out>
-    <east>, <north>: one variable each, on the elements and layers of a mesh (FESOM2: u, v)
+    <east>, <north>: one variable each, on the layers and the elements (FESOM2: u, v) or the
+    nodes (unod, vnod: each crossed element takes its nodes' mean, as toelems) of a mesh
 PARAMETERS
     waypoints  great-circle arcs through them; put both ends on land for the whole flow
 OUTPUT

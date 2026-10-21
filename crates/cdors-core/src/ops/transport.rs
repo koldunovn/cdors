@@ -2,8 +2,10 @@
 //! section of a model mesh, per layer.
 //!
 //! `transport,<lon0>,<lat0>,<lon1>,<lat1>[,<lon>,<lat>...]` or `transport,file=<GeoJSON>`, two
-//! inputs: the eastward and the northward component (FESOM2 `u`, `v` on the elements and the
-//! layers `nz1`):
+//! inputs: the eastward and the northward component on the layers (`nz1`), on the elements
+//! (FESOM2 `u`, `v`) or on the nodes (`unod`, `vnod`: each crossed element then takes the mean
+//! of its nodes, as `toelems`; only the crossed elements' nodes are read, and `-toelems` right
+//! before `transport` is done that way too):
 //! - the path is a sequence of great-circle arcs; each element it crosses contributes the flux
 //!   across the broken line from the midpoint of the edge where the path enters it, through its
 //!   centre, to the midpoint of the edge where it leaves ([`cdors_mesh::section`]: the faces of
@@ -23,7 +25,7 @@
 //! and added (`plan::intermediate`).
 
 use super::remap::{FieldKernel, FieldLane, FieldMap, FieldVar};
-use crate::chain::OpNode;
+use crate::chain::{Input, OpNode};
 use crate::error::{Error, ErrorCode, Result};
 use crate::io::Values;
 use crate::model::{AttrValue, DType};
@@ -38,6 +40,13 @@ const TABLE: &str = "elem_nodes";
 
 pub fn handles(name: &str) -> bool {
     name == "transport"
+}
+
+/// Whether `transport` (`node`) does its input `o` itself: a `toelems` right before it, whose
+/// input it then takes on the nodes, so that only the crossed elements' nodes are read instead of
+/// the whole field on the elements as an intermediate (`plan::describe_tree`).
+pub fn absorbs(node: &OpNode, o: &OpNode) -> bool {
+    handles(&node.name) && o.name == "toelems" && o.args.is_empty() && o.inputs.len() == 1
 }
 
 fn usage() -> &'static str {
@@ -77,9 +86,11 @@ fn parse_path(args: &[String]) -> Result<Vec<(f64, f64)>> {
 }
 
 struct TransportMap {
-    /// The crossed elements in path order (their index among the cells read), their layers with
-    /// water, and per component the coefficient of its value (m): u with −ΔN, v with ΔE.
-    elems: Vec<u32>,
+    /// The crossed elements in path order: the indices among the cells read of their values
+    /// (`per` per element: 1 on the elements, its nodes on the nodes, averaged), their layers
+    /// with water, and per component the coefficient of its value (m): u with −ΔN, v with ΔE.
+    cells: Vec<u32>,
+    per: usize,
     wet: Vec<Range<usize>>,
     coef: [Vec<f64>; 2],
     /// Thickness of each mesh layer (m).
@@ -93,13 +104,21 @@ struct TransportMap {
 impl TransportMap {
     fn field<T: Copy + Into<f64>>(&self, var: usize, x: &[T], k: usize) -> f64 {
         let (mut s, mut any) = (0.0, false);
-        for (i, &e) in self.elems.iter().enumerate() {
+        for (i, c) in self.cells.chunks_exact(self.per).enumerate() {
             if !self.wet[i].contains(&k) {
                 continue;
             }
-            let v: f64 = x[e as usize].into();
-            if v.is_finite() {
-                s += self.coef[var][i] * v;
+            // the mean of the valid values (toelems' renormalised weights)
+            let (mut sum, mut n) = (0.0, 0usize);
+            for &j in c {
+                let v: f64 = x[j as usize].into();
+                if v.is_finite() {
+                    sum += v;
+                    n += 1;
+                }
+            }
+            if n > 0 {
+                s += self.coef[var][i] * sum / n as f64;
                 any = true;
             }
         }
@@ -144,10 +163,10 @@ fn not_on_mesh(var: &str, what: String) -> Error {
         .with("operator", "transport".to_owned())
         .with("variable", var.to_owned())
         .with_hint(
-            "transport integrates a velocity on the elements and layers of a model mesh: attach \
-             the mesh to both inputs (-setgrid,fesom:<dir>) and select the eastward and the \
-             northward component (FESOM2: u and v on elem and nz1), without a horizontal \
-             selection",
+            "transport integrates a velocity on the layers and the elements or nodes of a model \
+             mesh: attach the mesh to both inputs (-setgrid,fesom:<dir>) and select the eastward \
+             and the northward component (FESOM2: u and v on elem and nz1, or unod and vnod on \
+             nod2), without a horizontal selection",
         )
 }
 
@@ -196,12 +215,32 @@ pub fn describe(node: &OpNode, mut inputs: Vec<Desc>, srcs: &mut Sources) -> Res
     let Some(t) = mesh.table(TABLE) else {
         return Err(not_on_mesh(&u.name, format!("the mesh {} has no {TABLE} table", mesh.name)));
     };
-    if place.name != t.rows_place {
+    let on_nodes = place.name == t.cols_place;
+    if place.name != t.rows_place && !on_nodes {
         return Err(not_on_mesh(
             &u.name,
-            format!("it is on the {} of the mesh {}, not on its {}", place.name, mesh.name, t.rows_place),
+            format!(
+                "it is on the {} of the mesh {}, not on its {} or {}",
+                place.name, mesh.name, t.rows_place, t.cols_place
+            ),
         ));
     }
+    let toelems = node
+        .inputs
+        .iter()
+        .any(|i| matches!(i, Input::Op(o) if absorbs(node, o)));
+    if toelems && !on_nodes {
+        return Err(not_on_mesh(
+            &u.name,
+            format!(
+                "toelems before transport: it is on the {} of the mesh {}, not on its {}",
+                place.name, mesh.name, t.cols_place
+            ),
+        ));
+    }
+    let elements = mesh
+        .place(&t.rows_place)
+        .ok_or_else(|| Error::internal("no element place"))?;
     if g.size() != place.size || !g.sel[0].is_identity(place.size) {
         return Err(not_on_mesh(
             &u.name,
@@ -247,8 +286,8 @@ pub fn describe(node: &OpNode, mut inputs: Vec<Desc>, srcs: &mut Sources) -> Res
         return Err(bad(format!("transport: the components have units '{units}' and '{vunits}'")));
     };
     let vertical = mesh.vertical.as_ref();
-    let (Some(z), Some(wet)) = (vertical, vertical.and_then(|z| z.wet(&place.name))) else {
-        return Err(not_on_mesh(&u.name, format!("the mesh {} has no wet levels of its {}", mesh.name, place.name)));
+    let (Some(z), Some(wet)) = (vertical, vertical.and_then(|z| z.wet(&t.rows_place))) else {
+        return Err(not_on_mesh(&u.name, format!("the mesh {} has no wet levels of its {}", mesh.name, t.rows_place)));
     };
     let Some(radius) = models::radius_m(&mesh) else {
         return Err(not_on_mesh(&u.name, format!("the mesh {} has no planet radius", mesh.name)));
@@ -261,7 +300,7 @@ pub fn describe(node: &OpNode, mut inputs: Vec<Desc>, srcs: &mut Sources) -> Res
     let en = t.csr.get().map_err(|e| {
         Error::new(ErrorCode::BadData, format!("transport: mesh {}: {e}", mesh.name))
     })?;
-    let sec = section::crossings(&nodes.lon, &nodes.lat, &en, &place.lon, &place.lat, &waypoints)
+    let sec = section::crossings(&nodes.lon, &nodes.lat, &en, &elements.lon, &elements.lat, &waypoints)
         .map_err(|e| bad(format!("transport: {e}")))?;
     if sec.crossings.is_empty() {
         return Err(bad(format!(
@@ -286,12 +325,21 @@ pub fn describe(node: &OpNode, mut inputs: Vec<Desc>, srcs: &mut Sources) -> Res
             "message": "the path starts or ends in the ocean; the elements where it does are left out",
         }));
     }
-    // only the crossed elements are read (their chunks), renumbered in ascending order
-    let mut keep: Vec<usize> = sec.crossings.iter().map(|c| c.elem as usize).collect();
+    // only the crossed elements, or their nodes, are read (their chunks), renumbered in
+    // ascending order
+    let members = |e: u32| -> Vec<usize> {
+        if on_nodes {
+            en.row(e as usize).iter().map(|&n| n as usize).collect()
+        } else {
+            vec![e as usize]
+        }
+    };
+    let per = if on_nodes { en.row(0).len() } else { 1 };
+    let mut keep: Vec<usize> = sec.crossings.iter().flat_map(|c| members(c.elem)).collect();
     keep.sort_unstable();
     keep.dedup();
-    let at = |e: u32| keep.binary_search(&(e as usize)).expect("kept") as u32;
-    let elems: Vec<u32> = sec.crossings.iter().map(|c| at(c.elem)).collect();
+    let at = |c: usize| keep.binary_search(&c).expect("kept") as u32;
+    let cells: Vec<u32> = sec.crossings.iter().flat_map(|c| members(c.elem)).map(at).collect();
     let coef = [
         sec.crossings.iter().map(|c| -c.north * radius).collect::<Vec<_>>(),
         sec.crossings.iter().map(|c| c.east * radius).collect::<Vec<_>>(),
@@ -304,7 +352,7 @@ pub fn describe(node: &OpNode, mut inputs: Vec<Desc>, srcs: &mut Sources) -> Res
         .collect::<Vec<_>>()
         .join(" ");
     let length_km = sec.length * radius / 1e3;
-    let centres = models::place_method(&mesh, &place.name).map_or("", |(c, _)| c);
+    let centres = models::place_method(&mesh, &t.rows_place).map_or("", |(c, _)| c);
     let mut note = serde_json::json!({
         "operator": token,
         "transport": format!(
@@ -328,6 +376,16 @@ pub fn describe(node: &OpNode, mut inputs: Vec<Desc>, srcs: &mut Sources) -> Res
         "layers": "dz from the mesh's interfaces (|zbar| differences), full cells, each element's wet layers",
         "missing": "a layer no crossed element has water in",
     });
+    if on_nodes {
+        note["nodes"] = format!(
+            "the components on the {}: each crossed element takes the mean of its nodes' valid \
+             values (as toelems{}), {} nodes read",
+            place.name,
+            if toelems { ", which the -toelems before transport does here, for these elements only" } else { "" },
+            keep.len()
+        )
+        .into();
+    }
     if sec.open_ends > 0 {
         note["open_ends"] = format!(
             "{} element(s) where the path starts or ends in the ocean, left out",
@@ -337,7 +395,8 @@ pub fn describe(node: &OpNode, mut inputs: Vec<Desc>, srcs: &mut Sources) -> Res
     }
     let info = serde_json::json!({ "mesh_weights": [{
         "operator": token, "weights": "section faces", "mesh": mesh.name,
-        "elements": elems.len(), "bytes": 36 * elems.len() as u64,
+        "elements": sec.crossings.len(), "cells_read": keep.len(),
+        "bytes": (32 + 4 * per as u64) * sec.crossings.len() as u64,
     }]});
 
     // one stage folds both components; the intermediate is then added
@@ -393,7 +452,8 @@ pub fn describe(node: &OpNode, mut inputs: Vec<Desc>, srcs: &mut Sources) -> Res
         method: Vec::new(),
     };
     let map = TransportMap {
-        elems,
+        cells,
+        per,
         wet: wet_r,
         coef,
         dz: z.layer_thickness(),

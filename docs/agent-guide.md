@@ -71,7 +71,8 @@ cdors -transect,-65,-55,-60,-65 -setgrid,fesom:mesh -selname,temp in.nc drake.nc
 cdors --json outputtab,lev,value -moc,lat=26.5,regions=moc,select=Atlantic_MOC -setgrid,fesom:mesh -selname,w w.nc  # AMOC at 26.5 N, Sv per interface
 ```
 
-`transport` takes two inputs, the eastward and the northward velocity on the elements (FESOM2 `u`, `v`):
+`transport` takes two inputs, the eastward and the northward velocity on the elements (FESOM2 `u`, `v`) or on
+the nodes (`unod`, `vnod`; no `-toelems` needed):
 `cdors --json outputtab,value -vertsum -transport,<lon0>,<lat0>,<lon1>,<lat1> -setgrid,fesom:mesh -selname,u u.nc
 -setgrid,fesom:mesh -selname,v v.nc` is the transport across the great-circle path in Sv, per layer before
 `-vertsum`. The sign is positive from the right of the path to its left, and both ends of the path should be on land.

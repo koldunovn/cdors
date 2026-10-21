@@ -1537,7 +1537,9 @@ def mesh_moc(args, inputs, out):
 @reference()
 def mesh_transport(args, inputs, out):
     """transport,<lon0>,<lat0>,<lon1>,<lat1>[,...] of the two components the row's -selname
-    pick (eastward, then northward; both from {in}) on the elements and layers of a FESOM2 mesh.
+    pick (eastward, then northward; both from {in}) on the layers and the elements of a FESOM2
+    mesh, or on its nodes: then each element takes the mean of its nodes' valid values (toelems,
+    also when the row has -toelems before them).
     Each great-circle arc a -> b cuts the edges whose nodes lie on opposite sides of its plane
     (n . p >= 0 counts as the left), where the edge's chord meets the plane (normalised), if that
     point's angle from a about n lies in [0, |ab|]; each element's cuts in path order pair up
@@ -1545,7 +1547,7 @@ def mesh_transport(args, inputs, out):
     (normalised node sums) projected on east and north at the element's centre (normalised mean
     of the nodes' unit vectors), times r_earth = 6367500 m; T(k) = sum of (u * -dN + v * dE) *
     dz_k over the crossed elements wet at k (top_e <= k < wet_e) with finite values, times 1e-6
-    (Sv); missing where there is none."""
+    (Sv) for m/s; missing where there is none."""
     op = next(a for a in args if a.startswith("-transport,"))
     nums = [float(x) for x in op.split(",")[1:]]
     pts = list(zip(nums[0::2], nums[1::2]))
@@ -1596,12 +1598,22 @@ def mesh_transport(args, inputs, out):
         copy_time(src, dst)
         xu, lev, _ = to_tlc(src[names[0]], args)
         xv, _, _ = to_tlc(src[names[1]], args)
-        w = wet(mesh, xu.shape[2], lev, False)[:, ee]          # (levels, crossed)
-        fu = np.where(w[None], xu[:, :, ee], np.nan)
-        fv = np.where(w[None], xv[:, :, ee], np.nan)
+        scale = 1e-6 if src[names[0]].getncattr("units") == "m/s" else 1.0
+
+        def crossed(x):
+            if x.shape[2] == len(el):
+                return x[:, :, ee]
+            x = np.where(wet(mesh, x.shape[2], lev, False)[None], x, np.nan)[:, :, el[ee]]
+            n = np.isfinite(x).sum(axis=3)
+            with np.errstate(invalid="ignore"):
+                return np.where(n > 0, np.nan_to_num(x).sum(axis=3) / n, np.nan)
+
+        w = wet(mesh, len(el), lev, False)[:, ee]          # (levels, crossed)
+        fu = np.where(w[None], crossed(xu), np.nan)
+        fv = np.where(w[None], crossed(xv), np.nan)
         f = np.nan_to_num(fu) * -dN + np.nan_to_num(fv) * dE
         has = np.isfinite(fu) | np.isfinite(fv)
-        res = np.where(has.any(axis=2), f.sum(axis=2) * dz[lev][None, :] * 1e-6, np.nan)
+        res = np.where(has.any(axis=2), f.sum(axis=2) * dz[lev][None, :] * scale, np.nan)
         dst.createDimension("lev", len(lev))
         o = dst.createVariable("transport", "f8", ("time", "lev"), fill_value=netCDF4.default_fillvals["f8"])
         o[:] = np.ma.masked_invalid(res)

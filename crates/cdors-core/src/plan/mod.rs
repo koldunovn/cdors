@@ -1189,6 +1189,12 @@ pub fn describe_tree(node: &OpNode, srcs: &mut Sources) -> Result<Desc> {
     let used = crate::ops::used_inputs(node);
     let mut inputs = Vec::with_capacity(used);
     for i in &node.inputs[..used] {
+        // `-transport -toelems <nodes>`: transport takes the nodes itself and reads only the
+        // crossed elements' nodes, not the whole field on the elements as an intermediate
+        let i = match i {
+            Input::Op(o) if crate::ops::transport::absorbs(node, o) => &o.inputs[0],
+            i => i,
+        };
         inputs.push(match i {
             Input::Path(p) => {
                 let si = srcs.open(p)?;
