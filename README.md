@@ -182,8 +182,8 @@ a cell belongs to a region if its centre is inside (regionmask's rules), and `fi
 wet cells outside every polygon to the nearest region. Built into the binary: `ar6.all`,
 `ar6.land`, `ar6.ocean` (IPCC AR6, Iturbide et al. 2020, CC-BY 4.0), `srex`, `giorgi`,
 `prudence` (via regionmask, MIT) and `nino` (NOAA CPC's Niño boxes). In the regions directory
-only (`$CDORS_REGIONS`, else `share/regions/` of the install; `tools/export_regions.py` writes
-it): Natural Earth v5.1.2 (public domain) `ne.countries_50/110`, `ne.land_50/110`,
+only (`$CDORS_REGIONS`, else `share/regions/` of the install, for a development build
+`fixtures/regions/` of the target directory; `tools/export_regions.py` writes it): Natural Earth v5.1.2 (public domain) `ne.countries_50/110`, `ne.land_50/110`,
 `ne.ocean_basins_50`, and nereus' ocean basins `basins` and `moc` (from MPAS
 geometric_features, made from the IHO seas via marineregions.org, CC-BY 4.0). Every output
 carries the set's source, licence and attribution as attributes; `cdors help regmask` lists

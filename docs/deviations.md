@@ -236,6 +236,14 @@ its mesh is read from `fesom.mesh.diag.nc` alone (no ASCII mesh files).
   (`area_weights: "mesh_per_level"`) and counts the per-level areas in its memory estimate
   (`memory.parts.mesh_weights`). On dart, the surface area used for every layer gives a
   0.40 % higher Atlantic 0–700 m heat content than the per-level areas.
+- **The levels and areas are the file's.** cdors computes none of the geometry: the wet levels
+  (`nlevels_nod2D`, `nlevels`, `ulevels*`), the per-level node areas (`nod_area(nz, nod2)`),
+  `elem_area`, `zbar` and the coordinates are read from `fesom.mesh.diag.nc` as written. A model
+  with other rules on a FESOM2 mesh needs a mesh.diag written with its own geometry. Example:
+  FESOM_F (fesom3_jax) makes an element as deep as its shallowest node and gives a node one area
+  at every wet level; on core2_hil FESOM2's file of the same mesh has other per-level areas and
+  4 % of the element depths differ. Data on that mesh then share FESOM2's sizes, so `setgrid`
+  cannot tell the files apart.
 - **`tonodes`, `toelems` (cdors).** Map a variable between the places of the mesh: `toelems` is
   the mean of an element's three nodes, `tonodes` the `elem_area`-weighted mean of the elements
   around a node. Missing values are left out (weights renormalised), and levels outside the

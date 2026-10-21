@@ -57,7 +57,8 @@ between two grids runs cdo once to make the weights (cached in `$CDORS_CACHE`).
 ## Model meshes (FESOM2)
 
 `-setgrid,fesom:<dir>` (the directory with `fesom.mesh.diag.nc`) gives the data the mesh: cell areas per level,
-layers and each cell's wet levels. Put it right above the input or its selections. Levels below the sea floor
+layers and each cell's wet levels, all as that file has them. A model with other bottom or area rules on the same
+mesh (FESOM_F) needs its own mesh.diag. Put it right above the input or its selections. Levels below the sea floor
 (stored as 0) become missing, so `fld*`, `vert*`, `reg*` and sections skip them. `cdors mesh info fesom:<dir>`
 describes the mesh. Operators cdo lacks have `"origin": "cdors"` in `ops --json`; `cdors help <op>` explains them.
 

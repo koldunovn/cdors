@@ -4,7 +4,8 @@
 //!   subsets `ar6.land` and `ar6.ocean`, `srex`, `giorgi`, `prudence`, `nino`); the large ones
 //!   (`ne.<set>` from Natural Earth, nereus' `basins` and `moc`) are read unsimplified from the
 //!   regions directory ([`regions_dir`]: `$CDORS_REGIONS`, else `share/regions/` next to the
-//!   install's `bin/`); anything ending in `.geojson` or containing `/` is a GeoJSON path.
+//!   install's `bin/`, for a development build `fixtures/regions/` of the target directory);
+//!   anything ending in `.geojson` or containing `/` is a GeoJSON path.
 //! - **Files**: a GeoJSON FeatureCollection of Polygons and MultiPolygons (lon/lat degrees), one
 //!   feature per region with the properties `name`, `abbrev` and `number` (all optional), and
 //!   an optional foreign member `cdors` with `name`, `overlap`, `source`, `license`,
@@ -86,13 +87,17 @@ pub struct RegionSet {
 }
 
 /// The regions directory: `$CDORS_REGIONS`, else `<prefix>/share/regions` for a binary in
-/// `<prefix>/bin`.
+/// `<prefix>/bin`; for a development build in `<target>/release` (no `share/regions` there)
+/// `<target>/fixtures/regions`, where `tests/make_fixtures.sh` puts the catalog.
 pub fn regions_dir() -> Option<PathBuf> {
     if let Some(d) = std::env::var_os("CDORS_REGIONS").filter(|d| !d.is_empty()) {
         return Some(PathBuf::from(d));
     }
     let exe = std::env::current_exe().ok()?;
-    Some(exe.parent()?.parent()?.join("share").join("regions"))
+    let prefix = exe.parent()?.parent()?;
+    let share = prefix.join("share").join("regions");
+    let dev = prefix.join("fixtures").join("regions");
+    Some(if !share.is_dir() && dev.is_dir() { dev } else { share })
 }
 
 /// Opens a set by catalog name or GeoJSON path.
