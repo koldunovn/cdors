@@ -3,7 +3,7 @@
 ## Round 1: analysis on FESOM2 meshes (2026-10-19)
 
 Briefing for Nikolay. Plan with per-task notes: `docs/plans/completed/20261018-unstructured-round1.md`. The four criteria:
-`docs/criteria-unstructured.md`. Nothing of round 1 is pushed, published or installed yet.
+`docs/criteria-unstructured.md`. Round 1 is installed (2026-10-21, `8226cec`); nothing is pushed or published yet.
 
 **In short.** All 15 tasks are done, and three of the four criteria are met. Correctness, speed and memory are met:
 the warm heat-content row passes when measured warm (5.9–6.5 s), and since `25aea2f` the heat content peaks at
@@ -104,11 +104,11 @@ against $2.03).
    **The second, the Drake Passage transport from u and v (H2, the new operator `transport`, 8e48256; job
    28291911), cost 0.57×** ($0.31 vs $0.55, 90 s vs 233 s), both correct. Over H1 and H2 together the cost is 0.48× and the wall
    time 0.31×.
-4. **Publication, after you approve the exact text:**
-   - the shared install, with `share/regions/` (the regions directory, 12 MB);
-   - its README (= `docs/levante.md`, Example 7 and "Three years of FESOM2");
-   - the guide page;
-   - the push.
+4. **The shared install is updated** (2026-10-21, `cdors-0.1.0-8226cec`, with `share/regions/` and the README =
+   `docs/levante.md`); the earlier binaries stay in `libexec/`. It follows the first outside feedback, from a
+   fesom3_jax analysis: node velocities in `transport` (a 62-year Drake chain no longer runs out of memory), threads
+   from the Slurm allocation, `shifttime` for means stamped at the end of their interval, the regions directory of a
+   development build. **Still needs your approval of the exact text:** the guide page and the push.
 
 **Decisions for you.** Whether to start round 2 (neighbour operators and the first plots). Whether `dcw:` should map
 to Natural Earth's countries.
