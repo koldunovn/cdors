@@ -5,8 +5,9 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=32
 #SBATCH --hint=nomultithread
-#SBATCH --mem=64G
+#SBATCH --mem=28G
 #SBATCH --output=/scratch/a/a270088/cdors-bench/agentcheck-%j.out
+# --mem: the shared partition grants one core per 940 MB, so more memory than the cores need bills more cores.
 # Agent check (bench/agent_check.sh) on a compute node instead of the login node; the sessions run one
 # after another and need api.anthropic.com, which Levante compute nodes reach. TASKSET, TASKS, ARMS and
 # CDORS_BIN come from the environment of sbatch (--export=ALL is the default), e.g.

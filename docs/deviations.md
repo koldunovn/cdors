@@ -71,9 +71,11 @@ cdo's percentiles are approximate (`bin` rows).
 - **cdo options that cdors does not have are refused** (`bad_arguments`, naming the option): `-k`
   (`--chunks` instead), `-r`, `-a`, `-R`, `-t`, `-p` and the other single-letter options not
   listed by `cdors --help`. cdo's `-L` (serialised I/O) is accepted and has no effect.
-- **Threads.** cdo computes on one thread unless `-P` says otherwise. cdors uses every core
-  available to the process (in a Slurm job, those of the allocation), at most 16 outside Slurm
-  jobs (also with a larger `-P`), and keeps 64–128 reads in flight (`--io-threads`).
+- **Threads.** cdo computes on one thread unless `-P` says otherwise. cdors uses one thread per
+  physical core available to the process (SMT siblings counted once; in a Slurm job at most
+  `SLURM_CPUS_PER_TASK`, since Slurm may grant more cores than asked, on Levante's shared
+  partition one per 940 MB of `--mem`), at most 16 outside Slurm jobs (also with a larger `-P`),
+  and keeps 64–128 reads in flight (`--io-threads`).
 - **Exit codes.** cdo exits with 1 on every error it reports. cdors separates usage errors
   (1), data errors (2), I/O errors worth retrying (3) and refusals (4: read limit, too many
   values, existing output), and with `--json` reports each error as one JSON object with a

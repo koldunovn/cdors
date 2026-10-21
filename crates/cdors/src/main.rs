@@ -24,7 +24,8 @@ const USAGE: &str =
 
 options:
   -O                  overwrite existing outputs
-  -P <n>              number of compute threads (default: all cores, at most 16 outside Slurm)
+  -P <n>              number of compute threads (default: one per physical core, in a Slurm
+                      job at most SLURM_CPUS_PER_TASK, at most 16 outside Slurm)
   --io-threads <n>    blocking reads in flight (default: 128 in Slurm jobs, 64 on login
                       nodes and for URLs)
   -f <fmt>            output format: nc4, nc4c (written as nc4), nc (64-bit offset), zarr,

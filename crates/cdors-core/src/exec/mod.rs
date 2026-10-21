@@ -72,16 +72,45 @@ pub trait Writer: Send + Sync {
     }
 }
 
-/// Compute threads: `-P`, else all cores of the allocation, capped at 16 outside Slurm jobs
-/// (shared login nodes).
+/// Compute threads: `-P`, else one per physical core the process may run on, inside a Slurm job
+/// at most `SLURM_CPUS_PER_TASK`; capped at 16 outside Slurm jobs (shared login nodes). The
+/// process's CPU set counts both SMT threads of a core, and Slurm may grant more cores than
+/// asked (on Levante's shared partition, one per 940 MB of `--mem`).
 pub fn default_threads(cmd: &Command) -> usize {
-    let avail = std::thread::available_parallelism().map_or(4, |n| n.get());
-    let n = cmd.options.threads.unwrap_or(avail);
+    let avail = physical_cores()
+        .or_else(|| std::thread::available_parallelism().ok().map(|n| n.get()))
+        .unwrap_or(4);
+    let asked = std::env::var("SLURM_CPUS_PER_TASK")
+        .ok()
+        .and_then(|s| s.trim().parse::<usize>().ok())
+        .filter(|&n| n > 0);
+    let n = cmd
+        .options
+        .threads
+        .unwrap_or_else(|| asked.map_or(avail, |a| a.min(avail)));
     if std::env::var_os("SLURM_JOB_ID").is_none() {
         n.min(16)
     } else {
         n
     }
+}
+
+/// Physical cores in the process's CPU set: its CPUs with SMT siblings counted once (Linux:
+/// the affinity mask and `/sys/devices/system/cpu/cpu<N>/topology/thread_siblings_list`).
+fn physical_cores() -> Option<usize> {
+    let mut set: libc::cpu_set_t = unsafe { std::mem::zeroed() };
+    // SAFETY: `set` is a valid cpu_set_t of the size passed
+    let rc = unsafe { libc::sched_getaffinity(0, std::mem::size_of::<libc::cpu_set_t>(), &mut set) };
+    if rc != 0 {
+        return None;
+    }
+    let cpus = (0..libc::CPU_SETSIZE as usize).filter(|&c| unsafe { libc::CPU_ISSET(c, &set) });
+    let mut cores = std::collections::BTreeSet::new();
+    for c in cpus {
+        let p = format!("/sys/devices/system/cpu/cpu{c}/topology/thread_siblings_list");
+        cores.insert(std::fs::read_to_string(p).ok()?.trim().to_owned());
+    }
+    (!cores.is_empty()).then_some(cores.len())
 }
 
 /// Blocking reads in flight: `--io-threads`, else 128 inside a Slurm job and 64 on login nodes or

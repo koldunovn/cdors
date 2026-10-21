@@ -4,10 +4,11 @@
 #SBATCH --account=ab0995
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=16
-#SBATCH --mem=64G
+#SBATCH --mem=14G
 #SBATCH --hint=nomultithread
 #SBATCH --time=00:40:00
 #SBATCH --output=/scratch/a/a270088/cdors-bench/transport-refs-%j.log
+# --mem: the shared partition grants one core per 940 MB, so more memory than the cores need bills more cores.
 #
 # Agent check, long-script task H2 (volume transport through Drake Passage from u and v on dart): the
 # reference and its variants (bench/agent/ref_transport.py, independent of cdors), then cdors' chain for the

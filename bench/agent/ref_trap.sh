@@ -4,10 +4,11 @@
 #SBATCH --account=ab0995
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=32
-#SBATCH --mem=64G
+#SBATCH --mem=28G
 #SBATCH --hint=nomultithread
 #SBATCH --time=00:40:00
 #SBATCH --output=/scratch/a/a270088/cdors-bench/trap-refs-%j.log
+# --mem: the shared partition grants one core per 940 MB, so more memory than the cores need bills more cores.
 #
 # Agent check, trap candidates (bench/agent/ref_trap.py): references and naive answers, independent of
 # cdors, then the chain an agent would naturally write with cdors, to check that it gives the reference.
