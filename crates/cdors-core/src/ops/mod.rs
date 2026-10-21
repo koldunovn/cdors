@@ -33,6 +33,7 @@ pub mod remap;
 pub mod runstat;
 pub mod sample;
 pub mod select;
+pub mod settime;
 pub mod timstat;
 pub mod vertical;
 pub mod ymonarith;
@@ -231,6 +232,7 @@ const IMPLEMENTED: &[&str] = &[
     "selmon",
     "selseason",
     "sellonlatbox",
+    "shifttime",
     "add",
     "sub",
     "mul",
@@ -431,6 +433,15 @@ fn build_registry() -> Vec<OpSpec> {
             ],
             Selection,
             "Select a longitude/latitude box",
+            false,
+        ),
+        op(
+            "shifttime",
+            one,
+            1,
+            vec![arg("shiftValue", Str)],
+            Pointwise,
+            "Shift the timesteps and their bounds by a time interval (e.g. -1sec, 3hours, -1mon)",
             false,
         ),
         op(
@@ -997,6 +1008,10 @@ pub(crate) fn fold_note(
 
 fn describe_op(node: &OpNode, inputs: Vec<Desc>, srcs: &mut Sources) -> Result<Desc> {
     let spec = require_implemented(node)?;
+    // time metadata only: a fold before it stays pending
+    if settime::handles(&node.name) {
+        return settime::describe(node, inputs);
+    }
     // the result of a fold used as input ends the inner stage: it is kept in memory as an
     // intermediate and read back like a stored dataset (`plan::intermediate`)
     let inputs = inputs

@@ -30,6 +30,8 @@ It never prompts and never reads stdin. Add `--json` to any command for machine-
 - Put selections innermost: `-selname,tas`, `-selyear,2000/2009`, `-selmon,6/8`, `-selseason,JJA`,
   `-seldate,2000-01-01,2000-12-31`, `-seltimestep,1/10`, `-sellevel,500`,
   `-sellonlatbox,west,east,south,north`. They decide which chunks are read.
+- Date selections go by the timestamp. A mean stamped at the end of its interval (00:00 on 1 January of the next
+  year, without `time_bnds`) is selected under the next year: `-selyear,1990 -shifttime,-1sec` takes the 1990 mean.
 - Operators with two inputs take them in order: `-sub -timmean a.zarr -timmean b.zarr out.nc`.
 - Several files as one input: a quoted glob (`'dir/*.nc'`), or `-mergetime a b` / `-mergetime [ a b ]`
   (files or stores only; times must not overlap).

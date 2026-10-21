@@ -364,6 +364,13 @@ pub fn notes(name: &str) -> Vec<String> {
     if name == "hpdegrade" {
         n.push("zoom=0 degrades to nside 1, as cdo 2.6.5 [Remapping: hpdegrade,zoom=0]");
     }
+    if name == "shifttime" {
+        n.push(
+            "a day the new month does not have becomes its last day (cdo keeps it: 2000-02-31); \
+             the argument needs a whole number and an unambiguous unit (cdo rounds 2.6day, \
+             guesses 1 or 1m) [Time axis: shifttime]",
+        );
+    }
     if is(&["seltimestep", "seldate", "selyear", "selmon", "selseason"]) {
         n.push(
             "a selection that leaves no timestep fails before reading (bad_arguments), as cdo \

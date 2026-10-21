@@ -14,6 +14,19 @@ exact    | -seldate,2001-02-27,2001-03-02T12:00:00 {in} | r36x18_std hpz2_noleap
 exact    | -selyear,2001 {in}                          | r36x18_std hpz2_noleap unst_360
 exact    | -selmon,2/3 {in}                            | r36x18_std hpz2_noleap unst_360
 exact    | -selseason,DJF {in}                         | r36x18_std hpz2_noleap unst_360
+exact    | -shifttime,-1day {in}                       | r36x18_std hpz2_noleap unst_360
+exact    | -shifttime,3hours {in}                      | r36x18_std
+exact    | -shifttime,1year {in}                       | hpz2_noleap
+exact    | -shifttime,-1mon {in}                       | unst_360
+exact    | -shifttime,-2months -seltimestep,1/28 {in}  | r36x18_std
+exact    | -shifttime,-12hours {in}                    | r36x18_std_ymonmean   # with time bounds
+exact    | -shifttime,-1sec {in}                       | fesom_pi_data   # seconds since: exact in cdo too
+exact    | -shifttime,-1day -monmean {in}              | r36x18_std   # the fold stays pending
+exact    | -selmon,12 -shifttime,-1day -seltimestep,1/40 {in} | r36x18_std
+json:(.out.records | map(.date) | index("1999-02-28") != null) and (.out.method | map(select(.operator | startswith("shifttime")))[0].days | test("^1 date")) | --json outputtab,date,value -fldmean -selyear,1999 -shifttime,-1year -seltimestep,55/65 {in} | r36x18_std
+err:bad_arguments        | -shifttime,1 {in}                           | r36x18_std
+err:bad_arguments        | -shifttime,1m {in}                          | r36x18_std
+err:bad_arguments        | -shifttime,2.6day {in}                      | r36x18_std
 exact    | -sellonlatbox,-30,90,0,60 {in}              | r36x18_std hpz2_noleap unst_360
 exact    | -sellonlatbox,300,60,-45,10 {in}            | r36x18_std hpz2_noleap unst_360
 exact    | -add {in} {in2}                             | r36x18_std hpz2_noleap unst_360

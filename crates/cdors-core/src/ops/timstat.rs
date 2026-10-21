@@ -32,7 +32,7 @@ use crate::io::Values;
 use crate::model::timegroup::{
     ClimTracker, Climatology, ClosedGroup, GroupTracker, Member, Period, SeasonStart, TimestatDate,
 };
-use crate::model::{AttrValue, Attrs, DimRole, TimeStep, TimeUnit, TimeUnits};
+use crate::model::{AttrValue, Attrs, CalDateTime, DimRole, TimeStep, TimeUnit, TimeUnits};
 use crate::plan::stage::{FoldKernel, FoldState, Tile};
 use crate::plan::tiling::TileBox;
 use crate::plan::{Desc, Fold, Sources, TimeDesc};
@@ -174,12 +174,23 @@ pub(crate) fn members(t: &TimeDesc) -> Vec<Member> {
 /// they can be encoded exactly, otherwise in days since the same reference
 /// (`docs/deviations.md`).
 pub(crate) fn grouped_time(t: &TimeDesc, closed: &[ClosedGroup]) -> TimeDesc {
+    let stamps: Vec<CalDateTime> = closed.iter().map(|c| c.timestamp).collect();
+    retime(t, &stamps, closed.iter().map(|c| c.bounds).collect())
+}
+
+/// `t` with the timestamps `stamps` and the bounds `bounds`, in its units where they can be
+/// encoded, otherwise (months, years) in days since the same reference.
+pub(crate) fn retime(
+    t: &TimeDesc,
+    stamps: &[CalDateTime],
+    bounds: Option<Vec<[CalDateTime; 2]>>,
+) -> TimeDesc {
     let cal = t.axis.calendar;
     let mut time = t.clone();
     let reference = time.axis.reference;
-    if closed
+    if stamps
         .iter()
-        .any(|c| time.axis.units.encode(&c.timestamp, cal).is_none())
+        .any(|d| time.axis.units.encode(d, cal).is_none())
     {
         time.axis.units = TimeUnits::Relative {
             unit: TimeUnit::Day,
@@ -197,15 +208,13 @@ pub(crate) fn grouped_time(t: &TimeDesc, closed: &[ClosedGroup]) -> TimeDesc {
         );
     }
     let units = time.axis.units.clone();
-    let enc = |d: &crate::model::CalDateTime| units.encode(d, cal).unwrap_or(f64::NAN);
-    let step = |d: crate::model::CalDateTime| TimeStep {
+    let enc = |d: &CalDateTime| units.encode(d, cal).unwrap_or(f64::NAN);
+    let step = |d: CalDateTime| TimeStep {
         datetime: d,
         seconds: d.seconds_since(&reference, cal),
     };
-    time.raw = closed.iter().map(|c| enc(&c.timestamp)).collect();
-    time.axis.steps = closed.iter().map(|c| step(c.timestamp)).collect();
-    let bounds: Option<Vec<[crate::model::CalDateTime; 2]>> =
-        closed.iter().map(|c| c.bounds).collect();
+    time.raw = stamps.iter().map(enc).collect();
+    time.axis.steps = stamps.iter().map(|&d| step(d)).collect();
     time.raw_bounds = bounds
         .as_ref()
         .map(|b| b.iter().map(|p| [enc(&p[0]), enc(&p[1])]).collect());

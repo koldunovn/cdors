@@ -330,6 +330,22 @@ the two views differ, cdors follows the references:
   members are reported as one "not found" warning instead of one per member.
 - **Time values beyond about 100 million years** from the reference (typically an unmasked fill
   value such as 9.97e36) are `bad_data`, not dates.
+- **`shifttime`.** It shifts the timestamps and their bounds, as cdo does: seconds to days by
+  that many seconds of the calendar, months and years by moving the month and keeping the day. It
+  differs in three ways:
+  - where the new month lacks the day, cdors takes the month's last day and says so in the method
+    note. cdo keeps the day: 2000-01-31 + 1 month gives 2000-02-31, and 2000-02-29 − 1 year gives
+    1999-02-29, which reads back as 1999-03-01, the date of the next step;
+  - the argument needs a whole number and an unambiguous unit (`bad_arguments` otherwise). cdo
+    rounds `2.6day` to 3 days, reads `1` with no unit as whichever unit its hash table lists first
+    (months in 2.6.0), and reads `1m` as minutes or months the same way;
+  - a time value shifted by a fraction of the unit (−1 s in `days since`) is computed exactly:
+    −1.15740740740741e-05, where cdo's julian-date arithmetic gives −1.15740740740389e-05.
+
+  The usual use is a mean stamped at the end of its interval. fesom3_jax writes its yearly means
+  at 00:00 on 1 January of the next year, without `time_bnds`. There `-selyear,1990` takes the 1989
+  mean, and `-selyear,1990 -shifttime,-1sec` the 1990 one. FESOM2 stamps the last time step of the
+  interval (1990-12-31 23:56), which stays in the year.
 
 ## Reading values
 
