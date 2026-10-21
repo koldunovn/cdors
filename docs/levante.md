@@ -226,8 +226,10 @@ Exit codes:
 | 3 | an I/O error worth retrying (timeouts, HTTP 5xx) |
 | 4 | refused (read limit, too many values, existing output) |
 
-AI agents can start with `cdors guide` (5 kB, written for them). With it, agents answered five of five test analyses
-correctly, 4× faster than with cdo and Python, at 1.3× the cost. Full reference: `doc/reference.md`.
+AI agents can start with `cdors guide` (10 kB, written for them). With it, agents answered every test analysis
+correctly. On short analyses they cost about as much as agents with cdo and Python (1.0–1.3×); on long ones, the
+Atlantic overturning and the Drake Passage transport, half as much (0.48×), in a third of the time. Full reference:
+`doc/reference.md`.
 
 ## Example 6: plan first, then run
 
@@ -308,8 +310,7 @@ has no depth coordinate (cdo sees one grid of 147,580 points); `setgrid` gives i
 selections go above `setgrid` here.
 
 **A climate run: AWI-CM3** (`TCO319L137-DART/hist1950d`), one file per variable and year, on the dart mesh
-(3,160,340 nodes, 79 levels). Monthly `temp` is 12 GB per year, daily `a_ice` 4.6 GB. (`TCO319L137-DART/hist1950d`), one file per variable and year, on the dart mesh (3,160,340 nodes,
-79 levels). Monthly `temp` is 12 GB per year, daily `a_ice` 4.6 GB.
+(3,160,340 nodes, 79 levels). Monthly `temp` is 12 GB per year, daily `a_ice` 4.6 GB.
 
 ```bash
 M=/pool/data/AWICM/FESOM2/MESHES_FESOM2.1/dart
