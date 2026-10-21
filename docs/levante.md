@@ -451,6 +451,33 @@ cdors -transect,-65,-55,-60,-65 -setgrid,fesom:$M -selmon,1 -selname,temp $F/tem
 `-selpoints,lon=-30_lat=55` gives `temp(time, nz1, station)`; at 30°W 55°N in July 1975, 11.75 °C at the surface
 and 3.56 °C at 2000 m, and `-vertint,0/700 -selpoints,lon=-30_lat=55 ...` gives 3965 °C m over the top 700 m.
 
+**Overturning and transports.** The Atlantic overturning streamfunction from `w`, and the transport through the
+Drake Passage from `u` and `v`, January 1990:
+
+```bash
+cdors outputtab,lev,value -sellevel,0,950 -moc,lat=26.5,regions=moc,select=Atlantic_MOC -setgrid,fesom:$M \
+  -selmon,1 -selname,w $F/w.fesom.1990.nc
+cdors outputtab,value -vertsum -transport,-68,-54,-63,-65.5 -setgrid,fesom:$M -selmon,1 -selname,u $F/u.fesom.1990.nc \
+  -setgrid,fesom:$M -selmon,1 -selname,v $F/v.fesom.1990.nc
+```
+```
+#   lev    value
+     0 0.216056168371139
+   950 17.4749385415268
+#   value
+161.191441256385
+```
+
+Both are in Sv. `moc` sums `w` times the element areas north of each latitude and closes at the basin's northern
+end, so at the surface it gives the net surface flow, 0.22 Sv, not 0. Subtract `-sellevel,0` of the same chain for
+the transport above each depth. Without `lat=` the result is the whole streamfunction on 1° latitudes.
+
+`transport` takes the velocity on the elements (`u`, `v`) or on the nodes (`unod`, `vnod`). The path should start
+and end on land, and the sign is positive from the right of the path to its left, here eastward.
+
+Each command takes about 1 s once the files are in Lustre's cache; the first read of the month of `w` (1 GB) took
+27 s. Both agree with independent NumPy versions to 1e-12, and `--json` states the method.
+
 All of these ran on a login node (16 threads). `cdors help <op>` explains the operators that cdo does not have
 (`"origin": "cdors"` in `cdors ops --json`).
 
@@ -598,7 +625,8 @@ Or interactively:
 srun -p compute -A <your project> -N 1 --exclusive -t 00:30:00 cdors -ydaymean ... out.nc
 ```
 
-In a Slurm job cdors uses all allocated cores, 128 reads in flight, no read limit and 60 % of the job's memory
+In a Slurm job cdors uses one thread per allocated core (at most `--cpus-per-task`), 128 reads in flight, no read
+limit and 60 % of the job's memory
 (`--mem`). This is the 72× command from the top: 79 s, against 1 h 35 min for cdo. `--progress json` logs progress
 once per second.
 
@@ -634,6 +662,8 @@ read. Cold reads run at about 2.2 GB/s, set by Lustre.
 
 - **Same syntax as cdo:** `cdors [options] -op3 -op2,args -op1 input output`.
 - **Selections innermost** (`-selname`, `-selyear`, `-sellonlatbox`, ...): they decide which chunks are read.
+- **Dates are the timestamps:** a mean stamped at the end of its interval (00:00 on 1 January of the next year)
+  needs `-shifttime,-1sec` below `-selyear`.
 - **Plan first:** `cdors --plan <command>` shows reads, memory, passes and where area weights come from, without
   reading data.
 - **Equal-weights warning:** a framed `WARNING` about equal weights means the field mean is not area-weighted.
@@ -699,8 +729,9 @@ last time chunk of HEALPix Zarr).
 - **GRIB without gribscan references, and GRIB1** (ERA5 in `/pool/data/ERA5`): use cdo. GRIB with gribscan
   references (EERIE IFS-FESOM) works, see Example 4.
 - **Many cdo operators**, e.g. `expr`, `trend`, correlations, ETCCDI indices, `ydaypctl`, ensemble statistics, EOFs.
-- **Other model meshes** (ICON, NEMO, FESOM3, IFS native), gradients, transports, MOC and vectors on sections: round
-  1 covers scalar fields on FESOM2 meshes, with full layers.
+- **Other model meshes** (ICON, NEMO, IFS native), gradients and vectors on sections. Round 1 covers FESOM2 meshes
+  with full layers: scalar fields, the MOC and transports across sections. Another model on a FESOM2 mesh, such as
+  fesom3_jax, works with a `fesom.mesh.diag.nc` written with its own levels and areas.
 - **Classic NetCDF output** (`-f nc4c` writes NetCDF-4).
 - **Fast percentiles on data stored one field per chunk:** correct, but read several times.
 - **Weights without cdo:** cdo makes them once per grid pair.
@@ -717,7 +748,7 @@ it by hand.
 
 ## Version and feedback
 
-Installed: 0.1.0, commit `1e5d801` (2026-10-10) <!-- at install: the round-1 commit and date -->, the build that passed the tests; older versions stay next to it.
+Installed: 0.1.0, commit `8226cec` (2026-10-21), the build that passed the tests; older versions stay next to it.
 Source: [github.com/koldunovn/cdors](https://github.com/koldunovn/cdors).
 
 It is a prototype: send wrong numbers, confusing errors or slow commands, with the command and `cdors --version`, to
