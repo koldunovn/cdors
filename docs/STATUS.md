@@ -3,7 +3,7 @@
 ## Round 1: analysis on FESOM2 meshes (2026-10-19)
 
 Briefing for Nikolay. Plan with per-task notes: `docs/plans/completed/20261018-unstructured-round1.md`. The four criteria:
-`docs/criteria-unstructured.md`. Round 1 is installed (2026-10-21, `8226cec`); nothing is pushed or published yet.
+`docs/criteria-unstructured.md`. Round 1 is installed (2026-10-21, `8226cec`) and pushed to github.com/koldunovn/cdors; nothing is published yet.
 
 **In short.** All 15 tasks are done, and three of the four criteria are met. Correctness, speed and memory are met:
 the warm heat-content row passes when measured warm (5.9–6.5 s), and since `25aea2f` the heat content peaks at
@@ -108,7 +108,7 @@ against $2.03).
    `docs/levante.md`); the earlier binaries stay in `libexec/`. It follows the first outside feedback, from a
    fesom3_jax analysis: node velocities in `transport` (a 62-year Drake chain no longer runs out of memory), threads
    from the Slurm allocation, `shifttime` for means stamped at the end of their interval, the regions directory of a
-   development build. **Still needs your approval of the exact text:** the guide page and the push.
+   development build. **Still needs your approval of the exact text:** the guide page.
 
 **Decisions for you.** Whether to start round 2 (neighbour operators and the first plots). Whether `dcw:` should map
 to Natural Earth's countries.
